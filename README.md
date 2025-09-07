@@ -2,7 +2,7 @@
 
 Lightweight, fast plugin for local PNG/JPEG compression in Obsidian without any cloud APIs. It uses system binaries `pngquant` and `mozjpeg`, works offline, supports batch compression, background automation, and safe moving of compressed files with backups.
 
-[Русская версия: README.ru.md]
+[Русская версия](README.ru.md)
 
 ### Features
 - **Local compression**: PNG via `pngquant`, JPEG via `mozjpeg`.
