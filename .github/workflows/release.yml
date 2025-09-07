@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install
+        run: npm ci || npm install
+      - name: Prepare artifacts
+        run: |
+          mkdir -p build
+          cp manifest.json main.js styles.css package.json README.md README.ru.md versions.json build/ || true
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/manifest.json
+            build/main.js
+            build/styles.css
+            build/package.json
+            build/README.md
+            build/README.ru.md
+            build/versions.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

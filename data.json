@@ -1,0 +1,21 @@
+{
+  "pngQuality": {
+    "min": 65,
+    "max": 80
+  },
+  "jpegQuality": 85,
+  "allowedRoots": [
+    "files/"
+  ],
+  "outputFolder": "Compressed",
+  "autoCompressNewFiles": false,
+  "autoBackgroundCompression": true,
+  "autoBackgroundThreshold": 505,
+  "pngquantPath": "",
+  "mozjpegPath": "",
+  "autoCleanupGhostsOnStart": true,
+  "autoBackupsRetentionEnabled": true,
+  "autoBackupsRetentionDays": 61,
+  "autoMoveCompressedEnabled": true,
+  "autoMoveCompressedThreshold": 501
+}

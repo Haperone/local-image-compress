@@ -1,0 +1,25 @@
+{
+  "name": "obsidian-local-image-compress",
+  "version": "1.0.0",
+  "description": "Local PNG/JPEG compression for Obsidian using system pngquant/mozjpeg, no cloud.",
+  "main": "main.js",
+  "scripts": {
+    "build": "echo \"No build step\"",
+    "release": "node -e \"console.log('Remember to tag and push: v' + require('./package.json').version)\""
+  },
+  "keywords": ["obsidian", "plugin", "images", "compression", "png", "jpeg"],
+  "author": "haperone",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tiny-local/obsidian-local-image-compress.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tiny-local/obsidian-local-image-compress/issues"
+  },
+  "homepage": "https://github.com/tiny-local/obsidian-local-image-compress#readme",
+  "dependencies": {
+    "mozjpeg": "^8.0.0",
+    "pngquant-bin": "^9.0.0"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "local-image-compress",
+  "name": "Local Image Compress",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Local PNG/JPEG compression without cloud APIs",
+  "author": "haperone",
+  "authorUrl": "https://github.com/tiny-local",
+  "isDesktopOnly": true
+} 
