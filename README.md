@@ -1,6 +1,6 @@
-## Local Image Compress — local image compression for Obsidian
+## Local Image Compress — local image compression (offline)
 
-Lightweight, fast plugin for local PNG/JPEG compression in Obsidian without any cloud APIs. It uses system binaries `pngquant` and `mozjpeg`, works offline, supports batch compression, background automation, and safe moving of compressed files with backups.
+Lightweight, fast plugin for local PNG/JPEG compression in your vault without any cloud APIs. It uses system binaries `pngquant` and `mozjpeg`, works offline, supports batch compression, background automation, and safe moving of compressed files with backups.
 
 [Русская версия](README.ru.md)
 
@@ -27,7 +27,7 @@ Lightweight, fast plugin for local PNG/JPEG compression in Obsidian without any 
 2. Ensure the plugin folder has `node_modules` with binaries:
    - `node_modules/pngquant-bin/vendor/pngquant(.exe)`
    - `node_modules/mozjpeg/vendor/` (mozjpeg executable)
-3. In Obsidian, open `Settings → Community plugins` and enable `Local Image Compress`.
+3. Open `Settings → Community plugins` and enable `Local Image Compress`.
 
 The plugin discovers binaries in three ways (priority order):
 1) Explicit paths in settings: “Path to pngquant”, “Path to mozjpeg”
@@ -144,7 +144,7 @@ Minimum sizes for compression: tiny images are skipped (typically `<5KB` for PNG
 
 ### Limitations and compatibility
 - Desktop only (`isDesktopOnly: true`).
-- Requires Obsidian `1.0.0+`.
+- Requires app version `1.0.0+`.
 - Requires `pngquant` and `mozjpeg` binaries for your platform (Windows/macOS/Linux).
 - During operations, the compatible plugin `obsidian-paste-image-rename` may be temporarily disabled (if enabled) to avoid naming/moving conflicts.
 
@@ -170,13 +170,13 @@ Minimum sizes for compression: tiny images are skipped (typically `<5KB` for PNG
 - Ensure files are large enough: very small images are skipped.
 - Check “Allowed roots”: files outside these paths will not be processed.
 - If moving doesn’t happen — make sure a compressed file has a corresponding original in an allowed root.
-- Watch Obsidian notices and the developer console (Ctrl+Shift+I) for `Local Image Compress` logs.
+- Watch app notices and the developer console (Ctrl+Shift+I) for `Local Image Compress` logs.
 
 ### Metadata
 - ID: `local-image-compress`
 - Name: `Local Image Compress`
 - Version: `1.0.0`
-- Min Obsidian version: `1.0.0`
+- Min app version: `1.0.0`
 - Desktop-only: yes
 
 ### License
