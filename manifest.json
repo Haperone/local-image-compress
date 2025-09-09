@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "minAppVersion": "1.0.0",
   "description": "Local PNG/JPEG compression without cloud APIs",
-  "author": "haperone",
-  "authorUrl": "https://github.com/tiny-local",
+  "author": "Haperone",
+  "authorUrl": "https://github.com/haperone",
   "isDesktopOnly": true
 } 

@@ -8,16 +8,16 @@
     "release": "node -e \"console.log('Remember to tag and push: v' + require('./package.json').version)\""
   },
   "keywords": ["obsidian", "plugin", "images", "compression", "png", "jpeg"],
-  "author": "haperone",
+  "author": "Haperone",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tiny-local/obsidian-local-image-compress.git"
+    "url": "git+https://github.com/haperone/obsidian-local-image-compress.git"
   },
   "bugs": {
-    "url": "https://github.com/tiny-local/obsidian-local-image-compress/issues"
+    "url": "https://github.com/haperone/obsidian-local-image-compress/issues"
   },
-  "homepage": "https://github.com/tiny-local/obsidian-local-image-compress#readme",
+  "homepage": "https://github.com/haperone/obsidian-local-image-compress#readme",
   "dependencies": {
     "mozjpeg": "^8.0.0",
     "pngquant-bin": "^9.0.0"
