@@ -12,6 +12,16 @@
   --tiny-local-text-warning: #ff9800;
 }
 
+.theme-light {
+  --tiny-local-accent: #3B82F6;
+  --tiny-local-accent-hover: #2563EB;
+}
+
+.theme-dark {
+  --tiny-local-accent: #60A5FA;
+  --tiny-local-accent-hover: #3B82F6;
+}
+
 /* ========================================================================
    БАЗОВЫЕ СТИЛИ ДЛЯ НАСТРОЕК
    ======================================================================== */
@@ -559,69 +569,69 @@
 }
 
 /* Улучшенная видимость полей ввода на светлых темах */
-.theme-light .setting-item-control input[type="text"],
-.theme-light .setting-item-control input[type="number"],
-.theme-light .setting-item-control textarea {
-	border: 1px solid #d1d5db !important;
-	background-color: #ffffff !important;
-	color: #374151 !important;
+.theme-light .tiny-local-settings .setting-item-control input[type="text"],
+.theme-light .tiny-local-settings .setting-item-control input[type="number"],
+.theme-light .tiny-local-settings .setting-item-control textarea {
+	border: 1px solid #d1d5db;
+	background-color: #ffffff;
+	color: #374151;
 }
 
-.theme-light .setting-item-control input[type="text"]:focus,
-.theme-light .setting-item-control input[type="number"]:focus,
-.theme-light .setting-item-control textarea:focus {
-	border-color: #3b82f6 !important;
-	box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1) !important;
+.theme-light .tiny-local-settings .setting-item-control input[type="text"]:focus,
+.theme-light .tiny-local-settings .setting-item-control input[type="number"]:focus,
+.theme-light .tiny-local-settings .setting-item-control textarea:focus {
+	border-color: #3b82f6;
+	box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
 }
 
 /* Улучшенная видимость слайдеров на светлых темах */
-.theme-light .setting-item-control .slider {
-	background-color: #e5e7eb !important;
+.theme-light .tiny-local-settings .setting-item-control .slider {
+	background-color: #e5e7eb;
 }
 
-.theme-light .setting-item-control .slider::-webkit-slider-thumb {
-	background-color: #3b82f6 !important;
-	border: 2px solid #ffffff !important;
+.theme-light .tiny-local-settings .setting-item-control .slider::-webkit-slider-thumb {
+	background-color: #3b82f6;
+	border: 2px solid #ffffff;
 }
 
 /* Улучшенная видимость dropdown на светлых темах */
-.theme-light .setting-item-control select {
-	border: 1px solid #d1d5db !important;
-	background-color: #ffffff !important;
-	color: #374151 !important;
+.theme-light .tiny-local-settings .setting-item-control select {
+	border: 1px solid #d1d5db;
+	background-color: #ffffff;
+	color: #374151;
 }
 
-.theme-light .setting-item-control select:focus {
-	border-color: #3b82f6 !important;
-	box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1) !important;
+.theme-light .tiny-local-settings .setting-item-control select:focus {
+	border-color: #3b82f6;
+	box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
 }
 
 /* Улучшенная видимость toggle переключателей на светлых темах */
-.theme-light .setting-item-control .checkbox-container {
-	border: 1px solid #d1d5db !important;
-	background-color: #f9fafb !important;
+.theme-light .tiny-local-settings .setting-item-control .checkbox-container {
+	border: 1px solid #d1d5db;
+	background-color: #f9fafb;
 }
 
-.theme-light .setting-item-control .checkbox-container.is-enabled {
-	background-color: #3b82f6 !important;
-	border-color: #3b82f6 !important;
+.theme-light .tiny-local-settings .setting-item-control .checkbox-container.is-enabled {
+	background-color: #3b82f6;
+	border-color: #3b82f6;
 }
 
 /* Улучшенная видимость кнопок на светлых темах */
-.theme-light .setting-item-control button {
-	border: 1px solid #d1d5db !important;
-	background-color: #ffffff !important;
-	color: #374151 !important;
+.theme-light .tiny-local-settings .setting-item-control button {
+	border: 1px solid #d1d5db;
+	background-color: #ffffff;
+	color: #374151;
 }
 
-.theme-light .setting-item-control button:hover {
-	background-color: #f3f4f6 !important;
-	border-color: #9ca3af !important;
+.theme-light .tiny-local-settings .setting-item-control button:hover {
+	background-color: #f3f4f6;
+	border-color: #9ca3af;
 }
 
 /* Улучшенная видимость заголовков на светлых темах */
 .theme-light .tiny-local-settings h3 {
-	color: #1f2937 !important;
+	color: #1f2937;
 }
 
 /* ========================================================================

@@ -1,6 +1,6 @@
-## Local Image Compress — local image compression (offline)
+## Local Image Compress
 
-Lightweight, fast plugin for local PNG/JPEG compression in your vault without any cloud APIs. It uses system binaries `pngquant` and `mozjpeg`, works offline, supports batch compression, background automation, and safe moving of compressed files with backups.
+Compress PNG and JPEG images in your vault with the local `pngquant` and `mozjpeg` binaries. The plugin works offline, supports batch jobs, provides optional automation, and keeps backups when moving optimized files.
 
 [Русская версия](README.ru.md)
 
