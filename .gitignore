@@ -1,0 +1,27 @@
+node_modules/
+main.js
+build/
+dist-ts/
+.DS_Store
+Thumbs.db
+*.log
+.cache/
+
+# Obsidian plugin generated folders
+cache-backups/
+original-files-backups/
+qa-backups/
+qa-screenshots/
+
+# Editors/OS
+.vscode/
+.idea/
+.obsidian/
+*.iml
+
+# Local state/caches/locks (do not commit)
+data.json
+tinyLocal-cache.json
+
+# Local backup/script files
+Бекап*сжатия.js

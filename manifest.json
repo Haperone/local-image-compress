@@ -1,0 +1,11 @@
+{
+  "id": "local-image-compress",
+  "name": "Local Image Compress",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.0",
+  "description": "Local PNG/JPEG compression without cloud APIs.",
+  "author": "Haperone",
+  "authorUrl": "https://github.com/haperone",
+  "fundingUrl": "https://buymeacoffee.com/haperone",
+  "isDesktopOnly": true
+}
