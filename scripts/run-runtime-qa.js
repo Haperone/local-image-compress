@@ -9,7 +9,8 @@ const sourceRoot = path.resolve(__dirname, "..");
 const repoRoot = sourceRoot;
 const runnerPath = path.join(__dirname, "runtime-qa.js");
 const reportDir = path.join(repoRoot, "qa-backups");
-const dataJsonPath = path.join(repoRoot, "data.json");
+const pluginInstallDir = resolvePluginInstallDirectory();
+const dataJsonPath = path.join(pluginInstallDir, "data.json");
 const preQaSettingsBackupPath = path.join(reportDir, "pre-qa-data-backup.json");
 const QA_STATE_MARKER = "QA-LIC-Runtime-";
 const cliPath = process.env.OBSIDIAN_CLI || (
@@ -20,11 +21,23 @@ const args = new Set(process.argv.slice(2));
 const skipReload = args.has("--skip-reload");
 const skipDevErrors = args.has("--skip-dev-errors");
 
+function resolvePluginInstallDirectory() {
+  const environmentPath = process.env.OBSIDIAN_DEV_PLUGIN_DIR?.trim();
+  if (environmentPath) {
+    return path.resolve(environmentPath);
+  }
+  const configPath = path.join(repoRoot, ".obsidian-dev.json");
+  const config = readJsonSafe(configPath);
+  return path.resolve(config?.pluginDir || repoRoot);
+}
+
 function printHelp() {
   console.log([
     "Usage: npm run qa:runtime [-- --skip-reload] [-- --skip-dev-errors]",
     "",
     "Runs scripts/runtime-qa.js inside a live Obsidian instance.",
+    "The DEV command builds and deploys the configured Vault copy before running.",
+    "Set OBSIDIAN_DEV_PLUGIN_DIR to override .obsidian-dev.json.",
     "Set OBSIDIAN_CLI to override the Obsidian CLI executable path."
   ].join("\n"));
 }
@@ -35,7 +48,7 @@ function timestampForFile() {
 
 function runObsidianCli(cliArgs, description, options = {}) {
   const result = spawnSync(cliPath, cliArgs, {
-    cwd: repoRoot,
+    cwd: pluginInstallDir,
     encoding: "utf8",
     windowsHide: true,
     maxBuffer: 64 * 1024 * 1024
@@ -165,7 +178,12 @@ async function main() {
   if (!fs.existsSync(runnerPath)) {
     throw new Error(`Missing runtime QA runner: ${runnerPath}`);
   }
+  const installedManifest = readJsonSafe(path.join(pluginInstallDir, "manifest.json"));
+  if (installedManifest?.id !== pluginId || !fs.existsSync(path.join(pluginInstallDir, "main.js"))) {
+    throw new Error(`Configured runtime plugin is not a deployed ${pluginId} installation: ${pluginInstallDir}`);
+  }
   fs.mkdirSync(reportDir, { recursive: true });
+  console.log(`Runtime plugin directory: ${pluginInstallDir}`);
   ensurePreQaSettingsBackup();
 
   if (!skipReload) {

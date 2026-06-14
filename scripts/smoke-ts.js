@@ -888,6 +888,7 @@ assert(packageSource.devDependencies["eslint-plugin-obsidianmd"] === "0.3.0", "e
 assert(packageSource.devDependencies.eslint && packageSource.devDependencies["@typescript-eslint/parser"] && packageSource.devDependencies["@typescript-eslint/eslint-plugin"], "ESLint devDependencies are required for lint:eslint");
 assertExactPackageSeries(packageSource.devDependencies.imagequant, /^0\.1\.\d+$/, "imagequant must stay on the 0.1.x series while pngquant_quality_failed depends on its error contract");
 assertExactPackageSeries(packageSource.devDependencies.typescript, /^6\.0\.\d+$/, "typescript must stay on the reviewed 6.0.x series");
+assert(packageSource.devDependencies.esbuild === "0.28.1", "esbuild must stay exact-pinned to the reviewed patched version 0.28.1");
 assert(tsconfigSource.compilerOptions.strict === true, "tsconfig strict mode must stay enabled");
 assert(Array.isArray(tsconfigSource.compilerOptions.types) && tsconfigSource.compilerOptions.types.includes("node") && tsconfigSource.compilerOptions.types.includes("obsidian"), "tsconfig must include node and obsidian ambient types");
 for (const strictFlag of [
@@ -907,10 +908,11 @@ assert(packageSource.scripts["test:release"].includes("npm run build:root") && p
 assert(!releaseWorkflowSource.includes("|| true"), "Release workflow still silently ignores missing release artifacts");
 assert(rootPackageSource.license === "GPL-3.0-or-later", "Root package.json license must match bundled GPL codec obligations");
 assert(rootPackageSource.scripts.build === "npm run build:root", "Root package.json build must delegate to the real source-recovery build");
-assert(rootPackageSource.scripts.test.includes("npm run test:ts") && rootPackageSource.scripts["test:release"].includes("npm run verify:release"), "Root package.json test scripts must run promotion tests and delegate to source-recovery");
+assert(rootPackageSource.scripts.test.includes("npm run test:ts") && rootPackageSource.scripts["test:release"].includes("npm run verify:release"), "Root package.json test scripts must run DEV deployment tests, promotion tests, and delegate to source-recovery");
 assert(Array.isArray(rootPackageSource.files) && JSON.stringify(rootPackageSource.files) === JSON.stringify(["manifest.json", "main.js", "styles.css", "versions.json"]), "Root package.json files allowlist must contain only Obsidian install artifacts");
 assert(!releaseWorkflowSource.includes("build/package.json") && !releaseWorkflowSource.includes("build/README.md") && releaseWorkflowSource.includes("npm run test:release"), "Release workflow still ships dev package metadata or bypasses root test:release");
-assert(releaseWorkflowSource.includes('"[0-9]+.[0-9]+.[0-9]+"') && releaseWorkflowSource.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$") && !releaseWorkflowSource.includes('"v*"') && !releaseWorkflowSource.includes("GITHUB_REF_NAME#v"), "Release workflow does not enforce exact numeric SemVer tags");
+assert(releaseWorkflowSource.includes('"*.*.*"') && releaseWorkflowSource.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$") && !releaseWorkflowSource.includes('"v*"') && !releaseWorkflowSource.includes("GITHUB_REF_NAME#v"), "Release workflow does not combine a dotted tag trigger with exact numeric SemVer validation");
+assert((releaseWorkflowSource.match(/actions\/checkout@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/actions\/setup-node@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/node-version:\s*"24"/g) || []).length === 2, "Release workflow must use checkout/setup-node v6 and Node 24 in both jobs");
 assert(releaseWorkflowSource.includes("npm run prepare:release") && prepareReleaseSource.includes('["manifest.json", "main.js", "styles.css", "versions.json"]'), "Release workflow does not use the exact install-file staging allowlist");
 assert(validateManifestSource.includes("forbiddenReleaseEntries") && validateManifestSource.includes("package.json must declare a files allowlist"), "Manifest validation does not guard release packaging against dev artifact leaks");
 assert(validateManifestSource.includes("MIN_API_SURFACE_APP_VERSION") && validateManifestSource.includes("activeWindow/activeDocument/getBasePath"), "Manifest validation does not enforce API-surface minAppVersion");
@@ -933,7 +935,19 @@ for (const token of [
   assert(releasePolicySource.includes(token), `RELEASE_POLICY.md is missing release policy token: ${token}`);
 }
 assert(classWideGatesSource.includes("addEmptyCatchFindings") && classWideGatesSource.includes("--self-test") && classWideGatesSource.includes("multiline empty catch"), "class-wide-gates.js does not guard multiline empty catch detection");
-assert(gitignoreSource.includes("qa-backups/") && /^dist-ts\/$/m.test(gitignoreSource) && /^main\.js$/m.test(gitignoreSource) && /^build\/$/m.test(gitignoreSource), ".gitignore is missing generated release artifacts");
+for (const pattern of [
+  /^node_modules\/$/m,
+  /^main\.js$/m,
+  /^build\/$/m,
+  /^(?:source-recovery\/)?dist-ts\/$/m,
+  /^\.obsidian\/$/m,
+  /^data\.json$/m,
+  /^tinyLocal-cache\.json$/m,
+  /^\*\.map$/m
+]) {
+  assert(pattern.test(gitignoreSource), `.gitignore is missing required generated/local artifact pattern: ${pattern}`);
+}
+assert(gitignoreSource.includes("qa-backups/"), ".gitignore is missing QA output ignores");
 assert(licenseSource.includes("SPDX-License-Identifier: GPL-3.0-or-later") && licenseSource.includes("GNU GENERAL PUBLIC LICENSE") && licenseSource.includes("17. Interpretation of Sections 15 and 16.") && licenseSource.length > 30000, "LICENSE must contain the project grant and complete GPL v3 text");
 assert(auditPolicySource.includes("Policy audit passed") && auditPolicySource.includes("expectedFullVaultScans") && auditPolicySource.includes("expectedFsBoundaryFiles"), "Policy audit is missing blocking source/filesystem inventory guards");
 for (const token of ["Network", "Telemetry and ads", "Accounts and payments", "External files", "Other plugins"]) {

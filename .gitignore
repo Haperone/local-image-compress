@@ -5,6 +5,7 @@ dist-ts/
 .DS_Store
 Thumbs.db
 *.log
+*.map
 .cache/
 
 # Obsidian plugin generated folders

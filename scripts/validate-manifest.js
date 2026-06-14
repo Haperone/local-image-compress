@@ -170,12 +170,22 @@ assert(
   releaseWorkflow.includes("npm run prepare:release"),
   "Release workflow must use the validated release preparation script"
 );
-assert(releaseWorkflow.includes('"[0-9]+.[0-9]+.[0-9]+"'), "Release workflow must trigger only on exact numeric SemVer-shaped tags");
+assert(releaseWorkflow.includes('"*.*.*"'), "Release workflow must trigger on dotted tag candidates");
 assert(releaseWorkflow.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$"), "Release workflow must validate exact numeric SemVer tags");
 assert(!releaseWorkflow.includes("GITHUB_REF_NAME#v") && !releaseWorkflow.includes('"v*"'), "Release workflow must reject v-prefixed tags");
 assert(releasePrepare.includes('["manifest.json", "main.js", "styles.css", "versions.json"]'), "Release preparation script must use the explicit install-file allowlist");
-assert(/^main\.js$/m.test(gitignore), "Generated root main.js must be ignored");
-assert(/^build\/$/m.test(gitignore), "Release staging directory must be ignored");
+for (const pattern of [
+  /^node_modules\/$/m,
+  /^main\.js$/m,
+  /^build\/$/m,
+  /^(?:source-recovery\/)?dist-ts\/$/m,
+  /^\.obsidian\/$/m,
+  /^data\.json$/m,
+  /^tinyLocal-cache\.json$/m,
+  /^\*\.map$/m
+]) {
+  assert(pattern.test(gitignore), `Required generated/local artifact ignore is missing: ${pattern}`);
+}
 
 const buildDir = path.join(root, "build");
 if (fs.existsSync(buildDir)) {
