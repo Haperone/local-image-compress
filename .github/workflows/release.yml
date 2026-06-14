@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run gates and tests
+        run: npm run test:release
+
+  release:
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate exact numeric tag matches manifest
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must be exact numeric SemVer without a v prefix: ${tag}"
+            exit 1
+          fi
+          manifest_version="$(node -p "require('./manifest.json').version")"
+          if [[ "$tag" != "$manifest_version" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match manifest version ${manifest_version}"
+            exit 1
+          fi
+
+      - name: Run release tests and build root bundle
+        run: npm run test:release
+
+      - name: Prepare artifacts
+        run: npm run prepare:release
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: |
+            build/manifest.json
+            build/main.js
+            build/styles.css
+            build/versions.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

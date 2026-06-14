@@ -1,0 +1,69 @@
+{
+  "name": "obsidian-local-image-compress",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desktop local PNG/JPEG compression for Obsidian using bundled WASM codecs, no cloud.",
+  "type": "commonjs",
+  "main": "main.js",
+  "files": [
+    "manifest.json",
+    "main.js",
+    "styles.css",
+    "versions.json"
+  ],
+  "scripts": {
+    "lint": "node scripts/class-wide-gates.js",
+    "audit:policy": "node scripts/audit-policy.js",
+    "audit:policy:bundle": "node scripts/audit-policy.js --require-bundle",
+    "lint:eslint": "eslint src-ts/",
+    "lint:obsidian": "node scripts/lint-obsidian.js",
+    "build": "npm run build:root",
+    "build:ts": "node scripts/build-ts.js",
+    "smoke:ts": "node scripts/smoke-ts.js",
+    "typecheck": "tsc --noEmit",
+    "validate:manifest": "node scripts/validate-manifest.js",
+    "validate:license": "node scripts/validate-license.js",
+    "validate:wasm": "node scripts/validate-wasm.js",
+    "qa:runtime": "node scripts/run-runtime-qa.js",
+    "test:ts": "npm run build:ts && npm run smoke:ts",
+    "verify:root-ts": "node scripts/verify-root-ts.js",
+    "verify:release": "node scripts/verify-release.js",
+    "prepare:release": "node scripts/prepare-release.js",
+    "build:root": "node scripts/build-root.js",
+    "test:release": "npm test && npm run build:root && npm run audit:policy:bundle && npm run verify:release && npm run verify:root-ts",
+    "test": "npm run lint && npm run audit:policy && npm run lint:eslint && npm run lint:obsidian && npm run test:ts && npm run typecheck && npm run validate:manifest && npm run validate:license && npm run validate:wasm",
+    "release": "node -e \"process.stdout.write('Release tag must be exact numeric SemVer: ' + require('./package.json').version + '\\n')\""
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "images",
+    "compression",
+    "png",
+    "jpeg"
+  ],
+  "author": "Haperone",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haperone/local-image-compress.git"
+  },
+  "bugs": {
+    "url": "https://github.com/haperone/local-image-compress/issues"
+  },
+  "homepage": "https://github.com/haperone/local-image-compress#readme",
+  "devDependencies": {
+    "@jsquash/jpeg": "1.6.0",
+    "@jsquash/png": "3.1.1",
+    "@types/node": "25.7.0",
+    "@typescript-eslint/eslint-plugin": "^8.60.0",
+    "@typescript-eslint/parser": "^8.60.0",
+    "esbuild": "0.25.12",
+    "eslint": "^10.4.0",
+    "eslint-plugin-obsidianmd": "0.3.0",
+    "imagequant": "0.1.2",
+    "obsidian": "1.13.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "^8.60.1"
+  }
+}
