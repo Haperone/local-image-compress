@@ -52,6 +52,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   compressedFilesCountElement: HTMLElement | null;
   savingsHostElement: HTMLElement | null;
   saveSettingsDebounceTimer: TimerHandle | null;
+  saveSettingsDebounceWindow: Window | null;
   updateStats!: () => Promise<void>;
 
   constructor(app: obsidian.App, plugin: LocalImageCompressPlugin) {
@@ -70,6 +71,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     this.compressedFilesCountElement = null;
     this.savingsHostElement = null;
     this.saveSettingsDebounceTimer = null;
+    this.saveSettingsDebounceWindow = null;
   }
   requestRerenderAfterCurrentRender() {
     if (!this._isRendering) {
@@ -130,41 +132,58 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   getActiveWindow() {
     return getActiveWindowForApp(this.app) || window;
   }
-  setWindowTimeout(callback: (...args: never[]) => unknown, delay: number) {
-    return window.setTimeout(callback, delay);
+  setWindowTimeout(
+    callback: (...args: never[]) => unknown,
+    delay: number,
+    ownerWindow: Window = this.containerEl?.win || this.getActiveWindow()
+  ) {
+    return ownerWindow.setTimeout(callback, delay);
   }
-  clearWindowTimeout(timer: TimerHandle | null | undefined) {
+  clearWindowTimeout(
+    timer: TimerHandle | null | undefined,
+    ownerWindow: Window = this.containerEl?.win || this.getActiveWindow()
+  ) {
     if (timer === null || timer === undefined) {
       return;
     }
-    window.clearTimeout(timer as number);
+    ownerWindow.clearTimeout(timer as number);
   }
   flushPendingSaveSettings() {
     if (!this.saveSettingsDebounceTimer) {
       return;
     }
     try {
-      this.clearWindowTimeout(this.saveSettingsDebounceTimer);
+      this.clearWindowTimeout(
+        this.saveSettingsDebounceTimer,
+        this.saveSettingsDebounceWindow || this.containerEl?.win || this.getActiveWindow()
+      );
     } catch (error) {
       console.debug(getLogTag(this), "Settings debounce timer cleanup failed (non-critical)", error);
     }
     this.saveSettingsDebounceTimer = null;
+    this.saveSettingsDebounceWindow = null;
     this.plugin.saveSettings().catch((error: unknown) => {
       console.error(getLogTag(this), "Settings save during close failed:", error);
     });
   }
   debouncedSaveSettings(delayMs = 300, afterSave: (() => void) | null = null) {
     if (this.saveSettingsDebounceTimer) {
-      this.clearWindowTimeout(this.saveSettingsDebounceTimer);
+      this.clearWindowTimeout(
+        this.saveSettingsDebounceTimer,
+        this.saveSettingsDebounceWindow || this.containerEl?.win || this.getActiveWindow()
+      );
     }
+    const ownerWindow = this.containerEl?.win || this.getActiveWindow();
+    this.saveSettingsDebounceWindow = ownerWindow;
     this.saveSettingsDebounceTimer = this.setWindowTimeout(() => {
       this.saveSettingsDebounceTimer = null;
+      this.saveSettingsDebounceWindow = null;
       this.plugin.saveSettings()
         .then(() => afterSave?.())
         .catch((error) => {
           console.error(getLogTag(this), "Settings save failed:", error);
         });
-    }, delayMs);
+    }, delayMs, ownerWindow);
   }
   showSettingsOperationError(error: unknown, context: string, noticeKey = "notice.operationFailed") {
     console.error(getLogTag(this), context, error);
@@ -215,7 +234,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     if (ownerWindow.requestAnimationFrame) {
       return ownerWindow.requestAnimationFrame(callback);
     }
-    return this.setWindowTimeout(callback, 0);
+    return this.setWindowTimeout(callback, 0, ownerWindow);
   }
   normalizeAllowedRootSelection(chosen: string) {
     if (chosen === "" || chosen === "/") {

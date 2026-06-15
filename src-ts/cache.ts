@@ -850,7 +850,7 @@ export class Cache {
             return;
           }
           try {
-            this.writeCacheFileSyncAtomic(snapshot, { mergeDiskEntries });
+            this.writeCacheFileSyncAtomic(snapshot, { mergeDiskEntries: false });
           } catch (error) {
             console.error(getLogTag(this), "Failed to replay cache flush after active write:", error);
           }

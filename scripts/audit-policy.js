@@ -2,9 +2,9 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const sourceRoot = path.resolve(__dirname, "..");
-const repoRoot = sourceRoot;
+const { isDevLayout, repositoryRoot: repoRoot, sourceRoot } = resolveRepositoryLayout();
 const tsRoot = path.join(sourceRoot, "src-ts");
 const requireBundle = process.argv.includes("--require-bundle");
 
@@ -52,6 +52,9 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(sourceRoot, "package.js
 const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "manifest.json"), "utf8"));
 const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
 const readmeRu = fs.readFileSync(path.join(repoRoot, "README.ru.md"), "utf8");
+const releaseAuditPath = path.join(repoRoot, "OBSIDIAN_RELEASE_AUDIT.md");
+assert(!isDevLayout || fs.existsSync(releaseAuditPath), "DEV policy audit requires OBSIDIAN_RELEASE_AUDIT.md");
+const releaseAudit = fs.existsSync(releaseAuditPath) ? fs.readFileSync(releaseAuditPath, "utf8") : null;
 const mainBundlePath = path.join(repoRoot, "main.js");
 const mainBundleExists = fs.existsSync(mainBundlePath);
 assert(!requireBundle || mainBundleExists, "Production main.js is required after build");
@@ -165,6 +168,12 @@ for (const file of files) {
 fullVaultScans.sort();
 assert(JSON.stringify(fullVaultScans) === JSON.stringify(expectedFullVaultScans), `Full-vault scan inventory changed: ${fullVaultScans.join(", ")}`);
 
+if (releaseAudit) {
+  for (const boundaryPath of [...new Set([...expectedFsBoundaryFiles, ...expectedFullVaultScans])]) {
+    assert(releaseAudit.includes(`\`${boundaryPath}\``), `Release audit is missing boundary disposition for ${boundaryPath}`);
+  }
+}
+
 assert(compressionWorkerSource.includes("initJpegDecode(getCachedWasmModule") && compressionWorkerSource.includes("initPngDecode(message.wasm.png)"), "Codec initialization must use transferred inline WASM");
 assert(
   workerSlotSource.includes("wasmBytes")
@@ -179,6 +188,10 @@ if (mainBundleExists) {
   assert(countMatches(mainBundle, /\beval\s*\(|new Function/g) === 0, "Production bundle contains eval-like execution");
   assert(countMatches(mainBundle, /\bfetch\s*\(/g) === 5 && countMatches(mainBundle, /\bXMLHttpRequest\b/g) === 6, "Dormant pinned codec fallback inventory changed");
 }
+if (releaseAudit) {
+  assert(releaseAudit.includes("Dormant vendor fallbacks"), "Release audit must explain bundled codec fetch/XMLHttpRequest fallback strings");
+}
+
 process.stdout.write([
   "Policy audit passed.",
   `TypeScript files: ${files.length}`,

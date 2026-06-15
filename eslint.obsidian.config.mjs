@@ -1,18 +1,24 @@
 // Blocking mirror of the current Obsidian community-plugin submission scanner.
+import fs from "node:fs";
+import path from "node:path";
 import tsParser from "@typescript-eslint/parser";
 import tseslint from "typescript-eslint";
 import obsidianmd from "eslint-plugin-obsidianmd";
 
-const sourceFiles = ["src-ts/**/*.ts"];
+const isDevLayout = path.basename(import.meta.dirname) === "source-recovery"
+  && fs.existsSync(path.join(import.meta.dirname, "src-ts"))
+  && fs.existsSync(path.join(import.meta.dirname, "..", "manifest.json"));
+const sourcePrefix = isDevLayout ? "source-recovery/" : "";
+const sourceFiles = [`${sourcePrefix}src-ts/**/*.ts`];
 
 export default [
   {
     ignores: [
-      "node_modules/**",
-      "dist/**",
-      "dist-ts/**",
-      "qa-backups/**",
-      "qa-screenshots/**",
+      `${sourcePrefix}node_modules/**`,
+      `${sourcePrefix}dist/**`,
+      `${sourcePrefix}dist-ts/**`,
+      `${sourcePrefix}qa-backups/**`,
+      `${sourcePrefix}qa-screenshots/**`,
       "**/.claude/**",
       "**/.supergoal/**",
       "*.mjs"
@@ -35,7 +41,7 @@ export default [
     }
   },
   {
-    files: ["src-ts/i18n.ts"],
+    files: [`${sourcePrefix}src-ts/i18n.ts`],
     rules: {
       "obsidianmd/ui/sentence-case-locale-module": "error"
     }

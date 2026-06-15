@@ -3,10 +3,10 @@
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
 const pluginId = "local-image-compress";
-const sourceRoot = path.resolve(__dirname, "..");
-const repoRoot = sourceRoot;
+const { repositoryRoot: repoRoot, sourceRoot } = resolveRepositoryLayout();
 const runnerPath = path.join(__dirname, "runtime-qa.js");
 const reportDir = path.join(repoRoot, "qa-backups");
 const pluginInstallDir = resolvePluginInstallDirectory();
@@ -32,10 +32,11 @@ function resolvePluginInstallDirectory() {
 }
 
 function printHelp() {
+  const runnerDisplayPath = path.relative(repoRoot, runnerPath).replace(/\\/g, "/");
   console.log([
     "Usage: npm run qa:runtime [-- --skip-reload] [-- --skip-dev-errors]",
     "",
-    "Runs scripts/runtime-qa.js inside a live Obsidian instance.",
+    `Runs ${runnerDisplayPath} inside a live Obsidian instance.`,
     "The DEV command builds and deploys the configured Vault copy before running.",
     "Set OBSIDIAN_DEV_PLUGIN_DIR to override .obsidian-dev.json.",
     "Set OBSIDIAN_CLI to override the Obsidian CLI executable path."

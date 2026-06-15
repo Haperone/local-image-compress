@@ -2,8 +2,9 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const root = path.resolve(__dirname, "..");
+const { repositoryRoot: root, sourceRoot } = resolveRepositoryLayout();
 
 function assert(condition, message) {
   if (!condition) {
@@ -27,10 +28,10 @@ const readmeRu = readText("README.ru.md");
 const apacheLicense = readText("licenses/Apache-2.0.txt");
 const jpegCodecLicense = readText("licenses/jpeg-codec.txt");
 const pngCodecLicense = readText("licenses/png-codec.txt");
-const installedApacheLicense = fs.readFileSync(path.join(root, "node_modules", "@jsquash", "jpeg", "LICENSE"), "utf8");
-const installedPngApacheLicense = fs.readFileSync(path.join(root, "node_modules", "@jsquash", "png", "LICENSE"), "utf8");
-const installedJpegCodecLicense = fs.readFileSync(path.join(root, "node_modules", "@jsquash", "jpeg", "codec", "LICENSE.codec.md"), "utf8");
-const installedPngCodecLicense = fs.readFileSync(path.join(root, "node_modules", "@jsquash", "png", "codec", "LICENSE.codec.md"), "utf8");
+const installedApacheLicense = fs.readFileSync(path.join(sourceRoot, "node_modules", "@jsquash", "jpeg", "LICENSE"), "utf8");
+const installedPngApacheLicense = fs.readFileSync(path.join(sourceRoot, "node_modules", "@jsquash", "png", "LICENSE"), "utf8");
+const installedJpegCodecLicense = fs.readFileSync(path.join(sourceRoot, "node_modules", "@jsquash", "jpeg", "codec", "LICENSE.codec.md"), "utf8");
+const installedPngCodecLicense = fs.readFileSync(path.join(sourceRoot, "node_modules", "@jsquash", "png", "codec", "LICENSE.codec.md"), "utf8");
 
 const bundlesGplCodec = /imagequant[\s\S]*GPL\s*v?3/i.test(thirdPartyNotices);
 if (bundlesGplCodec) {
@@ -51,11 +52,12 @@ assert(apacheLicense === installedPngApacheLicense, "Tracked Apache-2.0 text doe
 assert(jpegCodecLicense === installedJpegCodecLicense, "Tracked JPEG codec license does not match the pinned package");
 assert(pngCodecLicense === installedPngCodecLicense, "Tracked PNG codec license does not match the pinned package");
 assert(/This software is based in part on the work of the\s+Independent JPEG Group\./i.test(thirdPartyNotices), "JPEG codec attribution is missing");
+const wasmHashPath = path.relative(root, path.join(sourceRoot, "wasm-hashes.json")).replace(/\\/g, "/");
 for (const localLicensePath of [
   "licenses/Apache-2.0.txt",
   "licenses/jpeg-codec.txt",
   "licenses/png-codec.txt",
-  "wasm-hashes.json"
+  wasmHashPath
 ]) {
   assert(thirdPartyNotices.includes(localLicensePath), `Third-party notices are missing ${localLicensePath}`);
 }

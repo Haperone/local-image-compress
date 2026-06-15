@@ -6,8 +6,9 @@ const os = require("os");
 const crypto = require("crypto");
 const Module = require("module");
 const assert = require("node:assert/strict");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const root = path.resolve(__dirname, "..");
+const { isDevLayout, repositoryRoot, sourceRoot: root } = resolveRepositoryLayout();
 const artifact = path.join(root, "dist-ts", "main.js");
 const sourceTsRoot = path.join(root, "src-ts");
 
@@ -19,7 +20,7 @@ const VALID_JPEG_OUTPUT = Uint8Array.from(Buffer.from(
   "base64"
 ));
 const VALID_PNG_OUTPUT = Uint8Array.from(Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64"
 ));
 
@@ -94,17 +95,46 @@ function createValidEncodedOutput(format = "jpeg", byteLength = null) {
   return createValidJpegOutput(byteLength || VALID_JPEG_OUTPUT.byteLength);
 }
 
+function pngCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createPngChunk(type, data) {
+  const typeBytes = Buffer.from(type, "ascii");
+  const dataBytes = Buffer.from(data);
+  const chunk = Buffer.alloc(12 + dataBytes.length);
+  chunk.writeUInt32BE(dataBytes.length, 0);
+  typeBytes.copy(chunk, 4);
+  dataBytes.copy(chunk, 8);
+  chunk.writeUInt32BE(pngCrc32(chunk.subarray(4, 8 + dataBytes.length)), 8 + dataBytes.length);
+  return chunk;
+}
+
 function createPngWithoutIdat() {
   const signatureAndIhdr = VALID_PNG_OUTPUT.subarray(0, 33);
   const iend = VALID_PNG_OUTPUT.subarray(VALID_PNG_OUTPUT.byteLength - 12);
-  const bytes = new Uint8Array(signatureAndIhdr.byteLength + iend.byteLength);
+  const textChunk = createPngChunk("tEXt", Buffer.from("Comment\0missing-idat", "ascii"));
+  const bytes = new Uint8Array(signatureAndIhdr.byteLength + textChunk.byteLength + iend.byteLength);
   bytes.set(signatureAndIhdr, 0);
-  bytes.set(iend, signatureAndIhdr.byteLength);
+  bytes.set(textChunk, signatureAndIhdr.byteLength);
+  bytes.set(iend, signatureAndIhdr.byteLength + textChunk.byteLength);
   return cloneArrayBuffer(bytes);
 }
 
 function createTruncatedPngChunk() {
-  return cloneArrayBuffer(VALID_PNG_OUTPUT.subarray(0, 40));
+  const bytes = new Uint8Array(61);
+  bytes.set(VALID_PNG_OUTPUT.subarray(0, 33), 0);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(33, 32);
+  bytes.set(Buffer.from("IDAT", "ascii"), 37);
+  return cloneArrayBuffer(bytes);
 }
 
 function createZeroWidthPng() {
@@ -264,7 +294,7 @@ const i18nSource = fs.readFileSync(path.join(sourceTsRoot, "i18n.ts"), "utf8");
 const concurrencyLimiterSource = fs.readFileSync(path.join(sourceTsRoot, "concurrency-limiter.ts"), "utf8");
 const backgroundCompressionServiceSource = fs.readFileSync(path.join(sourceTsRoot, "background-compression-service.ts"), "utf8");
 const statusBarControllerSource = fs.readFileSync(path.join(sourceTsRoot, "status-bar-controller.ts"), "utf8");
-const stylesSource = fs.readFileSync(path.join(root, "styles.css"), "utf8");
+const stylesSource = fs.readFileSync(path.join(repositoryRoot, "styles.css"), "utf8");
 const runtimeQaSource = fs.readFileSync(path.join(root, "scripts", "runtime-qa.js"), "utf8");
 const pluginGuardSource = fs.readFileSync(path.join(sourceTsRoot, "plugin-guard-service.ts"), "utf8");
 const savingsCalculatorSource = fs.readFileSync(path.join(sourceTsRoot, "savings-calculator.ts"), "utf8");
@@ -283,17 +313,29 @@ const serviceSources = [
   "settings-tab.ts",
   "status-bar-controller.ts"
 ].map((fileName) => fs.readFileSync(path.join(sourceTsRoot, fileName), "utf8"));
-const readmeSource = fs.readFileSync(path.join(root, "README.md"), "utf8");
-const readmeRuSource = fs.readFileSync(path.join(root, "README.ru.md"), "utf8");
-const releasePolicySource = fs.readFileSync(path.join(root, "RELEASE_POLICY.md"), "utf8");
+const readmeSource = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
+const readmeRuSource = fs.readFileSync(path.join(repositoryRoot, "README.ru.md"), "utf8");
+const releasePolicySource = fs.readFileSync(path.join(repositoryRoot, "RELEASE_POLICY.md"), "utf8");
+const releaseReadinessPath = path.join(repositoryRoot, "RELEASE_READINESS.md");
+const obsidianReleaseAuditPath = path.join(repositoryRoot, "OBSIDIAN_RELEASE_AUDIT.md");
+const obsidianBoundaryAuditPath = path.join(repositoryRoot, "OBSIDIAN_API_BOUNDARIES.md");
+if (isDevLayout) {
+  for (const internalAuditPath of [releaseReadinessPath, obsidianReleaseAuditPath, obsidianBoundaryAuditPath]) {
+    assert(fs.existsSync(internalAuditPath), `DEV smoke requires ${path.basename(internalAuditPath)}`);
+  }
+}
+const releaseReadinessSource = fs.existsSync(releaseReadinessPath) ? fs.readFileSync(releaseReadinessPath, "utf8") : null;
+const obsidianReleaseAuditSource = fs.existsSync(obsidianReleaseAuditPath) ? fs.readFileSync(obsidianReleaseAuditPath, "utf8") : null;
+const obsidianBoundaryAuditSource = fs.existsSync(obsidianBoundaryAuditPath) ? fs.readFileSync(obsidianBoundaryAuditPath, "utf8") : null;
 const packageSource = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-const rootPackageSource = packageSource;
-const manifestSource = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
-const versionsSource = JSON.parse(fs.readFileSync(path.join(root, "versions.json"), "utf8"));
+const rootPackageSource = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
+const manifestSource = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "manifest.json"), "utf8"));
+const versionsSource = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "versions.json"), "utf8"));
 const tsconfigSource = JSON.parse(fs.readFileSync(path.join(root, "tsconfig.json"), "utf8"));
-const releaseWorkflowSource = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
-const licenseSource = fs.readFileSync(path.join(root, "LICENSE"), "utf8");
-const gitignoreSource = fs.readFileSync(path.join(root, ".gitignore"), "utf8");
+const releaseWorkflowSource = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
+const licenseSource = fs.readFileSync(path.join(repositoryRoot, "LICENSE"), "utf8");
+const gitignoreSource = fs.readFileSync(path.join(repositoryRoot, ".gitignore"), "utf8");
+const bugResearchPath = path.join(repositoryRoot, "BUG_RESEARCH_FINDINGS.txt");
 const validateManifestSource = fs.readFileSync(path.join(root, "scripts", "validate-manifest.js"), "utf8");
 const buildRootSource = fs.readFileSync(path.join(root, "scripts", "build-root.js"), "utf8");
 const buildTsSource = fs.readFileSync(path.join(root, "scripts", "build-ts.js"), "utf8");
@@ -337,7 +379,10 @@ const combinedTsSource = [
 assert(!/(?::\s*any\b|\bas\s+any\b|\bis\s+any\b|\bany\s*\[\]|<[^>\n]*\bany\b[^>\n]*>)/.test(combinedTsSource), "src-ts reintroduced explicit any; use domain types or unknown with narrowing");
 assert(!combinedTsSource.includes("app.setting") && !combinedTsSource.includes("this.app.setting"), "Runtime source reintroduced private app.setting access");
 assert(!utilsSource.includes("adapter?.basePath") && !utilsSource.includes("adapter?.path?.absolute") && utilsSource.includes("getVaultBasePathFromAdapter(adapter: unknown"), "Vault base-path helper still reads undocumented adapter fields");
-assert((combinedTsSource.match(/\.vault\.get(?:Files|AllLoadedFiles)\(\)/g) || []).length === 8, "Full-vault iteration count changed; review each new or removed scan");
+assert((combinedTsSource.match(/\.vault\.get(?:Files|AllLoadedFiles)\(\)/g) || []).length === 8, "Full-vault iteration count changed; classify each new or removed scan in OBSIDIAN_API_BOUNDARIES.md");
+if (obsidianBoundaryAuditSource) {
+  assert(obsidianBoundaryAuditSource.includes("Intentional Vault Iteration") && obsidianBoundaryAuditSource.includes("`DeferredViews` is not applicable") && obsidianBoundaryAuditSource.includes("Plugin registry enable/disable"), "Obsidian API boundary audit is missing lifecycle/private/full-scan classification");
+}
 assert(!compressorSource.includes("openSync(") && !compressorSource.includes("readSync("), "Compressor still performs dead binary header reads before compression");
 const requiredSemanticSourceTokens = [
   "compress-images-in-note",
@@ -503,8 +548,13 @@ assert(!/catch\s*\([^)]*\)\s*\{\s*\}/.test(cacheSource), "Cache still contains e
 assert(!settingsTabSource.includes("ensureWasmReady?.()"), "Settings tab still initializes WASM workers while rendering status");
 assert(!settingsTabSource.includes("requestWindowAnimationFrame(async"), "Settings tab still passes async callbacks directly to requestAnimationFrame");
 assert(settingsTabSource.includes("this.containerEl?.win || this.getActiveWindow()"), "Settings animation frames are not scheduled on the owning settings window");
+assert(settingsTabSource.includes("return ownerWindow.setTimeout(callback, delay)") && settingsTabSource.includes("ownerWindow.clearTimeout(timer as number)") && !settingsTabSource.includes("return window.setTimeout(callback, delay)"), "Settings timers are not created and cleared through their owning window");
 assert(progressModalSource.includes("this.contentEl?.win || this.getActiveWindow()"), "Progress modal animation frames are not scheduled on the owning modal window");
 assert(pluginSource.includes("this.statusBarItem?.win || this.getActiveWindow()"), "Status-bar animation frames are not scheduled on the owning status-bar window");
+assert(pluginSource.includes("modalFocusTimers: Map<Window, Set<number>>") && pluginSource.includes("for (const [ownerWindow, timers] of this.modalFocusTimers)"), "Modal focus timers are not tracked independently per owning window");
+assert(pluginSource.includes("ownerWindow: Window = window") && statusBarControllerSource.includes("}, 0, activeWindow)") && folderSelectorModalSource.includes("}, 0, ownerWindow)"), "UI timer callers do not pass their owning window to the plugin timer API");
+assert(!workerPoolSource.includes("getActiveWindowForApp") && workerPoolSource.includes("return window.setTimeout(callback, delay)") && workerPoolSource.includes("window.clearTimeout(timer as number)"), "WorkerPool timers still re-resolve a mutable active window");
+assert(!workerSlotSource.includes("getActiveWindowForApp") && workerSlotSource.includes('if (typeof window !== "undefined")'), "WorkerSlot timers still re-resolve a mutable active window");
 assert(!settingsTabSource.includes("this.rerenderPreservingScroll =") && !settingsTabSource.includes("rerenderPreservingScroll: () => void"), "Settings tab still stores rerenderPreservingScroll as a constructor field");
 assert(!settingsTabSource.includes("instanceof HTMLElement") && settingsTabSource.includes("typeof focusable?.focus === \"function\""), "Settings tab focus restore still only handles HTMLElement");
 assert(settingsTabSource.includes("if (!containerEl)") && settingsTabSource.includes("displayWithoutScrollRestore"), "Settings tab rerender fallback does not guard missing container/fallback display collisions");
@@ -878,7 +928,7 @@ assert(packageSource.scripts["audit:policy"] === "node scripts/audit-policy.js" 
 assert(packageSource.scripts["audit:policy:bundle"] === "node scripts/audit-policy.js --require-bundle" && packageSource.scripts["test:release"].includes("npm run audit:policy:bundle"), "Release tests must run the policy audit against the built production bundle");
 assert(packageSource.scripts["lint:eslint"] === "eslint src-ts/" && packageSource.scripts.test.includes("npm run lint:eslint"), "package.json must keep lint:eslint executable and wired into npm test");
 assert(packageSource.scripts["lint:obsidian"] === "node scripts/lint-obsidian.js" && packageSource.scripts.test.includes("npm run lint:obsidian"), "package.json must keep the Obsidian scanner executable and blocking in npm test");
-assert(eslintObsidianConfigSource.includes("recommendedWithLocalesEn") && eslintObsidianConfigSource.includes('"src-ts/i18n.ts"'), "Obsidian scanner config must cover the current recommended rules and English locale source");
+assert(eslintObsidianConfigSource.includes("recommendedWithLocalesEn") && eslintObsidianConfigSource.includes("src-ts/i18n.ts") && eslintObsidianConfigSource.includes("sourcePrefix"), "Obsidian scanner config must cover the current recommended rules and layout-aware English locale source");
 assert(lintObsidianSource.includes("warningCount === 0") && lintObsidianSource.includes("errorCount === 0"), "Obsidian scanner wrapper must reject both errors and warnings");
 assert(packageSource.devDependencies["@jsquash/jpeg"], "package.json is missing @jsquash/jpeg");
 assert(packageSource.devDependencies["@jsquash/png"], "package.json is missing @jsquash/png");
@@ -907,13 +957,19 @@ assert(releaseWorkflowSource.includes("npm run test:release"), "Release workflow
 assert(packageSource.scripts["test:release"].includes("npm run build:root") && packageSource.scripts["test:release"].includes("npm run verify:release") && packageSource.scripts["test:release"].includes("npm run verify:root-ts"), "Source release test does not build and verify deterministic root bundle output");
 assert(!releaseWorkflowSource.includes("|| true"), "Release workflow still silently ignores missing release artifacts");
 assert(rootPackageSource.license === "GPL-3.0-or-later", "Root package.json license must match bundled GPL codec obligations");
-assert(rootPackageSource.scripts.build === "npm run build:root", "Root package.json build must delegate to the real source-recovery build");
-assert(rootPackageSource.scripts.test.includes("npm run test:ts") && rootPackageSource.scripts["test:release"].includes("npm run verify:release"), "Root package.json test scripts must run DEV deployment tests, promotion tests, and delegate to source-recovery");
+if (isDevLayout) {
+  assert(rootPackageSource.scripts.build === "npm --prefix source-recovery run build:root", "Root package.json build must delegate to the real source-recovery build");
+  assert(rootPackageSource.scripts.test === "npm run dev:test && npm run prod:test && npm --prefix source-recovery test" && rootPackageSource.scripts["test:release"] === "npm run dev:test && npm run prod:test && npm --prefix source-recovery run test:release", "Root package.json test scripts must run DEV deployment tests, promotion tests, and delegate to source-recovery");
+} else {
+  assert(rootPackageSource.scripts.build === "npm run build:root", "Standalone package.json build must use the local source build");
+  assert(rootPackageSource.scripts.test.includes("npm run test:ts") && rootPackageSource.scripts["test:release"].includes("npm run verify:release"), "Standalone package.json test scripts must run local source and release verification");
+}
 assert(Array.isArray(rootPackageSource.files) && JSON.stringify(rootPackageSource.files) === JSON.stringify(["manifest.json", "main.js", "styles.css", "versions.json"]), "Root package.json files allowlist must contain only Obsidian install artifacts");
 assert(!releaseWorkflowSource.includes("build/package.json") && !releaseWorkflowSource.includes("build/README.md") && releaseWorkflowSource.includes("npm run test:release"), "Release workflow still ships dev package metadata or bypasses root test:release");
 assert(releaseWorkflowSource.includes('"*.*.*"') && releaseWorkflowSource.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$") && !releaseWorkflowSource.includes('"v*"') && !releaseWorkflowSource.includes("GITHUB_REF_NAME#v"), "Release workflow does not combine a dotted tag trigger with exact numeric SemVer validation");
 assert((releaseWorkflowSource.match(/actions\/checkout@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/actions\/setup-node@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/node-version:\s*"24"/g) || []).length === 2, "Release workflow must use checkout/setup-node v6 and Node 24 in both jobs");
-assert(releaseWorkflowSource.includes("npm run prepare:release") && prepareReleaseSource.includes('["manifest.json", "main.js", "styles.css", "versions.json"]'), "Release workflow does not use the exact install-file staging allowlist");
+const releasePrepareCommand = isDevLayout ? "npm --prefix source-recovery run prepare:release" : "npm run prepare:release";
+assert(releaseWorkflowSource.includes(releasePrepareCommand) && prepareReleaseSource.includes('["manifest.json", "main.js", "styles.css", "versions.json"]'), "Release workflow does not use the exact install-file staging allowlist");
 assert(validateManifestSource.includes("forbiddenReleaseEntries") && validateManifestSource.includes("package.json must declare a files allowlist"), "Manifest validation does not guard release packaging against dev artifact leaks");
 assert(validateManifestSource.includes("MIN_API_SURFACE_APP_VERSION") && validateManifestSource.includes("activeWindow/activeDocument/getBasePath"), "Manifest validation does not enforce API-surface minAppVersion");
 assert(validateManifestSource.includes("manifest.json authorUrl must be a valid URL") && validateManifestSource.includes("must not point to localhost"), "Manifest validation does not reject malformed or local authorUrl values");
@@ -924,7 +980,7 @@ assert(buildTsSource.includes('"--loader:.wasm=binary"') && buildTsSource.includ
 assert(rootPackageSource.files.includes("main.js") && !rootPackageSource.files.some((filePath) => filePath.endsWith(".wasm")), "Release package must keep WASM inline in the self-contained main.js bundle");
 assert(verifyReleaseSource.includes("Production build is not deterministic") && verifyReleaseSource.includes("lineCount > 100") && verifyReleaseSource.includes("sourceMappingURL="), "Release verification is missing determinism or minification/source-map guards");
 for (const token of [
-  "src-ts",
+  isDevLayout ? "source-recovery/src-ts" : "src-ts",
   "Root `main.js` is generated, ignored",
   "verify:root-ts",
   "production-minified",
@@ -950,6 +1006,12 @@ for (const pattern of [
 assert(gitignoreSource.includes("qa-backups/"), ".gitignore is missing QA output ignores");
 assert(licenseSource.includes("SPDX-License-Identifier: GPL-3.0-or-later") && licenseSource.includes("GNU GENERAL PUBLIC LICENSE") && licenseSource.includes("17. Interpretation of Sections 15 and 16.") && licenseSource.length > 30000, "LICENSE must contain the project grant and complete GPL v3 text");
 assert(auditPolicySource.includes("Policy audit passed") && auditPolicySource.includes("expectedFullVaultScans") && auditPolicySource.includes("expectedFsBoundaryFiles"), "Policy audit is missing blocking source/filesystem inventory guards");
+if (obsidianReleaseAuditSource) {
+  assert(obsidianReleaseAuditSource.includes("Checked: 2026-06-09") && obsidianReleaseAuditSource.includes("No unresolved violations") && obsidianReleaseAuditSource.includes("Dormant vendor fallbacks"), "OBSIDIAN_RELEASE_AUDIT.md is not the current authoritative policy audit");
+}
+if (releaseReadinessSource) {
+  assert(releaseReadinessSource.includes("Checked: 2026-06-09") && releaseReadinessSource.includes("Exact ID matches: 0") && releaseReadinessSource.includes("Historical tags"), "Release readiness audit is missing dated uniqueness or historical-tag evidence");
+}
 for (const token of ["Network", "Telemetry and ads", "Accounts and payments", "External files", "Other plugins"]) {
   assert(readmeSource.includes(token), `README.md is missing policy disclosure: ${token}`);
 }
@@ -1050,8 +1112,14 @@ Module._load = function patchedLoad(request, parent, isMain) {
       Modal: class {
         constructor(app) {
           this.app = app;
+          this.modalEl = createMockElement();
           this.contentEl = createMockElement();
           this.titleEl = createMockElement();
+          const closeButton = createMockElement();
+          closeButton.addClass("modal-close-button");
+          this.modalEl.appendChild(this.titleEl);
+          this.modalEl.appendChild(this.contentEl);
+          this.modalEl.appendChild(closeButton);
         }
         open() {
           if (typeof this.onOpen === "function") {
@@ -1119,6 +1187,9 @@ function createMockElement() {
   style.setProperty = (name, value) => {
     styleState[name] = String(value);
     style[name] = String(value);
+    if (name === "--local-image-compress-progress-width" && Array.isArray(global.__progressWidthUpdates)) {
+      global.__progressWidthUpdates.push(value);
+    }
   };
   style.getPropertyValue = (name) => styleState[name] || "";
   const element = {
@@ -1153,6 +1224,9 @@ function createMockElement() {
     },
     empty() {},
     appendChild(child) {
+      if (child.parentElement?.removeChild) {
+        child.parentElement.removeChild(child);
+      }
       children.push(child);
       child.parentElement = element;
     },
@@ -1186,6 +1260,9 @@ function createMockElement() {
       this.appendChild(child);
       return child;
     },
+    createSpan(opts) {
+      return this.createEl("span", opts);
+    },
     setText(text) {
       this.text = text;
     },
@@ -1194,6 +1271,12 @@ function createMockElement() {
     },
     setAttribute(name, value) {
       this.attributes[name] = value;
+    },
+    getAttribute(name) {
+      return this.attributes[name] ?? null;
+    },
+    removeAttribute(name) {
+      delete this.attributes[name];
     },
     getBoundingClientRect() {
       return { left: 0, top: 0, width: 0, height: 0 };
@@ -1227,6 +1310,9 @@ function createMockElement() {
       };
       visit(element);
       return result;
+    },
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0] || null;
     },
     toggle() {},
     focus() {
@@ -1528,7 +1614,7 @@ function pointMockVaultAtPath(app, basePath) {
   app.vault.adapter.writeBinary = async (vaultPath, data) => {
     const fullPath = resolveVaultPath(vaultPath);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, data);
+    fs.writeFileSync(fullPath, Buffer.from(data));
   };
   app.vault.adapter.rename = async (oldPath, newPath) => {
     const oldFullPath = resolveVaultPath(oldPath);
@@ -1645,15 +1731,28 @@ async function waitForReadySlots(plugin, expectedReady, timeoutMs = 500) {
     if (readyCount >= expectedReady) {
       return readyCount;
     }
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => originalGlobals.setTimeout(resolve, 10));
   }
   return getCompressorSlots(plugin).filter((slot) => slot.isReady()).length;
+}
+
+async function withRealGlobalTimers(task) {
+  const mockedSetTimeout = global.setTimeout;
+  const mockedClearTimeout = global.clearTimeout;
+  try {
+    global.setTimeout = originalGlobals.setTimeout;
+    global.clearTimeout = originalGlobals.clearTimeout;
+    return await task();
+  } finally {
+    global.setTimeout = mockedSetTimeout;
+    global.clearTimeout = mockedClearTimeout;
+  }
 }
 
 async function setMockFiles(plugin, files) {
   plugin.app._files = files;
   if (typeof plugin.rebuildImageIndex === "function") {
-    await plugin.rebuildImageIndex("smoke");
+    await withRealGlobalTimers(() => plugin.rebuildImageIndex("smoke"));
   }
 }
 
@@ -1663,7 +1762,7 @@ async function setCacheEntries(plugin, entries) {
     entries
   }).data.entries;
   if (typeof plugin.rebuildImageIndex === "function") {
-    await plugin.rebuildImageIndex("smoke-cache");
+    await withRealGlobalTimers(() => plugin.rebuildImageIndex("smoke-cache"));
   }
 }
 
@@ -1676,7 +1775,7 @@ const originalGlobals = {
 };
 let smokeBackupStorageTemp = null;
 
-(async () => {
+withTestTimeout("full TypeScript artifact smoke", (async () => {
 try {
   await runImagequantHeapStress();
 
@@ -1776,7 +1875,16 @@ try {
   assert(plugin.app._getFilesCalls === 0, "Plugin onload still scanned vault files before the startup image index timer fired");
   const startupImageIndexTimer = plugin.indexRefreshTimers.get("startup-image-index");
   assert(startupImageIndexTimer && startupImageIndexTimer.delay === 0, "Startup image index rebuild was not scheduled as a deferred timer");
-  await startupImageIndexTimer.callback();
+  const mockedSetTimeoutDuringStartupIndex = global.setTimeout;
+  const mockedClearTimeoutDuringStartupIndex = global.clearTimeout;
+  try {
+    global.setTimeout = originalGlobals.setTimeout;
+    global.clearTimeout = originalGlobals.clearTimeout;
+    await startupImageIndexTimer.callback();
+  } finally {
+    global.setTimeout = mockedSetTimeoutDuringStartupIndex;
+    global.clearTimeout = mockedClearTimeoutDuringStartupIndex;
+  }
   assert(plugin.imageIndex?.isReady?.() === true, "Deferred startup image index rebuild did not make the index ready");
   assert(plugin.app._getFilesCalls > 0, "Deferred startup image index rebuild did not scan vault files after onload");
 
@@ -2242,7 +2350,7 @@ try {
   const originalSetWindowTimeoutForNewFileBatch = plugin.setWindowTimeout;
   const originalClearWindowTimeoutForNewFileBatch = plugin.clearWindowTimeout;
   const originalProcessBatchCompressionBackground = plugin.processBatchCompressionBackground;
-  const originalGetAbstractFileByPathForNewFileBatch = plugin.app.vault.getAbstractFileByPath;
+  const originalGetFileByPathForNewFileBatch = plugin.app.vault.getFileByPath;
   const batchTimers = [];
   let batchCompressionCalls = 0;
   let batchCompressionSize = 0;
@@ -2256,7 +2364,7 @@ try {
       const file = Object.assign(new ObsidianMock.TFile(), createMockFile(`Images/batch-${index}.png`, 100000, index + 10));
       return [file.path, file];
     }));
-    plugin.app.vault.getAbstractFileByPath = (filePath) => batchFiles.get(filePath) || null;
+    plugin.app.vault.getFileByPath = (filePath) => batchFiles.get(filePath) || null;
     plugin.setWindowTimeout = (callback, delay) => {
       const timer = { callback, delay, cleared: false };
       batchTimers.push(timer);
@@ -2306,7 +2414,7 @@ try {
     plugin.setWindowTimeout = originalSetWindowTimeoutForNewFileBatch;
     plugin.clearWindowTimeout = originalClearWindowTimeoutForNewFileBatch;
     plugin.processBatchCompressionBackground = originalProcessBatchCompressionBackground;
-    plugin.app.vault.getAbstractFileByPath = originalGetAbstractFileByPathForNewFileBatch;
+    plugin.app.vault.getFileByPath = originalGetFileByPathForNewFileBatch;
     plugin.settings.autoCompressNewFiles = false;
     plugin.isUnloading = false;
     plugin.newFileQueue.newFileCompressionTimers.clear();
@@ -2320,7 +2428,7 @@ try {
 
   const originalSetWindowTimeoutForDrainOverlap = plugin.setWindowTimeout;
   const originalProcessBatchForDrainOverlap = plugin.processBatchCompressionBackground;
-  const originalGetAbstractFileByPathForDrainOverlap = plugin.app.vault.getAbstractFileByPath;
+  const originalGetFileByPathForDrainOverlap = plugin.app.vault.getFileByPath;
   const drainOverlapTimers = [];
   let activeDrainBatches = 0;
   let maxActiveDrainBatches = 0;
@@ -2337,7 +2445,7 @@ try {
       [firstDrainFile.path, firstDrainFile],
       [secondDrainFile.path, secondDrainFile]
     ]);
-    plugin.app.vault.getAbstractFileByPath = (filePath) => drainFiles.get(filePath) || null;
+    plugin.app.vault.getFileByPath = (filePath) => drainFiles.get(filePath) || null;
     plugin.setWindowTimeout = (callback, delay) => {
       const timer = { callback, delay, cleared: false };
       drainOverlapTimers.push(timer);
@@ -2373,7 +2481,7 @@ try {
     releaseFirstDrain?.();
     plugin.setWindowTimeout = originalSetWindowTimeoutForDrainOverlap;
     plugin.processBatchCompressionBackground = originalProcessBatchForDrainOverlap;
-    plugin.app.vault.getAbstractFileByPath = originalGetAbstractFileByPathForDrainOverlap;
+    plugin.app.vault.getFileByPath = originalGetFileByPathForDrainOverlap;
     plugin.newFileQueue.newFileCompressionPending.clear();
     plugin.newFileQueue.newFileCompressionInFlight.clear();
     plugin.newFileQueue.newFileBatchFlushTimer = null;
@@ -2383,7 +2491,7 @@ try {
   }
 
   const originalSetWindowTimeoutForQueueCap = plugin.setWindowTimeout;
-  const originalGetAbstractFileByPathForQueueCap = plugin.app.vault.getAbstractFileByPath;
+  const originalGetFileByPathForQueueCap = plugin.app.vault.getFileByPath;
   const originalNoticeForQueueCap = ObsidianMock.Notice;
   const originalProcessBatchForQueueCap = plugin.processBatchCompressionBackground;
   const originalQueueCap = plugin.newFileQueue.NEW_FILE_PENDING_MAX;
@@ -2400,7 +2508,7 @@ try {
       const file = Object.assign(new ObsidianMock.TFile(), createMockFile(`Images/queue-cap-${index}.png`, 100000, index + 40));
       return [file.path, file];
     }));
-    plugin.app.vault.getAbstractFileByPath = (filePath) => capFiles.get(filePath) || null;
+    plugin.app.vault.getFileByPath = (filePath) => capFiles.get(filePath) || null;
     plugin.processBatchCompressionBackground = async () => {};
     plugin.setWindowTimeout = (callback, delay) => {
       const timer = { callback, delay, cleared: false };
@@ -2436,7 +2544,7 @@ try {
     assert(queueCapNotices.length > noticeCountAfterFirstOverflow, "New-file queue cap did not notify again after a completed drain cycle");
   } finally {
     plugin.setWindowTimeout = originalSetWindowTimeoutForQueueCap;
-    plugin.app.vault.getAbstractFileByPath = originalGetAbstractFileByPathForQueueCap;
+    plugin.app.vault.getFileByPath = originalGetFileByPathForQueueCap;
     ObsidianMock.Notice = originalNoticeForQueueCap;
     plugin.processBatchCompressionBackground = originalProcessBatchForQueueCap;
     plugin.newFileQueue.NEW_FILE_PENDING_MAX = originalQueueCap;
@@ -2566,7 +2674,7 @@ try {
     plugin.cache.isFileAlreadyProcessed = async () => {
       initFailureCacheChecks += 1;
       if (initFailureCacheChecks > 1) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        await new Promise((resolve) => originalGlobals.setTimeout(resolve, 10));
       }
       return false;
     };
@@ -2631,7 +2739,7 @@ try {
     plugin.runLimitedCompression = async (task) => task();
     plugin.compressor.compress = async (file) => {
       const delay = file.name.includes("slow") ? 40 : 0;
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, delay));
       return { success: true, savings: 25 };
     };
     const progressUpdates = [];
@@ -2879,7 +2987,7 @@ try {
         { output: createValidEncodedOutput("jpeg") },
         { output: createValidEncodedOutput("png") },
         { error: { kind: "quality_failed", message: "QUALITY_TOO_LOW", skipReason: "pngquant_quality_failed" } },
-        { output: createValidEncodedOutput("jpeg", 256) }
+        { output: createValidEncodedOutput("jpeg", 512) }
       ]
     }], compressionWorkers));
     assert(compressionWorkers.length === 1, "Worker smoke did not create an initial compression worker");
@@ -2993,7 +3101,7 @@ try {
       plugin.compressor.writeStagedOutput = async () => {};
       const readOrderFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/read-order.jpg", new Uint8Array(jpegInput), 130);
       const readOrderPromise = plugin.compressor.compress(readOrderFile, plugin.settings);
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 0));
       assert(readBeforeReadyCalls === 0, "Compressor read file bytes before WASM readiness resolved");
       releaseWasmReady();
       const readOrderResult = await readOrderPromise;
@@ -3136,7 +3244,7 @@ try {
     assert(getCompressorSlots(plugin)[0].needsRecreate === true, "Worker timeout did not mark lazy recreate pending");
     assert(getCompressorSlots(plugin)[0].wasmInitError === null, "Worker timeout left a stale init error before lazy recovery");
     assert(timeoutWorkers.length === 1, "Worker timeout eagerly recreated the worker");
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => originalGlobals.setTimeout(resolve, 100));
     assert(getCompressorSlots(plugin)[0].worker === null, "Lazy idle timeout recovery created a worker while idle");
     assert(getCompressorSlots(plugin)[0].objectUrl === null, "Lazy idle timeout recovery left an object URL while idle");
     assert(timeoutWorkers.length === 1, "Lazy idle timeout recovery invoked the worker factory while idle");
@@ -3237,7 +3345,7 @@ try {
     await resetCompressorWorker(plugin, createMockWorkerFactory([{ noCompressResponse: true }], destroyWorkers));
     const destroyFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/destroy.jpg", new Uint8Array(jpegInput), 113);
     const destroyPromise = plugin.compressor.compress(destroyFile, plugin.settings);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => originalGlobals.setTimeout(resolve, 0));
     plugin.compressor.destroy();
     const destroyResult = await destroyPromise;
     assert(destroyResult.success === false, "Worker destroy smoke unexpectedly succeeded");
@@ -3253,11 +3361,11 @@ try {
     ], staggeredInitWorkers), 4);
     const staggeredReadyPromise = plugin.compressor.ensureWasmReady();
     assert(staggeredInitWorkers.length === 1, `Worker pool did not start with a single eager slot: ${staggeredInitWorkers.length}`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => originalGlobals.setTimeout(resolve, 5));
     assert(staggeredInitWorkers.length === 1, `Worker pool initialized extra slots before the first slot settled: ${staggeredInitWorkers.length}`);
     await staggeredReadyPromise;
     for (let attempt = 0; attempt < 30 && staggeredInitWorkers.length < 4; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 10));
     }
     assert(staggeredInitWorkers.length === 4, `Worker pool did not finish staggered slot init: ${staggeredInitWorkers.length}`);
 
@@ -3275,7 +3383,7 @@ try {
       plugin.compressor.compressBuffer(new Uint8Array(size).buffer, ".jpg", plugin.settings)
     ));
     const parallelElapsedMs = Date.now() - parallelStartedAt;
-    assert(parallelResults.length === 4 && parallelResults.every((output) => output.byteLength === 64), "Parallel pool dispatch did not complete all jobs");
+    assert(parallelResults.length === 4 && parallelResults.every((output) => output.byteLength === VALID_JPEG_OUTPUT.byteLength), "Parallel pool dispatch did not complete all jobs");
     assert(parallelDispatchTimes.length === 4, `Parallel pool did not dispatch all jobs immediately: ${parallelDispatchTimes.length}`);
     assert(Math.max(...parallelDispatchTimes) - Math.min(...parallelDispatchTimes) <= 35, "Parallel pool dispatch was not simultaneous enough");
     assert(parallelElapsedMs < 170, `Parallel pool wall-clock looked serial: ${parallelElapsedMs}ms`);
@@ -3298,7 +3406,7 @@ try {
     const backpressurePromises = [20, 21, 22, 23, 24].map((size) =>
       plugin.compressor.compressBuffer(new Uint8Array(size).buffer, ".jpg", plugin.settings)
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => originalGlobals.setTimeout(resolve, 0));
     assert(JSON.stringify(backpressureOrder) === JSON.stringify([20, 21]), `Backpressure did not dispatch the first two jobs immediately: ${backpressureOrder.join(",")}`);
     await Promise.all(backpressurePromises);
     assert(JSON.stringify(backpressureOrder) === JSON.stringify([20, 21, 22, 23, 24]), `Backpressure queue did not drain FIFO: ${backpressureOrder.join(",")}`);
@@ -3377,7 +3485,7 @@ try {
     assert(getCompressorSlots(plugin)[0].needsRecreate === true, "Ready-slot priority setup did not mark the failed slot for lazy recreate");
     plugin.compressor.processTimeoutMs = 9999;
     const readyPriorityOutput = await plugin.compressor.compressBuffer(new Uint8Array(72).buffer, ".jpg", plugin.settings);
-    assert(readyPriorityOutput.byteLength === 32, "Ready-slot priority recovery job did not complete");
+    assert(readyPriorityOutput.byteLength === VALID_JPEG_OUTPUT.byteLength, "Ready-slot priority recovery job did not complete");
     assert(readyPriorityWorkers.length === 2, "Worker pool did not prefer an already-ready slot over lazy recreate");
     assert(JSON.stringify(readyPriorityDispatches) === JSON.stringify([71, 72]), `Ready-slot priority dispatched to the wrong worker: ${readyPriorityDispatches.join(",")}`);
 
@@ -3429,7 +3537,7 @@ try {
       plugin.compressor.compressBuffer(new Uint8Array(50).buffer, ".jpg", plugin.settings),
       plugin.compressor.compressBuffer(new Uint8Array(51).buffer, ".jpg", plugin.settings)
     ]);
-    assert(partialA.byteLength === 32 && partialB.byteLength === 32, "Partial init success did not run jobs on healthy slots");
+    assert(partialA.byteLength === VALID_JPEG_OUTPUT.byteLength && partialB.byteLength === VALID_JPEG_OUTPUT.byteLength, "Partial init success did not run jobs on healthy slots");
     assert(partialInitWorkers.length === partialInitWorkersBeforeJobs, "Partial init success retried failed slots while ready slots were idle");
 
     const destroyPoolWorkers = [];
@@ -3442,7 +3550,7 @@ try {
     const destroyPoolPromises = [60, 61, 62, 63, 64, 65].map((size) =>
       plugin.compressor.compressBuffer(new Uint8Array(size).buffer, ".jpg", plugin.settings)
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => originalGlobals.setTimeout(resolve, 0));
     plugin.compressor.destroy();
     const destroyPoolResults = await Promise.allSettled(destroyPoolPromises);
     assert(destroyPoolResults.every((result) => result.status === "rejected"), "Destroy mid-batch did not reject every active and queued pool job");
@@ -3667,37 +3775,76 @@ try {
     settingsTab.saveSettingsDebounceTimer = null;
   }
 
-  const ObsidianMockForRestartNotice = require("obsidian");
-  const originalNoticeForRestartNotice = ObsidianMockForRestartNotice.Notice;
-  const restartNoticeTimers = [];
-  const restartNoticeMessages = [];
-  try {
-    settingsTab.setWindowTimeout = (callback, delay) => {
-      const timer = { callback, delay, cleared: false };
-      restartNoticeTimers.push(timer);
+  const originalSettingsContainerWindow = settingsTab.containerEl.win;
+  const originalPluginSaveSettingsForWindowOwnership = plugin.saveSettings;
+  const popoutTimerCallbacks = new Map();
+  const popoutClearedTimers = [];
+  let nextPopoutTimer = 40;
+  const popoutTimerWindow = {
+    setTimeout(callback, delay) {
+      const timer = nextPopoutTimer;
+      nextPopoutTimer += 1;
+      popoutTimerCallbacks.set(timer, { callback, delay });
       return timer;
+    },
+    clearTimeout(timer) {
+      popoutClearedTimers.push(timer);
+      popoutTimerCallbacks.delete(timer);
+    }
+  };
+  let popoutFlushSaveCalls = 0;
+  try {
+    settingsTab.containerEl.win = popoutTimerWindow;
+    plugin.saveSettings = async () => {
+      popoutFlushSaveCalls += 1;
     };
-    settingsTab.clearWindowTimeout = (timer) => {
-      if (timer) {
-        timer.cleared = true;
-      }
-    };
-    ObsidianMockForRestartNotice.Notice = class {
-      constructor(message) {
-        restartNoticeMessages.push(String(message));
-      }
-    };
-    settingsTab.debouncedWorkerPoolRestartNotice();
-    settingsTab.debouncedWorkerPoolRestartNotice();
-    assert(restartNoticeTimers.length === 2 && restartNoticeTimers[0].cleared, "Worker-pool restart Notice debounce did not clear the previous timer");
-    restartNoticeTimers[1].callback();
-    assert(restartNoticeMessages.length === 1 && restartNoticeMessages[0].includes("Reload"), "Worker-pool restart Notice debounce did not emit exactly one localized Notice");
+    settingsTab.debouncedSaveSettings(275);
+    const [popoutTimer] = popoutTimerCallbacks.keys();
+    assert(popoutTimerCallbacks.get(popoutTimer)?.delay === 275, "Settings debounce timer was not scheduled on the owning popout window");
+    settingsTab.flushPendingSaveSettings();
+    await Promise.resolve();
+    assert(popoutClearedTimers.includes(popoutTimer), "Settings debounce timer was not cleared through the same popout window");
+    assert(popoutFlushSaveCalls === 1, `Settings popout timer flush saved ${popoutFlushSaveCalls} times instead of once`);
+    assert(settingsTab.saveSettingsDebounceWindow === null, "Settings debounce retained a stale owning window after flush");
   } finally {
-    settingsTab.setWindowTimeout = originalSettingsTabSetTimeout;
-    settingsTab.clearWindowTimeout = originalSettingsTabClearTimeout;
-    ObsidianMockForRestartNotice.Notice = originalNoticeForRestartNotice;
-    settingsTab.restartNoticeDebounceTimer = null;
+    settingsTab.containerEl.win = originalSettingsContainerWindow;
+    plugin.saveSettings = originalPluginSaveSettingsForWindowOwnership;
+    settingsTab.saveSettingsDebounceTimer = null;
+    settingsTab.saveSettingsDebounceWindow = null;
   }
+
+  const createCollidingTimerWindow = () => {
+    const callbacks = [];
+    return {
+      callbacks,
+      setTimeout(callback) {
+        callbacks.push(callback);
+        return 1;
+      },
+      clearTimeout() {}
+    };
+  };
+  const firstFocusWindow = createCollidingTimerWindow();
+  const secondFocusWindow = createCollidingTimerWindow();
+  const firstFocusTarget = {
+    ownerDocument: { defaultView: firstFocusWindow },
+    isConnected: true,
+    focus() {}
+  };
+  const secondFocusTarget = {
+    ownerDocument: { defaultView: secondFocusWindow },
+    isConnected: true,
+    focus() {}
+  };
+  plugin.modalFocusTimers.clear();
+  plugin.scheduleElementFocus(firstFocusTarget);
+  plugin.scheduleElementFocus(secondFocusTarget);
+  assert(plugin.modalFocusTimers.size === 2, "Equal timer IDs from two windows collided in modal focus tracking");
+  assert(plugin.modalFocusTimers.get(firstFocusWindow)?.has(1) && plugin.modalFocusTimers.get(secondFocusWindow)?.has(1), "Modal focus timer ownership was not retained per window");
+  firstFocusWindow.callbacks[0]();
+  assert(plugin.modalFocusTimers.size === 1 && plugin.modalFocusTimers.has(secondFocusWindow), "Completing one popout focus timer removed another window's equal timer ID");
+  secondFocusWindow.callbacks[0]();
+  assert(plugin.modalFocusTimers.size === 0, "Completed popout focus timers were not removed from ownership tracking");
 
   const settingsHideTimers = [];
   let saveCallsOnSettingsHide = 0;
@@ -3822,7 +3969,8 @@ try {
     innerWidth: 320,
     innerHeight: 240,
     requestAnimationFrame: (callback) => callback(),
-    setTimeout: (callback) => callback()
+    setTimeout: (callback) => callback(),
+    clearTimeout() {}
   });
   settingsTab.setWindowTimeout = (callback) => callback();
   settingsTab.createSavingsTooltip(tooltipContainer, {
@@ -3836,8 +3984,8 @@ try {
   });
   tooltipContainer.dispatchEvent("mouseenter", {});
   assert(activeDocument.body.children.length === 1, "Savings tooltip did not render on hover");
-  assert(activeDocument.body.children[0].style.left, "Savings tooltip did not calculate left position");
-  assert(activeDocument.body.children[0].style.top, "Savings tooltip did not calculate top position");
+  assert(activeDocument.body.children[0].style.getPropertyValue("--local-image-compress-savings-tooltip-left"), "Savings tooltip did not calculate left position");
+  assert(activeDocument.body.children[0].style.getPropertyValue("--local-image-compress-savings-tooltip-top"), "Savings tooltip did not calculate top position");
   tooltipContainer.dispatchEvent("mouseleave", {});
   settingsTab.cleanupSavingsTooltips();
   assert(activeDocument.body.children.length === 0, "Savings tooltip cleanup left tooltip DOM behind");
@@ -4108,16 +4256,24 @@ try {
   plugin.backgroundCompressionService.startBackgroundCompression = originalStartBackgroundCompression;
 
   const originalGetImageFilesForBackgroundFilter = plugin.getImageFiles;
+  const originalGetAllImageFilesForBackgroundFilter = plugin.getAllImageFiles;
   const originalImageIndexForBackgroundFilter = plugin.imageIndex;
   const originalIsProcessedForBackgroundFilter = plugin.cache.isFileAlreadyProcessed;
   const originalProcessBackgroundFilter = plugin.processBatchCompressionBackground;
   const originalIsUserInactiveForBackgroundFilter = plugin.backgroundCompressionService.isUserInactive;
+  const originalAllowedRootsForBackgroundFilter = plugin.settings.allowedRoots;
+  const originalStatusBarUpdateForBackgroundFilter = plugin.statusBarController.update;
   try {
+    plugin.settings.allowedRoots = [];
+    plugin.statusBarController.update = async () => {};
     const readyBackgroundFiles = [
       createMockFile("Background/ready-a.png", 100000, 1),
       createMockFile("Background/ready-b.jpg", 100000, 2)
     ];
-    plugin.imageIndex = { isReady: () => true };
+    plugin.imageIndex = {
+      isReady: () => true,
+      getSnapshot: () => ({ uncompressedImages: readyBackgroundFiles.length, totalImages: readyBackgroundFiles.length })
+    };
     plugin.getImageFiles = async () => readyBackgroundFiles;
     plugin.cache.isFileAlreadyProcessed = async () => {
       throw new Error("ready image index should avoid sequential processed checks");
@@ -4136,8 +4292,12 @@ try {
       createMockFile("Background/fallback-a.png", 100000, 3),
       createMockFile("Background/fallback-processed.jpg", 100000, 4)
     ];
-    await setMockFiles(plugin, fallbackBackgroundFiles);
-    plugin.imageIndex = { isReady: () => false };
+    plugin.app._files = fallbackBackgroundFiles;
+    plugin.imageIndex = {
+      isReady: () => false,
+      getSnapshot: () => ({ uncompressedImages: fallbackBackgroundFiles.length, totalImages: fallbackBackgroundFiles.length })
+    };
+    plugin.getAllImageFiles = () => fallbackBackgroundFiles;
     plugin.getImageFiles = async () => {
       throw new Error("not-ready background should use getAllImageFiles instead of sequential getImageFiles fallback");
     };
@@ -4149,21 +4309,24 @@ try {
     backgroundBatchFiles = null;
     plugin.backgroundCompressionService.isBackgroundCompressionRunning = false;
     await plugin.backgroundCompressionService.startBackgroundCompression();
-    assert(fallbackProcessedChecks === fallbackBackgroundFiles.length, "Background fallback did not filter not-ready index files through the bounded cache check");
+    assert(fallbackProcessedChecks === fallbackBackgroundFiles.length, `Background fallback checked ${fallbackProcessedChecks} files instead of ${fallbackBackgroundFiles.length}`);
     assert(backgroundBatchFiles?.length === 1 && backgroundBatchFiles[0].path === "Background/fallback-a.png", "Background fallback did not pass only unprocessed files to batch compression");
   } finally {
     plugin.getImageFiles = originalGetImageFilesForBackgroundFilter;
+    plugin.getAllImageFiles = originalGetAllImageFilesForBackgroundFilter;
     plugin.imageIndex = originalImageIndexForBackgroundFilter;
     plugin.cache.isFileAlreadyProcessed = originalIsProcessedForBackgroundFilter;
     plugin.processBatchCompressionBackground = originalProcessBackgroundFilter;
     plugin.backgroundCompressionService.isUserInactive = originalIsUserInactiveForBackgroundFilter;
+    plugin.settings.allowedRoots = originalAllowedRootsForBackgroundFilter;
+    plugin.statusBarController.update = originalStatusBarUpdateForBackgroundFilter;
     plugin.backgroundCompressionService.isBackgroundCompressionRunning = false;
   }
 
   const originalGetActiveDocumentForMenu = plugin.getActiveDocument;
   const originalGetActiveWindowForMenu = plugin.getActiveWindow;
-  const originalGetCompressedFilesCountForMenu = plugin.getCompressedFilesCount;
-  const originalMoveCompressedToFilesForMenu = plugin.moveCompressedToFiles;
+  const originalGetCompressedFilesCountForMenu = plugin.moveService.getCompressedFilesCount;
+  const originalMoveCompressedToFilesForMenu = plugin.moveService.moveCompressedToFiles;
   const menuDocument = {
     body: createMockElement(),
     _listeners: {},
@@ -4201,8 +4364,8 @@ try {
       callback();
       return null;
     };
-    plugin.getCompressedFilesCount = async () => 1;
-    plugin.moveCompressedToFiles = async () => {
+    plugin.moveService.getCompressedFilesCount = async () => 1;
+    plugin.moveService.moveCompressedToFiles = async () => {
       statusMenuMoveCalls += 1;
     };
     const hiddenStatusMenuTarget = createMockElement();
@@ -4253,7 +4416,9 @@ try {
       key: "Escape",
       preventDefault() {
         escapePreventedForMenu = true;
-      }
+      },
+      stopPropagation() {},
+      stopImmediatePropagation() {}
     });
     assert(escapePreventedForMenu, "Status menu Escape key did not prevent default");
     assert(!menuDocument.body.contains(escapeMenu), "Status menu Escape key did not close the menu");
@@ -4305,13 +4470,13 @@ try {
     };
     await plugin.statusBarController.showMenu({ target: createVisibleStatusMenuTarget(), preventDefault() {} });
     assert(activeDocumentReadsDuringMenuOpen === 2, "Status menu re-read activeDocument after async count lookup");
-    assert(capturedMenuDocument.body.children[0]?.ownerDocumentName === "captured", "Status menu was created in a different document than the one captured at open");
+    assert(capturedMenuDocument.body.children.length === 1 && switchedMenuDocument.body.children.length === 0, "Status menu was created in a different document than the one captured at open");
     plugin.statusBarController.closeMenu();
   } finally {
     plugin.getActiveDocument = originalGetActiveDocumentForMenu;
     plugin.getActiveWindow = originalGetActiveWindowForMenu;
-    plugin.getCompressedFilesCount = originalGetCompressedFilesCountForMenu;
-    plugin.moveCompressedToFiles = originalMoveCompressedToFilesForMenu;
+    plugin.moveService.getCompressedFilesCount = originalGetCompressedFilesCountForMenu;
+    plugin.moveService.moveCompressedToFiles = originalMoveCompressedToFilesForMenu;
     plugin.setWindowTimeout = originalSetWindowTimeoutForNewFile;
   }
 
@@ -4397,7 +4562,7 @@ try {
     assert(plugin.savedData.outputFolder === "Compressed", `Unsafe output folder was persisted: ${invalidOutputFolder}`);
   }
   plugin.settings.outputFolder = "files/Compressed";
-  await plugin.saveSettings();
+  await withRealGlobalTimers(() => plugin.saveSettings());
   assert(plugin.getOutputFolder() === "files/Compressed", "Safe nested output folder was not preserved");
 
   plugin.settings.outputFolder = "Compressed";
@@ -4524,34 +4689,47 @@ try {
     plugin.app.vault.adapter.path.absolute = root;
   }
 
-  const originalUpdateStatusBar = plugin.updateStatusBar.bind(plugin);
+  const originalStatusBarControllerUpdate = plugin.statusBarController.update;
+  const originalSetTimeoutForStatusDebounce = global.setTimeout;
+  const originalClearTimeoutForStatusDebounce = global.clearTimeout;
+  const originalStatusUpdateTimer = plugin.statusUpdateTimer;
+  const originalStatusUpdateFirstQueuedAt = plugin.statusUpdateFirstQueuedAt;
   const scheduledTimers = [];
   let clearTimerCalls = 0;
   let statusRefreshCalls = 0;
-  global.setTimeout = (callback, delay) => {
-    const timer = { callback, delay, cleared: false };
-    scheduledTimers.push(timer);
-    return timer;
-  };
-  global.clearTimeout = (timer) => {
-    if (timer) timer.cleared = true;
-    clearTimerCalls += 1;
-  };
-  plugin.updateStatusBar = async () => {
-    statusRefreshCalls += 1;
-  };
-  plugin.scheduleStatusBarUpdate("debounce-a");
-  plugin.scheduleStatusBarUpdate("debounce-b");
-  plugin.scheduleStatusBarUpdate("debounce-c");
-  assert(scheduledTimers.length === 1, `Status update debounce thrashed timers under rapid calls: ${scheduledTimers.length}`);
-  assert(clearTimerCalls === 0, `Status update debounce cleared timers under rapid calls: ${clearTimerCalls}`);
-  assert(scheduledTimers.filter((timer) => !timer.cleared).length === 1, "Debounce left more than one active status timer");
-  await scheduledTimers[0].callback();
-  assert(statusRefreshCalls === 1, `Debounced status refresh ran ${statusRefreshCalls} times instead of once`);
-  plugin.statusUpdateFirstQueuedAt = Date.now() - plugin.statusUpdateMaxWaitMs - 1;
-  plugin.scheduleStatusBarUpdate("debounce-max-wait");
-  assert(scheduledTimers[scheduledTimers.length - 1].delay === 0, "Status bar max-wait did not force an immediate refresh under event storm");
-  plugin.updateStatusBar = originalUpdateStatusBar;
+  try {
+    global.setTimeout = (callback, delay) => {
+      const timer = { callback, delay, cleared: false };
+      scheduledTimers.push(timer);
+      return timer;
+    };
+    global.clearTimeout = (timer) => {
+      if (timer) timer.cleared = true;
+      clearTimerCalls += 1;
+    };
+    plugin.statusBarController.update = async () => {
+      statusRefreshCalls += 1;
+    };
+    plugin.statusUpdateTimer = null;
+    plugin.statusUpdateFirstQueuedAt = 0;
+    plugin.scheduleStatusBarUpdate("debounce-a");
+    plugin.scheduleStatusBarUpdate("debounce-b");
+    plugin.scheduleStatusBarUpdate("debounce-c");
+    assert(scheduledTimers.length === 1, `Status update debounce thrashed timers under rapid calls: ${scheduledTimers.length}`);
+    assert(clearTimerCalls === 0, `Status update debounce cleared timers under rapid calls: ${clearTimerCalls}`);
+    assert(scheduledTimers.filter((timer) => !timer.cleared).length === 1, "Debounce left more than one active status timer");
+    await scheduledTimers[0].callback();
+    assert(statusRefreshCalls === 1, `Debounced status refresh ran ${statusRefreshCalls} times instead of once`);
+    plugin.statusUpdateFirstQueuedAt = Date.now() - plugin.statusUpdateMaxWaitMs - 1;
+    plugin.scheduleStatusBarUpdate("debounce-max-wait");
+    assert(scheduledTimers[scheduledTimers.length - 1].delay === 0, "Status bar max-wait did not force an immediate refresh under event storm");
+  } finally {
+    global.setTimeout = originalSetTimeoutForStatusDebounce;
+    global.clearTimeout = originalClearTimeoutForStatusDebounce;
+    plugin.statusBarController.update = originalStatusBarControllerUpdate;
+    plugin.statusUpdateTimer = originalStatusUpdateTimer;
+    plugin.statusUpdateFirstQueuedAt = originalStatusUpdateFirstQueuedAt;
+  }
 
   const originalHandleNewFile = plugin.handleNewFile;
   plugin.handleNewFile = async () => {};
@@ -4633,16 +4811,16 @@ try {
   } finally {
     plugin.yieldToUi = originalYieldForReadyRace;
     plugin.app._files = originalFilesForReadyRace;
-    await plugin.rebuildImageIndex("ready-race-restore");
+    await withRealGlobalTimers(() => plugin.rebuildImageIndex("ready-race-restore"));
   }
 
   const originalYieldForSavingsUnload = plugin.yieldToUi;
-  const originalGetFreshForSavingsUnload = plugin.cache.getFreshEntryForFile;
+  const originalGetFreshForSavingsUnload = plugin.cache.getFreshEntryForFileFromEntries;
   try {
     const savingsUnloadFiles = Array.from({ length: 60 }, (_, index) => createMockFile(`Savings/unload-${index}.png`, 20000 + index, index + 1));
     let savingsCacheLookups = 0;
     plugin.isUnloading = false;
-    plugin.cache.getFreshEntryForFile = async () => {
+    plugin.cache.getFreshEntryForFileFromEntries = async () => {
       savingsCacheLookups += 1;
       return null;
     };
@@ -4654,7 +4832,7 @@ try {
     assert(interruptedSavings.totalImages === 60 && interruptedSavings.savings.totalFiles === 60, "Savings calculator did not return a stable interrupted result after unload");
   } finally {
     plugin.yieldToUi = originalYieldForSavingsUnload;
-    plugin.cache.getFreshEntryForFile = originalGetFreshForSavingsUnload;
+    plugin.cache.getFreshEntryForFileFromEntries = originalGetFreshForSavingsUnload;
     plugin.isUnloading = false;
   }
 
@@ -4781,9 +4959,9 @@ try {
         enableCalls += 1;
       };
       let guardedTaskRan = false;
-      await withTestTimeout("plugin guard disable timeout", plugin.withCompressionGuards(async () => {
+      await withRealGlobalTimers(() => withTestTimeout("plugin guard disable timeout", plugin.withCompressionGuards(async () => {
         guardedTaskRan = true;
-      }), 1000);
+      }), 1000));
       assert(guardedTaskRan, "Plugin guard timeout prevented the guarded compression task from running");
       assert(disableCalls === 1, `Plugin guard timeout did not attempt to disable the plugin exactly once: ${disableCalls}`);
       assert(enableCalls === 0, `Plugin guard timeout restored before disable completion: ${enableCalls}`);
@@ -4826,12 +5004,12 @@ try {
       };
       const enableRetryGuard = plugin.withCompressionGuards(async () => {});
       for (let attempt = 0; attempt < 20; attempt++) {
-        if (enableRetryTimers.some((timer) => !timer.cleared && timer.delay === 1)) {
+        if (enableCalls === 1 && enableRetryTimers.some((timer) => !timer.cleared && timer.delay === 1)) {
           break;
         }
         await new Promise((resolve) => setImmediate(resolve));
       }
-      const enableTimeoutTimer = enableRetryTimers.find((timer) => !timer.cleared && timer.delay === 1);
+      const enableTimeoutTimer = enableRetryTimers.findLast((timer) => !timer.cleared && timer.delay === 1);
       assert(enableTimeoutTimer, "Plugin guard enable retry test did not schedule the enable timeout timer");
       enableTimeoutTimer.callback();
       await withTestTimeout("plugin guard enable retry", enableRetryGuard, 1000);
@@ -4920,7 +5098,7 @@ try {
         plugin.app.plugins.enabledPlugins.add(guardedPluginId);
         resolveLateDisableRestore();
       };
-      await withTestTimeout("replacement guard timeout", plugin.withCompressionGuards(async () => {}), 1000);
+      await withRealGlobalTimers(() => withTestTimeout("replacement guard timeout", plugin.withCompressionGuards(async () => {}), 1000));
       assert(enableCalls === 0, `Timed-out guard release restored before late disable completion: ${enableCalls}`);
       resolveLateDisable();
       await withTestTimeout("late disable restore completion", lateDisableRestoreFinished, 1000);
@@ -4961,7 +5139,7 @@ try {
         enableCalls += 1;
         plugin.app.plugins.enabledPlugins.add(guardedPluginId);
       };
-      await withTestTimeout("first late disable guard timeout", plugin.withCompressionGuards(async () => {}), 1000);
+      await withRealGlobalTimers(() => withTestTimeout("first late disable guard timeout", plugin.withCompressionGuards(async () => {}), 1000));
       assert(enableCalls === 0, `First timed-out guard restored before late disable completion: ${enableCalls}`);
       let releaseSecondGuard;
       let resolveSecondEntered;
@@ -5051,7 +5229,8 @@ try {
     let backgroundChecks = 0;
     plugin.backgroundCompressionService.checkAndStartBackgroundCompression = async () => {
       backgroundChecks += 1;
-      plugin.onunload();
+      plugin.isUnloading = true;
+      plugin.backgroundCompressionService.cleanup();
     };
     plugin.backgroundCompressionService.startInactivityCheck();
     assert(inactivityTimers.length === 1, "Inactivity check did not schedule its initial timer");
@@ -5439,8 +5618,10 @@ try {
   const invalidMtimeNull = plugin.cache.normalizeMtime(null);
   assert(invalidMtimeNaN > 0 && invalidMtimeInfinity > 0 && invalidMtimeNull > 0, "Invalid mtime fallback returned epoch 0");
   assert(new Set([invalidMtimeNaN, invalidMtimeInfinity, invalidMtimeNull]).size === 3, "Invalid mtime fallback is not monotonic");
-  const invalidMtimeKeyA = plugin.cache.buildCacheKey("Images/invalid-mtime.png", MOCK_MD5, NaN);
-  const invalidMtimeKeyB = plugin.cache.buildCacheKey("Images/invalid-mtime.png", MOCK_MD5, Infinity);
+  assert.throws(() => plugin.cache.buildCacheKey("Images/invalid-mtime.png", MOCK_MD5, NaN), /without real mtime/, "Cache key accepted NaN mtime");
+  assert.throws(() => plugin.cache.buildCacheKey("Images/invalid-mtime.png", MOCK_MD5, Infinity), /without real mtime/, "Cache key accepted infinite mtime");
+  const invalidMtimeKeyA = plugin.cache.buildCacheKey("Images/invalid-mtime.png", MOCK_MD5, invalidMtimeNaN);
+  const invalidMtimeKeyB = plugin.cache.buildCacheKey("Images/invalid-mtime.png", MOCK_MD5, invalidMtimeInfinity);
   assert(invalidMtimeKeyA !== invalidMtimeKeyB, "Invalid mtime cache keys collide for the same file/md5");
 
   const unicodeNfcPath = "Images/caf\u00e9.png".normalize("NFC");
@@ -5561,7 +5742,10 @@ try {
       fs.writeFileSync(backupPath, "{}");
       fs.utimesSync(backupPath, oldTime, oldTime);
     }
-    await plugin.cache.cleanupRetainedFiles(cleanupLargeBackupsTemp, (fileName) => fileName.startsWith("tinyLocal-cache-backup-large-"));
+    await withRealGlobalTimers(() => plugin.cache.cleanupRetainedFiles(
+      cleanupLargeBackupsTemp,
+      (fileName) => fileName.startsWith("tinyLocal-cache-backup-large-")
+    ));
     const remainingLargeBackups = fs.readdirSync(cleanupLargeBackupsTemp).filter((name) => name.startsWith("tinyLocal-cache-backup-large-")).sort();
     assert(remainingLargeBackups.length === 10, `Cache retained-file cleanup left ${remainingLargeBackups.length} files when >1000 candidates existed`);
     assert(remainingLargeBackups[0] === "tinyLocal-cache-backup-large-0995.json", `Cache retained-file cleanup retained wrong lower bound: ${remainingLargeBackups[0]}`);
@@ -5599,7 +5783,7 @@ try {
     fs.promises.unlink = async (filePath) => {
       activeUnlinks += 1;
       maxActiveUnlinks = Math.max(maxActiveUnlinks, activeUnlinks);
-      await new Promise((resolve) => setTimeout(resolve, 2));
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 2));
       activeUnlinks -= 1;
       return originalUnlinkForCleanupConcurrency.call(fs.promises, filePath);
     };
@@ -5639,16 +5823,16 @@ try {
       debouncedWriteCalls += 1;
       debouncedSavedPayload = data;
       debouncedSavedEntryCount = Object.keys(JSON.parse(data).entries || {}).length;
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 5));
     };
-    await Promise.all(Array.from({ length: 6 }, (_, index) =>
+    await withRealGlobalTimers(() => Promise.all(Array.from({ length: 6 }, (_, index) =>
       plugin.cache.addToCache(
         `Images/cache-debounce-${index}.png`,
         1000 + index,
         createMockFile(`Images/cache-debounce-${index}.png`, 1000 + index, 500 + index),
         null
       )
-    ));
+    )));
     assert(debouncedWriteCalls === 1, `Debounced cache save wrote ${debouncedWriteCalls} times instead of once`);
     assert(debouncedSavedEntryCount === 6, `Debounced cache save persisted ${debouncedSavedEntryCount} entries instead of 6`);
     assert(!debouncedSavedPayload.includes("\n  "), "Debounced cache save still pretty-prints JSON in the hot path");
@@ -5676,7 +5860,9 @@ try {
       unloadFlushFile,
       null
     );
-    await Promise.resolve();
+    for (let attempt = 0; attempt < 20 && !plugin.cache.saveCacheTimer; attempt++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     assert(plugin.cache.saveCacheTimer, "Unload flush setup did not create a pending save timer");
     plugin.onunload();
     await unloadFlushPromise;
@@ -5754,10 +5940,10 @@ try {
 
   const unloadLateWriteTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-unload-late-write-"));
   const originalWriteCacheFileAtomicForLateWrite = plugin.cache.writeCacheFileAtomic;
+  let releaseStaleWrite = null;
   try {
     setCacheTestFile(path.join(unloadLateWriteTemp, "tinyLocal-cache.json"));
     plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
-    let releaseStaleWrite = null;
     let staleWriteStarted = null;
     let staleWriteSkipped = false;
     const staleWriteStartedPromise = new Promise((resolve) => {
@@ -5814,9 +6000,11 @@ try {
     });
     plugin.cache.activeWritePromise = activeRenamePromise;
     plugin.cache.flushPendingCacheSaveSync();
+    const replayPromise = plugin.cache.syncFlushReplayPromise;
+    assert(replayPromise, "Sync unload flush did not schedule replay after an active write");
     finishActiveRename();
     await activeRenamePromise;
-    await new Promise((resolve) => setImmediate(resolve));
+    await replayPromise;
     const persistedReplay = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
     assert(persistedReplay.entries.fresh?.path === "Images/replayed-fresh.png" && !persistedReplay.entries.stale, "Sync unload flush was not replayed after a late active rename");
   } finally {
@@ -5838,13 +6026,15 @@ try {
       clearRaceFile,
       null
     );
-    await Promise.resolve();
+    for (let attempt = 0; attempt < 20 && !plugin.cache.saveCacheTimer; attempt++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     assert(plugin.cache.saveCacheTimer, "clearCache race setup did not create a pending save timer");
     plugin.cache.saveCacheDelayMs = 0;
-    await plugin.cache.clearCache();
+    await withRealGlobalTimers(() => plugin.cache.clearCache());
     await Promise.race([
       pendingAdd,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("pending addToCache did not settle after clearCache()")), 250))
+      new Promise((_, reject) => originalGlobals.setTimeout(() => reject(new Error("pending addToCache did not settle after clearCache()")), 250))
     ]);
     const persistedAfterClear = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
     assert(Object.keys(persistedAfterClear.entries || {}).length === 0, "clearCache() allowed a canceled pending save to repopulate the cache");
@@ -5895,7 +6085,9 @@ try {
       staleRestoreFile,
       null
     );
-    await Promise.resolve();
+    for (let attempt = 0; attempt < 20 && !capturedRestoreTimerCallback; attempt++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     assert(capturedRestoreTimerCallback, "restoreFromBackup race setup did not capture a pending save timer");
     const restoredRace = await plugin.cache.restoreFromBackup(restoreRaceBackupName);
     assert(restoredRace, "restoreFromBackup() did not restore while a save was pending");
@@ -6014,14 +6206,18 @@ try {
   }
 
   const writeSerializeTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-write-serialize-"));
+  const originalSetSaveCacheTimeoutForSerialize = plugin.cache.setSaveCacheTimeout;
+  const originalClearSaveCacheTimeoutForSerialize = plugin.cache.clearSaveCacheTimeout;
+  let releaseFirstWrite = null;
   try {
     setCacheTestFile(path.join(writeSerializeTemp, "tinyLocal-cache.json"));
     plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
     plugin.cache.saveCacheDelayMs = 0;
+    plugin.cache.setSaveCacheTimeout = (callback, delay) => originalGlobals.setTimeout(callback, delay);
+    plugin.cache.clearSaveCacheTimeout = (timer) => originalGlobals.clearTimeout(timer);
     let inFlightWrites = 0;
     let maxInFlightWrites = 0;
     let writeCalls = 0;
-    let releaseFirstWrite = null;
     let firstWriteStarted = null;
     const firstWriteStartedPromise = new Promise((resolve) => {
       firstWriteStarted = resolve;
@@ -6054,7 +6250,7 @@ try {
       secondSerializeFile,
       null
     );
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => originalGlobals.setTimeout(resolve, 5));
     assert(writeCalls === 1, `A second cache write started before the first completed: ${writeCalls}`);
     releaseFirstWrite();
     await Promise.all([firstSerializeAdd, secondSerializeAdd]);
@@ -6070,6 +6266,8 @@ try {
     releaseFirstWrite?.();
     await plugin.cache.flushPendingCacheSave?.();
     plugin.cache.writeCacheFileAtomic = originalDebounceWriteCacheFileAtomic;
+    plugin.cache.setSaveCacheTimeout = originalSetSaveCacheTimeoutForSerialize;
+    plugin.cache.clearSaveCacheTimeout = originalClearSaveCacheTimeoutForSerialize;
     plugin.cache.saveCacheDelayMs = originalSaveCacheDelayMs;
     restoreCacheTestPaths();
     plugin.cache.cacheData = originalCacheData;
@@ -6082,7 +6280,7 @@ try {
     setCacheTestFile(path.join(queueContentionTemp, "tinyLocal-cache.json"));
     const writeOrder = [];
     plugin.cache.writeCacheFileAtomic = async (data) => {
-      await new Promise((resolve) => setTimeout(resolve, 2));
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 2));
       writeOrder.push(JSON.parse(data).order);
     };
     await Promise.all(Array.from({ length: 10 }, (_, index) =>
@@ -6136,12 +6334,12 @@ try {
         }
         return originalRename.call(fs.promises, sourcePath, targetPath);
       };
-      await plugin.cache.writeCacheFileAtomic(JSON.stringify({
+      await withRealGlobalTimers(() => plugin.cache.writeCacheFileAtomic(JSON.stringify({
         version: plugin.cache.CACHE_VERSION,
         entries: {
           retry: { path: "Images/retry.png", timestamp: 1 }
         }
-      }), () => true, { mergeDiskEntries: false });
+      }), () => true, { mergeDiskEntries: false }));
     } finally {
       fs.promises.rename = originalRename;
     }
@@ -6198,7 +6396,7 @@ try {
     const cacheB = new CacheClass(plugin.app);
     cacheA.cacheFile = cacheFile;
     cacheB.cacheFile = cacheFile;
-    await Promise.all([
+    await withRealGlobalTimers(() => Promise.all([
       cacheA.queueCacheWrite(JSON.stringify({
         version: cacheA.CACHE_VERSION,
         entries: {
@@ -6211,7 +6409,7 @@ try {
           fromB: { path: "Images/from-b.png", timestamp: 2 }
         }
       }), { mergeDiskEntries: true })
-    ]);
+    ]));
     const mergedCache = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
     assert(mergedCache.entries.fromA?.path === "Images/from-a.png", "Multi-instance cache write lost instance A entry");
     assert(mergedCache.entries.fromB?.path === "Images/from-b.png", "Multi-instance cache write lost instance B entry");
@@ -6222,12 +6420,12 @@ try {
       pid: 0,
       timestamp: Date.now() - 60_000
     }));
-    await cacheA.queueCacheWrite(JSON.stringify({
+    await withRealGlobalTimers(() => cacheA.queueCacheWrite(JSON.stringify({
       version: cacheA.CACHE_VERSION,
       entries: {
         fromC: { path: "Images/from-c.png", timestamp: 3 }
       }
-    }), { mergeDiskEntries: true });
+    }), { mergeDiskEntries: true }));
     const staleLockRecoveredCache = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
     assert(staleLockRecoveredCache.entries.fromC?.path === "Images/from-c.png", "Stale cache lock did not recover for later writes");
     assert(!fs.existsSync(`${cacheFile}.lock`), "Stale cache lock recovery left a lock file behind");
@@ -6353,7 +6551,7 @@ try {
     plugin.savingsCalculator.getCompressedFileSize = async () => {
       inFlightSizeFetches += 1;
       maxInFlightSizeFetches = Math.max(maxInFlightSizeFetches, inFlightSizeFetches);
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 5));
       inFlightSizeFetches -= 1;
       return 400;
     };
@@ -6788,7 +6986,7 @@ try {
   counts = await plugin.getImageCompressionCounts();
   assert(counts.uncompressedImages === 0, "Quality-aware skipped image was not treated as processed before settings changed");
   plugin.settings.pngQuality = { min: 40, max: 60 };
-  await plugin.rebuildImageIndex("quality-skip-settings-change");
+  await withRealGlobalTimers(() => plugin.rebuildImageIndex("quality-skip-settings-change"));
   counts = await plugin.getImageCompressionCounts();
   assert(counts.uncompressedImages === 1, "Skipped image stayed processed after relevant quality settings changed");
   await setCacheEntries(plugin, {
@@ -6878,7 +7076,11 @@ try {
   assert(counts.uncompressedImages === 1, "Conflicting legacy moved flag overrode canonical skipped state");
 
   const pendingTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-pending-"));
+  const originalSetSaveCacheTimeoutForPending = plugin.cache.setSaveCacheTimeout;
+  const originalClearSaveCacheTimeoutForPending = plugin.cache.clearSaveCacheTimeout;
   try {
+    plugin.cache.setSaveCacheTimeout = (callback, delay) => originalGlobals.setTimeout(callback, delay);
+    plugin.cache.clearSaveCacheTimeout = (timer) => originalGlobals.clearTimeout(timer);
     plugin.settings.outputFolder = "Compressed";
     plugin.app.vault.adapter.basePath = pendingTemp;
     plugin.app.vault.adapter.path.absolute = pendingTemp;
@@ -6952,10 +7154,12 @@ try {
         sourceSize: 100000
       }
     });
-    const lastAccessSaveEntry = plugin.cache.cacheData.entries[lastAccessSaveKey];
+    const lastAccessSaveEntry = plugin.cache.getEntriesForPath("Images/last-access.jpg")[0]?.[1];
+    assert(lastAccessSaveEntry, "lastAccess smoke setup did not retain the normalized cache entry");
     const originalSaveCacheForLastAccess = plugin.cache.saveCache;
     let lastAccessSaveOptions = null;
     try {
+      lastAccessSaveEntry.lastAccessMs = 1;
       plugin.cache.lastAccessSaveAt = 0;
       plugin.cache.lastAccessSavePromise = null;
       plugin.cache.saveCache = async (options) => {
@@ -6971,6 +7175,21 @@ try {
       plugin.cache.lastAccessSavePromise = null;
     }
 
+    await setMockFiles(plugin, [createMockFile("Images/pending.jpg", 100000, 10)]);
+    await setCacheEntries(plugin, {
+      [`Images/pending.jpg:${MOCK_MD5}:10`]: {
+        state: "pending_move",
+        md5: MOCK_MD5,
+        mtime: 10,
+        timestamp: 1,
+        originalSize: 100000,
+        sourceMtime: 10,
+        sourceSize: 100000,
+        outputPath: "Compressed/Images/pending.jpg",
+        outputMtime: Math.round(pendingOutputStats.mtimeMs),
+        outputSize: 50000
+      }
+    });
     fs.unlinkSync(pendingOutputPath);
     await plugin.refreshImageIndexProcessedStates();
     counts = await plugin.getImageCompressionCounts();
@@ -7013,11 +7232,15 @@ try {
       }
     });
     await plugin.cache.markProcessedFileMoved("Images/moved-from-pending.jpg", { mtimeMs: 15, size: 50000 }, 100000);
-    await plugin.rebuildImageIndex("smoke-moved");
-    const movedEntry = plugin.cache.cacheData.entries[movedFromPendingKey];
+    await withRealGlobalTimers(() => plugin.rebuildImageIndex("smoke-moved"));
+    const movedEntry = plugin.cache.getEntriesForPath("Images/moved-from-pending.jpg")[0]?.[1];
+    assert(movedEntry, "markProcessedFileMoved() removed the moved cache entry");
     assert(movedEntry.state === "moved", "markProcessedFileMoved() did not set state=moved");
     assert(typeof movedEntry.stateUpdatedAt === "number", "markProcessedFileMoved() did not record stateUpdatedAt");
     assert(!Object.prototype.hasOwnProperty.call(movedEntry, "moved") && !Object.prototype.hasOwnProperty.call(movedEntry, "movedAt"), "markProcessedFileMoved() kept legacy moved fields");
+    fs.rmSync(path.join(pendingTemp, "Compressed"), { recursive: true, force: true });
+    counts = await plugin.getImageCompressionCounts();
+    assert(counts.uncompressedImages === 0, "Moved entry still depended on the deleted Compressed output");
 
     const invalidMovedKey = `Images/invalid-moved.jpg:${MOCK_MD5}:10`;
     await setCacheEntries(plugin, {
@@ -7035,11 +7258,8 @@ try {
       }
     });
     await plugin.cache.markProcessedFileMoved("Images/invalid-moved.jpg", { mtimeMs: 16 }, 100000);
-    assert(plugin.cache.cacheData.entries[invalidMovedKey].state === "pending_move", "markProcessedFileMoved() wrote a moved entry without processed size");
-
-    fs.rmSync(path.join(pendingTemp, "Compressed"), { recursive: true, force: true });
-    counts = await plugin.getImageCompressionCounts();
-    assert(counts.uncompressedImages === 0, "Moved entry still depended on the deleted Compressed output");
+    const invalidMovedEntry = plugin.cache.getEntriesForPath("Images/invalid-moved.jpg")[0]?.[1];
+    assert(invalidMovedEntry?.state === "pending_move", "markProcessedFileMoved() wrote a moved entry without processed size");
 
     await setMockFiles(plugin, [createMockFile("Images/select-pending.jpg", 50000, 20)]);
     const selectPendingKey = `Images/select-pending.jpg:${MOCK_MD5}:10`;
@@ -7064,8 +7284,9 @@ try {
       }
     });
     await plugin.cache.markProcessedFileMoved("Images/select-pending.jpg", { mtimeMs: 20, size: 50000 }, 100000);
-    assert(plugin.cache.cacheData.entries[selectPendingKey].state === "moved", "markProcessedFileMoved() did not prefer pending_move entry");
-    assert(plugin.cache.cacheData.entries[selectLegacyKey].state !== "moved", "markProcessedFileMoved() updated legacy entry instead of pending_move");
+    const selectPendingEntries = plugin.cache.getEntriesForPath("Images/select-pending.jpg").map(([, entry]) => entry);
+    assert(selectPendingEntries.find((entry) => entry.md5 === MOCK_MD5)?.state === "moved", "markProcessedFileMoved() did not prefer pending_move entry");
+    assert(selectPendingEntries.find((entry) => entry.md5 === MOCK_MD5_ALT)?.state !== "moved", "markProcessedFileMoved() updated legacy entry instead of pending_move");
 
     await setMockFiles(plugin, [createMockFile("Images/select-output.jpg", 50000, 25)]);
     const selectCurrentOutputKey = `Images/select-output.jpg:${MOCK_MD5}:10`;
@@ -7095,8 +7316,9 @@ try {
       }
     });
     await plugin.cache.markProcessedFileMoved("Images/select-output.jpg", { mtimeMs: 25, size: 50000 }, 100000, "Compressed/Images/current-output.jpg");
-    assert(plugin.cache.cacheData.entries[selectCurrentOutputKey].state === "moved", "markProcessedFileMoved() did not prefer the entry for the moved compressed output");
-    assert(plugin.cache.cacheData.entries[selectStaleOutputKey].state === "pending_move", "markProcessedFileMoved() updated a newer timestamp entry with a different compressed output");
+    const selectOutputEntries = plugin.cache.getEntriesForPath("Images/select-output.jpg").map(([, entry]) => entry);
+    assert(selectOutputEntries.find((entry) => entry.outputPath === "Compressed/Images/current-output.jpg")?.state === "moved", "markProcessedFileMoved() did not prefer the entry for the moved compressed output");
+    assert(selectOutputEntries.find((entry) => entry.outputPath === "Compressed/Images/stale-output.jpg")?.state === "pending_move", "markProcessedFileMoved() updated a newer timestamp entry with a different compressed output");
 
     const originalMalformedCacheData = plugin.cache.cacheData;
     try {
@@ -7136,6 +7358,8 @@ try {
     assert(missingMd5Logs === 1, "Missing-md5 fallback did not log a diagnostic");
     assert(plugin.cache.getEntriesForPath("Images/missing-md5.jpg").length === 0, "Missing-md5 fallback created a cache entry");
   } finally {
+    plugin.cache.setSaveCacheTimeout = originalSetSaveCacheTimeoutForPending;
+    plugin.cache.clearSaveCacheTimeout = originalClearSaveCacheTimeoutForPending;
     fs.rmSync(pendingTemp, { recursive: true, force: true });
     plugin.app.vault.adapter.basePath = root;
     plugin.app.vault.adapter.path.absolute = root;
@@ -7200,6 +7424,84 @@ try {
       createMockFile("Images/slash/photo.jpg", 100, 1)
     ]);
     plugin.cache.cacheData.entries = {};
+    const renamedOldRelativePath = "Images/rename-race/photo.jpg";
+    const renamedNewRelativePath = "Images/renamed/photo.jpg";
+    const renamedOldAbsolutePath = path.join(moveLookupTemp, renamedOldRelativePath);
+    const renamedNewAbsolutePath = path.join(moveLookupTemp, renamedNewRelativePath);
+    const renamedCompressedPath = path.join(moveLookupTemp, "Compressed", "rename-race", "photo.jpg");
+    fs.mkdirSync(path.dirname(renamedNewAbsolutePath), { recursive: true });
+    fs.mkdirSync(path.dirname(renamedCompressedPath), { recursive: true });
+    fs.writeFileSync(renamedNewAbsolutePath, Buffer.alloc(100));
+    fs.writeFileSync(renamedCompressedPath, Buffer.alloc(50));
+    const renamedFile = Object.assign(new ObsidianMock.TFile(), createMockFile(renamedNewRelativePath, 100, 10));
+    await setMockFiles(plugin, [renamedFile]);
+    const renamedOldCacheKey = plugin.cache.buildCacheKey(renamedOldRelativePath, MOCK_MD5, 10);
+    plugin.cache.cacheData.entries = {
+      [renamedOldCacheKey]: {
+        path: renamedOldRelativePath,
+        state: "pending_move",
+        md5: MOCK_MD5,
+        mtime: 10,
+        timestamp: 1,
+        originalSize: 100,
+        sourceMtime: 10,
+        sourceSize: 100,
+        outputPath: "Compressed/rename-race/photo.jpg"
+      }
+    };
+    const originalRenameCacheEntriesForMoveRace = plugin.cache.renameCacheEntries;
+    let releaseRenameCacheMigration;
+    let markRenameCacheMigrationStarted;
+    const renameCacheMigrationGate = new Promise((resolve) => {
+      releaseRenameCacheMigration = resolve;
+    });
+    const renameCacheMigrationStarted = new Promise((resolve) => {
+      markRenameCacheMigrationStarted = resolve;
+    });
+    try {
+      plugin.cache.renameCacheEntries = async (...args) => {
+        markRenameCacheMigrationStarted();
+        await renameCacheMigrationGate;
+        return await originalRenameCacheEntriesForMoveRace.apply(plugin.cache, args);
+      };
+      const renameHandlerPromise = plugin.handleVaultRename(renamedFile, renamedOldRelativePath);
+      await renameCacheMigrationStarted;
+      const originalLookupDuringRename = plugin.moveService.buildOriginalFileLookup();
+      const resolvedDuringRename = await plugin.moveService.findOriginalFileForCompressed({
+        compressedPath: renamedCompressedPath,
+        relativePath: renamedOldRelativePath,
+        name: "photo.jpg",
+        size: 50
+      }, originalLookupDuringRename);
+      assert(resolvedDuringRename === renamedNewAbsolutePath, `Move lookup used a stale pre-rename path during cache migration: ${resolvedDuringRename}`);
+      releaseRenameCacheMigration();
+      await renameHandlerPromise;
+    } finally {
+      releaseRenameCacheMigration?.();
+      plugin.cache.renameCacheEntries = originalRenameCacheEntriesForMoveRace;
+    }
+    assert(plugin.cache.getEntriesForPath(renamedOldRelativePath).length === 0, "Rename-to-move integration left the old cache path behind");
+    assert(plugin.cache.getEntriesForPath(renamedNewRelativePath).length === 1, "Rename-to-move integration did not migrate the cache entry to the new path");
+    const originalRenameForMoveRace = fs.promises.rename;
+    const moveRaceRenameTargets = [];
+    try {
+      fs.promises.rename = async (sourcePath, targetPath) => {
+        moveRaceRenameTargets.push(path.resolve(targetPath));
+        return await originalRenameForMoveRace.call(fs.promises, sourcePath, targetPath);
+      };
+      await plugin.moveService.moveSingleFile({
+        compressedPath: renamedCompressedPath,
+        relativePath: renamedOldRelativePath,
+        name: "photo.jpg",
+        size: 50
+      });
+    } finally {
+      fs.promises.rename = originalRenameForMoveRace;
+    }
+    assert(moveRaceRenameTargets.includes(path.resolve(renamedNewAbsolutePath)), "Move after rename did not replace the current Vault path");
+    assert(!moveRaceRenameTargets.includes(path.resolve(renamedOldAbsolutePath)), "Move after rename targeted the stale pre-rename path");
+    assert(!fs.existsSync(renamedOldAbsolutePath), "Move after rename recreated the stale pre-rename path");
+
     let duplicateMovedCalls = 0;
     const originalMarkProcessedFileMoved = plugin.cache.markProcessedFileMoved;
     plugin.cache.markProcessedFileMoved = async () => {
@@ -7382,8 +7684,8 @@ try {
           backupHashRaceOriginalStatCount += 1;
           if (backupHashRaceOriginalStatCount === 2) {
             fs.writeFileSync(backupHashRaceOriginal, Buffer.alloc(100, 0xcc));
-            fs.utimesSync(backupHashRaceOriginal, stats.atime, stats.mtime);
-            return await originalStatForBackupHashRace.call(fs.promises, filePath, ...args);
+            const changedStats = await originalStatForBackupHashRace.call(fs.promises, filePath, ...args);
+            return { ...changedStats, size: stats.size, mtimeMs: stats.mtimeMs };
           }
         }
         return stats;
@@ -7424,8 +7726,8 @@ try {
           backupCompressedHashStatCount += 1;
           if (backupCompressedHashStatCount === 2) {
             fs.writeFileSync(backupCompressedHashCompressed, Buffer.alloc(50, 0xdd));
-            fs.utimesSync(backupCompressedHashCompressed, stats.atime, stats.mtime);
-            return await originalStatForCompressedHashRace.call(fs.promises, filePath, ...args);
+            const changedStats = await originalStatForCompressedHashRace.call(fs.promises, filePath, ...args);
+            return { ...changedStats, size: stats.size, mtimeMs: stats.mtimeMs };
           }
         }
         return stats;
@@ -7803,6 +8105,22 @@ try {
     const unlinkFailCompressed = path.join(orphanMoveTemp, "Compressed", "Images", "unlink-fail.jpg");
     fs.writeFileSync(unlinkFailOriginal, sharedContent);
     fs.writeFileSync(unlinkFailCompressed, sharedContent);
+    await setMockFiles(plugin, [
+      Object.assign(new ObsidianMock.TFile(), createMockFile("Images/unlink-fail.jpg", sharedContent.length, fs.statSync(unlinkFailOriginal).mtimeMs))
+    ]);
+    await setCacheEntries(plugin, {
+      [`Images/unlink-fail.jpg:${MOCK_MD5}:1`]: {
+        path: "Images/unlink-fail.jpg",
+        state: "pending_move",
+        md5: MOCK_MD5,
+        mtime: 1,
+        timestamp: 1,
+        originalSize: sharedContent.length,
+        sourceMtime: 1,
+        sourceSize: sharedContent.length,
+        outputPath: "Compressed/Images/unlink-fail.jpg"
+      }
+    });
     const originalUnlink = fs.promises.unlink;
     let unlinkFailed = false;
     try {
@@ -7828,7 +8146,7 @@ try {
     }
     assert(!unlinkFailed, "Orphan unlink failure was surfaced even though cleanup is non-fatal");
     assert(fs.existsSync(unlinkFailCompressed), "Orphan unlink failure unexpectedly removed compressed output");
-    assert(plugin.cache.getEntriesForPath("Images/unlink-fail.jpg").some(([, entry]) => entry.state === "moved"), "Orphan unlink failure did not mark cache moved before non-fatal cleanup");
+    assert(plugin.cache.getEntriesForPath("Images/unlink-fail.jpg").some(([, entry]) => entry.state === "skipped_identical"), "Orphan unlink failure did not preserve the processed cache state before non-fatal cleanup");
   } finally {
     fs.rmSync(orphanMoveTemp, { recursive: true, force: true });
     plugin.app.vault.adapter.basePath = root;
@@ -7857,8 +8175,11 @@ try {
     ]);
     const originalCopyFile = fs.promises.copyFile;
     const originalConsoleError = console.error;
+    const backupFailureErrors = [];
     try {
-      console.error = () => {};
+      console.error = (...args) => {
+        backupFailureErrors.push(args.map((value) => value instanceof Error ? value.message : String(value)).join(" "));
+      };
       fs.promises.copyFile = async (sourcePath, destPath) => {
         if (
           sourcePath === failOriginal
@@ -7868,12 +8189,12 @@ try {
         }
         return originalCopyFile.call(fs.promises, sourcePath, destPath);
       };
-      await plugin.moveService.moveCompressedToFiles();
+      await withRealGlobalTimers(() => plugin.moveService.moveCompressedToFiles());
     } finally {
       fs.promises.copyFile = originalCopyFile;
       console.error = originalConsoleError;
     }
-    assert(fs.statSync(okOriginal).size === 50, "Move flow did not move the file with a complete backup");
+    assert(fs.statSync(okOriginal).size === 50, `Move flow did not move the file with a complete backup: ${backupFailureErrors.join(" | ")}`);
     assert(fs.statSync(failOriginal).size === 100, "Move flow replaced a file whose backup failed");
     assert(!fs.existsSync(okCompressed), "Move flow did not remove moved compressed output");
     assert(fs.existsSync(failCompressed), "Move flow removed compressed output for a file whose backup failed");
@@ -7978,6 +8299,9 @@ try {
     fs.rmSync(backupTemp, { recursive: true, force: true });
   }
 
+  if (fs.existsSync(bugResearchPath)) {
+    assert(fs.readFileSync(bugResearchPath, "utf8").trim().length === 0, "BUG_RESEARCH_FINDINGS.txt must be empty when no confirmed bugs remain");
+  }
   console.log("TypeScript artifact smoke check passed.");
 } finally {
   Module._load = originalLoad;
@@ -7991,7 +8315,7 @@ try {
     fs.rmSync(smokeBackupStorageTemp, { recursive: true, force: true });
   }
 }
-})().catch((error) => {
+})(), 90_000).catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

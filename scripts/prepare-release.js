@@ -2,8 +2,9 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const root = path.resolve(__dirname, "..");
+const { repositoryRoot: root } = resolveRepositoryLayout();
 const buildDir = path.join(root, "build");
 const releaseFiles = ["manifest.json", "main.js", "styles.css", "versions.json"];
 

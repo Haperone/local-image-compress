@@ -3,10 +3,11 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const root = path.resolve(__dirname, "..");
+const { repositoryRoot, sourceRoot: root } = resolveRepositoryLayout();
 const generatedPath = path.join(root, "dist-ts", "main.js");
-const rootMainPath = path.join(root, "main.js");
+const rootMainPath = path.join(repositoryRoot, "main.js");
 
 function sha256(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex").toUpperCase();

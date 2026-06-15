@@ -1,7 +1,6 @@
 import type { LocalImageCompressSettings } from "./settings";
 import { WorkerSlot, type WasmBytes, type WorkerFactory, type WorkerFormat, type WorkerHostApp } from "./worker-slot";
 import type { TimerHandle } from "./types";
-import { getActiveWindowForApp } from "./utils";
 
 type SlotWaiter = {
   resolve: (slot: WorkerSlot) => void;
@@ -223,17 +222,15 @@ export class WorkerPool {
     });
   }
 
-  private setWindowTimeout(callback: TimerHandler, delay: number) {
-    const windowRef = getActiveWindowForApp(this.getApp()) || window;
-    return windowRef.setTimeout(callback, delay);
+  private setWindowTimeout(callback: () => void, delay: number) {
+    return window.setTimeout(callback, delay);
   }
 
   private clearWindowTimeout(timer: TimerHandle | null | undefined) {
     if (timer === null || timer === undefined) {
       return;
     }
-    const windowRef = getActiveWindowForApp(this.getApp()) || window;
-    windowRef.clearTimeout(timer as number);
+    window.clearTimeout(timer as number);
   }
 
   private enableInitRetryForFailedSlots() {

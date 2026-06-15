@@ -2,15 +2,16 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const root = path.resolve(__dirname, "..");
+const { isDevLayout, repositoryRoot: root, sourceRoot } = resolveRepositoryLayout();
 const manifestPath = path.join(root, "manifest.json");
 const versionsPath = path.join(root, "versions.json");
 const packagePath = path.join(root, "package.json");
 const releaseWorkflowPath = path.join(root, ".github", "workflows", "release.yml");
 const gitignorePath = path.join(root, ".gitignore");
-const releasePreparePath = path.join(root, "scripts", "prepare-release.js");
-const sourceTsRoot = path.join(root, "src-ts");
+const releasePreparePath = path.join(sourceRoot, "scripts", "prepare-release.js");
+const sourceTsRoot = path.join(sourceRoot, "src-ts");
 const MIN_API_SURFACE_APP_VERSION = "1.4.0";
 const DESKTOP_ONLY_REQUIRED_REASON = "cache, move, backup, and WASM artifact paths still depend on desktop Node fs/path APIs";
 const DESKTOP_ONLY_API_PATTERNS = [
@@ -167,7 +168,7 @@ assert(fs.existsSync(releasePreparePath), "Release preparation script is require
 const releasePrepare = fs.readFileSync(releasePreparePath, "utf8");
 const gitignore = fs.readFileSync(gitignorePath, "utf8");
 assert(
-  releaseWorkflow.includes("npm run prepare:release"),
+  releaseWorkflow.includes(isDevLayout ? "npm --prefix source-recovery run prepare:release" : "npm run prepare:release"),
   "Release workflow must use the validated release preparation script"
 );
 assert(releaseWorkflow.includes('"*.*.*"'), "Release workflow must trigger on dotted tag candidates");

@@ -10,6 +10,7 @@ export class FolderSelectorModal extends obsidian.Modal {
   private settled = false;
   private listenerCleanups: Array<() => void> = [];
   private focusTimer: TimerHandle | null = null;
+  private focusTimerWindow: Window | null = null;
   private readonly returnFocusTo: HTMLElement | null;
 
   constructor(plugin: LocalImageCompressPlugin, folderPaths: string[], resolveSelection: (value: string | null) => void) {
@@ -83,16 +84,23 @@ export class FolderSelectorModal extends obsidian.Modal {
       () => contentEl.removeEventListener("keydown", onContentKeydown)
     );
 
+    const ownerWindow = contentEl.win || this.plugin.getActiveWindow();
+    this.focusTimerWindow = ownerWindow;
     this.focusTimer = this.plugin.setWindowTimeout(() => {
       this.focusTimer = null;
+      this.focusTimerWindow = null;
       select.focus();
-    }, 0);
+    }, 0, ownerWindow);
   }
 
   override onClose() {
     if (this.focusTimer) {
-      this.plugin.clearWindowTimeout(this.focusTimer);
+      this.plugin.clearWindowTimeout(
+        this.focusTimer,
+        this.focusTimerWindow || this.contentEl.win || this.plugin.getActiveWindow()
+      );
       this.focusTimer = null;
+      this.focusTimerWindow = null;
     }
     for (const listenerCleanup of this.listenerCleanups) {
       listenerCleanup();

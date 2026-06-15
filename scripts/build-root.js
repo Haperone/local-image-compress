@@ -4,9 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const root = path.resolve(__dirname, "..");
-const rootMainPath = path.join(root, "main.js");
+const { repositoryRoot, sourceRoot: root } = resolveRepositoryLayout();
+const rootMainPath = path.join(repositoryRoot, "main.js");
 const generatedPath = path.join(root, "dist-ts", "main.js");
 
 const build = spawnSync(process.execPath, [path.join(root, "scripts", "build-ts.js"), "--production"], {

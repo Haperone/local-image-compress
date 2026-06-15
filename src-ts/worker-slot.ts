@@ -1,7 +1,6 @@
 import type { LocalImageCompressSettings } from "./settings";
 import type { TimerHandle } from "./types";
 import { clearTimeout as fallbackClearTimeout, setTimeout as fallbackSetTimeout } from "timers";
-import { getActiveWindowForApp } from "./utils";
 
 export type WorkerFormat = "png" | "jpeg";
 export type WorkerFactory = (source: string) => Worker;
@@ -401,10 +400,6 @@ export class WorkerSlot {
   }
 
   private setWorkerTimeout(callback: () => void, delay: number) {
-    const windowRef = getActiveWindowForApp(this.getApp());
-    if (windowRef) {
-      return windowRef.setTimeout(callback, delay);
-    }
     if (typeof window !== "undefined") {
       return window.setTimeout(callback, delay);
     }
@@ -413,11 +408,6 @@ export class WorkerSlot {
 
   private clearWorkerTimeout(timeoutHandle: TimerHandle | null | undefined) {
     if (timeoutHandle === null || timeoutHandle === undefined) {
-      return;
-    }
-    const windowRef = getActiveWindowForApp(this.getApp());
-    if (windowRef) {
-      windowRef.clearTimeout(timeoutHandle as number);
       return;
     }
     if (typeof window !== "undefined") {

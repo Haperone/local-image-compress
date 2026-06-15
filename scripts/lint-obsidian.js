@@ -1,15 +1,16 @@
 const path = require("path");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
 async function main() {
-  const repositoryRoot = path.resolve(__dirname, "..");
+  const { isDevLayout, repositoryRoot, sourceRoot } = resolveRepositoryLayout();
   process.chdir(repositoryRoot);
   const { ESLint } = require("eslint");
   const eslint = new ESLint({
     cwd: repositoryRoot,
-    overrideConfigFile: path.join(repositoryRoot, "eslint.obsidian.config.mjs"),
+    overrideConfigFile: path.join(sourceRoot, "eslint.obsidian.config.mjs"),
     fix: process.argv.includes("--fix")
   });
-  const results = await eslint.lintFiles(["src-ts/"]);
+  const results = await eslint.lintFiles([isDevLayout ? "source-recovery/src-ts/" : "src-ts/"]);
   await ESLint.outputFixes(results);
   const formatter = await eslint.loadFormatter("stylish");
   const output = formatter.format(results);

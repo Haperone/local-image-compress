@@ -4,9 +4,9 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const sourceRoot = path.resolve(__dirname, "..");
-const root = sourceRoot;
+const { repositoryRoot: root, sourceRoot } = resolveRepositoryLayout();
 const rootMainPath = path.join(root, "main.js");
 const releaseFiles = ["manifest.json", "main.js", "styles.css", "versions.json"];
 

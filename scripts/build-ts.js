@@ -4,11 +4,15 @@ const fs = require("fs");
 const path = require("path");
 const childProcess = require("child_process");
 const esbuild = require("esbuild");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const root = path.resolve(__dirname, "..");
+const { isDevLayout, sourceRoot: root } = resolveRepositoryLayout();
 const esbuildCli = require.resolve("esbuild/bin/esbuild");
 const production = process.argv.includes("--production");
-const generatedBanner = "/* GENERATED/BUNDLED FILE. Review source at https://github.com/haperone/local-image-compress */";
+const sourceRepositoryUrl = isDevLayout
+  ? "https://github.com/haperone/local-image-compress_DEV"
+  : "https://github.com/haperone/local-image-compress";
+const generatedBanner = `/* GENERATED/BUNDLED FILE. Review source at ${sourceRepositoryUrl} */`;
 
 function runEsbuildCli(args) {
   childProcess.execFileSync(process.execPath, [esbuildCli, ...args], {

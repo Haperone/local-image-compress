@@ -92,7 +92,7 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
   compressor!: Compressor;
   statusBarItem: HTMLElement | null;
   managedModals: Set<ManagedModal>;
-  modalFocusTimers: Map<number, Window>;
+  modalFocusTimers: Map<Window, Set<number>>;
   settingsTab: SettingsTab | null;
   initializationPromise: Promise<void> | null;
 
@@ -225,8 +225,10 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
       }
       this.indexRefreshTimers.clear();
     }
-    for (const [timer, ownerWindow] of this.modalFocusTimers) {
-      ownerWindow.clearTimeout(timer);
+    for (const [ownerWindow, timers] of this.modalFocusTimers) {
+      for (const timer of timers) {
+        ownerWindow.clearTimeout(timer);
+      }
     }
     this.modalFocusTimers.clear();
     this.newFileQueue.cleanup();
@@ -391,21 +393,21 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
       || this.getActiveWindow().document
       || window.document;
   }
-  setWindowTimeout(callback: (...args: never[]) => unknown, delay: number) {
-    return window.setTimeout(callback, delay);
+  setWindowTimeout(callback: (...args: never[]) => unknown, delay: number, ownerWindow: Window = window) {
+    return ownerWindow.setTimeout(callback, delay);
   }
   requestWindowAnimationFrame(callback: FrameRequestCallback) {
     const ownerWindow = this.statusBarItem?.win || this.getActiveWindow();
     if (ownerWindow.requestAnimationFrame) {
       return ownerWindow.requestAnimationFrame(callback);
     }
-    return this.setWindowTimeout(callback, 0);
+    return this.setWindowTimeout(callback, 0, ownerWindow);
   }
-  clearWindowTimeout(timer: TimerHandle | null | undefined) {
+  clearWindowTimeout(timer: TimerHandle | null | undefined, ownerWindow: Window = window) {
     if (timer === null || timer === undefined) {
       return;
     }
-    window.clearTimeout(timer as number);
+    ownerWindow.clearTimeout(timer as number);
   }
   async yieldToUi() {
     await new Promise((resolve) => {
@@ -947,12 +949,18 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
     }
     const ownerWindow = target.ownerDocument?.defaultView || this.getActiveWindow();
     const timer = ownerWindow.setTimeout(() => {
-      this.modalFocusTimers.delete(timer);
+      const ownerTimers = this.modalFocusTimers.get(ownerWindow);
+      ownerTimers?.delete(timer);
+      if (ownerTimers?.size === 0) {
+        this.modalFocusTimers.delete(ownerWindow);
+      }
       if (!this.isUnloading && target.isConnected) {
         target.focus();
       }
     }, 0);
-    this.modalFocusTimers.set(timer, ownerWindow);
+    const ownerTimers = this.modalFocusTimers.get(ownerWindow) || new Set<number>();
+    ownerTimers.add(timer);
+    this.modalFocusTimers.set(ownerWindow, ownerTimers);
   }
   restoreModalFocus(target: HTMLElement | null | undefined) {
     this.scheduleElementFocus(target);

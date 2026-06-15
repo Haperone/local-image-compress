@@ -25,6 +25,7 @@ export class StatusBarController {
   private openStatusMenuDocument: Document | null = null;
   private teardownStatusMenuListeners: (() => void) | null = null;
   private deferredClickTimer: TimerHandle | null = null;
+  private deferredClickTimerWindow: Window | null = null;
   private statusMenuFocusTarget: { focus?: () => void } | null = null;
 
   constructor(plugin: LocalImageCompressPlugin) {
@@ -164,15 +165,17 @@ export class StatusBarController {
       };
 
       // Defer click binding to avoid immediate close due to the opening click
+      this.deferredClickTimerWindow = activeWindow;
       this.deferredClickTimer = this.plugin.setWindowTimeout(() => {
         this.deferredClickTimer = null;
+        this.deferredClickTimerWindow = null;
         if (this.plugin.isUnloading || this.openStatusMenu !== menu || this.teardownStatusMenuListeners !== cleanup) {
           return;
         }
         // transient: menu-scoped, removed on close via cleanup() (registerDomEvent would leak across opens)
         activeDocument.addEventListener('click', onDocClick);
         clickListenerAttached = true;
-      }, 0);
+      }, 0, activeWindow);
       activeDocument.addEventListener('keydown', onKeyDown);
       activeWindow.addEventListener('blur', onBlur);
       return cleanup;
@@ -191,11 +194,15 @@ export class StatusBarController {
       return;
     }
     try {
-      this.plugin.clearWindowTimeout(this.deferredClickTimer);
+      this.plugin.clearWindowTimeout(
+        this.deferredClickTimer,
+        this.deferredClickTimerWindow || this.plugin.getActiveWindow()
+      );
     } catch (error) {
       this.ignoreNonCriticalError(error);
     }
     this.deferredClickTimer = null;
+    this.deferredClickTimerWindow = null;
   }
 
   private ignoreNonCriticalError(_error: unknown): void {
@@ -218,11 +225,7 @@ export class StatusBarController {
           focusTarget.focus();
         }
       });
-      this.plugin.setWindowTimeout(() => {
-        if (!this.plugin.isUnloading) {
-          focusTarget?.focus?.();
-        }
-      }, 0);
+      this.plugin.scheduleElementFocus(focusTarget as HTMLElement | null);
     } catch (error) {
       this.ignoreNonCriticalError(error);
     }

@@ -616,6 +616,15 @@
         const popoutContainer = popoutLeaf?.view?.containerEl;
         const popoutDocument = popoutContainer?.doc || popoutContainer?.ownerDocument;
         assert(popoutContainer && popoutDocument && popoutDocument !== document, "Obsidian popout leaf did not expose a distinct document");
+        const popoutWindow = popoutDocument.defaultView;
+        assert(!!popoutWindow, "Obsidian popout document did not expose its owning window");
+        let cancelledPopoutTimerFired = false;
+        const popoutTimer = p.settingsTab.setWindowTimeout(() => {
+          cancelledPopoutTimerFired = true;
+        }, 100, popoutWindow);
+        p.settingsTab.clearWindowTimeout(popoutTimer, popoutWindow);
+        await sleep(150);
+        assert(!cancelledPopoutTimerFired, "Settings timer was not cancelled through its owning popout window");
         const popoutTarget = popoutContainer.createDiv({ cls: "tiny-local-runtime-popout-tooltip-probe" });
         const savings = (await p.getStatsSnapshot()).savings;
         p.settingsTab.createSavingsTooltip(popoutTarget, savings);
@@ -626,7 +635,7 @@
         p.settingsTab.cleanupSavingsTooltips();
         popoutTarget.remove();
 
-        return { light, dark, reducedMotion: true, highContrast: true, popoutOwned: true };
+        return { light, dark, reducedMotion: true, highContrast: true, popoutOwned: true, popoutTimerOwned: true };
       } finally {
         document.body.classList.remove("theme-light", "theme-dark");
         if (originalThemeClasses.light) document.body.classList.add("theme-light");
