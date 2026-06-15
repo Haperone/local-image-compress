@@ -367,7 +367,9 @@ export class Compressor {
     if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) {
       return view.buffer as ArrayBuffer;
     }
-    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer;
+    const output = new ArrayBuffer(view.byteLength);
+    new Uint8Array(output).set(view);
+    return output;
   }
 
   toUint8Array(input: ArrayBuffer | Uint8Array | Uint8ClampedArray): Uint8Array {

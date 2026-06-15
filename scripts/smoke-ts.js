@@ -344,7 +344,9 @@ const verifyReleaseSource = fs.readFileSync(path.join(root, "scripts", "verify-r
 const classWideGatesSource = fs.readFileSync(path.join(root, "scripts", "class-wide-gates.js"), "utf8");
 const auditPolicySource = fs.readFileSync(path.join(root, "scripts", "audit-policy.js"), "utf8");
 const lintObsidianSource = fs.readFileSync(path.join(root, "scripts", "lint-obsidian.js"), "utf8");
+const eslintConfigSource = fs.readFileSync(path.join(root, "eslint.config.mjs"), "utf8");
 const eslintObsidianConfigSource = fs.readFileSync(path.join(root, "eslint.obsidian.config.mjs"), "utf8");
+const validateLicenseSource = fs.readFileSync(path.join(root, "scripts", "validate-license.js"), "utf8");
 const combinedTsSource = [
   backupStorageSource,
   backgroundCompressionServiceSource,
@@ -384,6 +386,12 @@ if (obsidianBoundaryAuditSource) {
   assert(obsidianBoundaryAuditSource.includes("Intentional Vault Iteration") && obsidianBoundaryAuditSource.includes("`DeferredViews` is not applicable") && obsidianBoundaryAuditSource.includes("Plugin registry enable/disable"), "Obsidian API boundary audit is missing lifecycle/private/full-scan classification");
 }
 assert(!compressorSource.includes("openSync(") && !compressorSource.includes("readSync("), "Compressor still performs dead binary header reads before compression");
+assert(
+  !combinedTsSource.includes("slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer")
+    && !combinedTsSource.includes("slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer")
+    && (combinedTsSource.match(/const output = new ArrayBuffer\([^)]*\.byteLength\);/g) || []).length >= 3,
+  "Transfer helpers must copy partial views into owned ArrayBuffers without unsafe assertions"
+);
 const requiredSemanticSourceTokens = [
   "compress-images-in-note",
   "compress-images-in-folder",
@@ -928,6 +936,7 @@ assert(packageSource.scripts["audit:policy"] === "node scripts/audit-policy.js" 
 assert(packageSource.scripts["audit:policy:bundle"] === "node scripts/audit-policy.js --require-bundle" && packageSource.scripts["test:release"].includes("npm run audit:policy:bundle"), "Release tests must run the policy audit against the built production bundle");
 assert(packageSource.scripts["lint:eslint"] === "eslint src-ts/" && packageSource.scripts.test.includes("npm run lint:eslint"), "package.json must keep lint:eslint executable and wired into npm test");
 assert(packageSource.scripts["lint:obsidian"] === "node scripts/lint-obsidian.js" && packageSource.scripts.test.includes("npm run lint:obsidian"), "package.json must keep the Obsidian scanner executable and blocking in npm test");
+assert(eslintConfigSource.includes("\"@typescript-eslint/no-unnecessary-type-assertion\": \"error\""), "Standard ESLint must reject unnecessary type assertions");
 assert(eslintObsidianConfigSource.includes("recommendedWithLocalesEn") && eslintObsidianConfigSource.includes("src-ts/i18n.ts") && eslintObsidianConfigSource.includes("sourcePrefix"), "Obsidian scanner config must cover the current recommended rules and layout-aware English locale source");
 assert(lintObsidianSource.includes("warningCount === 0") && lintObsidianSource.includes("errorCount === 0"), "Obsidian scanner wrapper must reject both errors and warnings");
 assert(packageSource.devDependencies["@jsquash/jpeg"], "package.json is missing @jsquash/jpeg");
@@ -990,7 +999,14 @@ for (const token of [
 ]) {
   assert(releasePolicySource.includes(token), `RELEASE_POLICY.md is missing release policy token: ${token}`);
 }
-assert(classWideGatesSource.includes("addEmptyCatchFindings") && classWideGatesSource.includes("--self-test") && classWideGatesSource.includes("multiline empty catch"), "class-wide-gates.js does not guard multiline empty catch detection");
+assert(
+  classWideGatesSource.includes("addEmptyCatchFindings")
+    && classWideGatesSource.includes("addDuplicateCssDeclarationFindings")
+    && classWideGatesSource.includes("duplicate-css-property")
+    && classWideGatesSource.includes("--self-test")
+    && classWideGatesSource.includes("multiline empty catch"),
+  "class-wide-gates.js does not guard multiline empty catches and duplicate CSS properties"
+);
 for (const pattern of [
   /^node_modules\/$/m,
   /^main\.js$/m,
@@ -1004,7 +1020,19 @@ for (const pattern of [
   assert(pattern.test(gitignoreSource), `.gitignore is missing required generated/local artifact pattern: ${pattern}`);
 }
 assert(gitignoreSource.includes("qa-backups/"), ".gitignore is missing QA output ignores");
-assert(licenseSource.includes("SPDX-License-Identifier: GPL-3.0-or-later") && licenseSource.includes("GNU GENERAL PUBLIC LICENSE") && licenseSource.includes("17. Interpretation of Sections 15 and 16.") && licenseSource.length > 30000, "LICENSE must contain the project grant and complete GPL v3 text");
+assert(
+  licenseSource.startsWith("GNU GENERAL PUBLIC LICENSE")
+    && licenseSource.includes("END OF TERMS AND CONDITIONS")
+    && licenseSource.includes("How to Apply These Terms to Your New Programs")
+    && !licenseSource.includes("libimagequant"),
+  "LICENSE must remain the canonical recognizable GPL text"
+);
+assert(
+  validateLicenseSource.includes("FB981668C18A279E285FC4D83FBA1E836CC84DD4DAA73C9697D3CFD2D8ACA6E0")
+    && validateLicenseSource.includes("licenses/imagequant.txt")
+    && validateLicenseSource.includes("installedImagequantLicense"),
+  "License validation must pin the canonical GPL text and the exact imagequant license"
+);
 assert(auditPolicySource.includes("Policy audit passed") && auditPolicySource.includes("expectedFullVaultScans") && auditPolicySource.includes("expectedFsBoundaryFiles"), "Policy audit is missing blocking source/filesystem inventory guards");
 if (obsidianReleaseAuditSource) {
   assert(obsidianReleaseAuditSource.includes("Checked: 2026-06-09") && obsidianReleaseAuditSource.includes("No unresolved violations") && obsidianReleaseAuditSource.includes("Dormant vendor fallbacks"), "OBSIDIAN_RELEASE_AUDIT.md is not the current authoritative policy audit");

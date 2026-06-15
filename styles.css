@@ -350,7 +350,6 @@
 	width: var(--local-image-compress-progress-width, 0%);
 	background-color: var(--interactive-accent);
 	transition: width 0.3s ease;
-	width: 0%;
 }
 
 .tiny-local-progress-title {

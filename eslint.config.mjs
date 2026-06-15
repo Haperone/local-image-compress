@@ -27,6 +27,7 @@ export default [
     },
     rules: {
       "@typescript-eslint/no-floating-promises": ["error", { ignoreVoid: false }],
+      "@typescript-eslint/no-unnecessary-type-assertion": "error",
       "no-empty": ["error", { allowEmptyCatch: false }],
       "no-restricted-syntax": [
         "error",

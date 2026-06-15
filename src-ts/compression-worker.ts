@@ -119,7 +119,9 @@ function toTransferableArrayBuffer(input: ArrayBuffer | Uint8Array): ArrayBuffer
   if (input.byteOffset === 0 && input.byteLength === input.buffer.byteLength) {
     return input.buffer as ArrayBuffer;
   }
-  return input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer;
+  const output = new ArrayBuffer(input.byteLength);
+  new Uint8Array(output).set(input);
+  return output;
 }
 
 function validateEncodedOutput(format: WorkerCompressMessage["format"], output: ArrayBuffer | Uint8Array) {

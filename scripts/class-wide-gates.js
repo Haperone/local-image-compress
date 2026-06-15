@@ -2,9 +2,11 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveRepositoryLayout } = require("./repository-layout");
 
-const root = path.resolve(__dirname, "..");
+const { repositoryRoot, sourceRoot: root } = resolveRepositoryLayout();
 const sourceRoot = path.join(root, "src-ts");
+const stylesPath = path.join(repositoryRoot, "styles.css");
 
 const syncFsMethods = [
   "accessSync",
@@ -199,11 +201,116 @@ function addEmptyCatchFindings(source, relativePath, findings) {
   }
 }
 
+function maskCssComments(source) {
+  return source.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\r\n]/g, " "));
+}
+
+function addDuplicateCssDeclarationFindings(source, relativePath, findings) {
+  const css = maskCssComments(source);
+  const frames = [];
+  let quote = null;
+  let escaped = false;
+  let parenthesesDepth = 0;
+
+  const processDeclaration = (frame, endOffset) => {
+    const rawDeclaration = css.slice(frame.declarationStart, endOffset);
+    const declaration = rawDeclaration.trim();
+    if (!declaration) {
+      return;
+    }
+    const colonIndex = declaration.indexOf(":");
+    if (colonIndex <= 0) {
+      return;
+    }
+    const property = declaration.slice(0, colonIndex).trim().toLowerCase();
+    if (!/^-{0,2}[a-z_][a-z0-9_-]*$/i.test(property)) {
+      return;
+    }
+    const declarationOffset = frame.declarationStart + rawDeclaration.length - rawDeclaration.trimStart().length;
+    const firstOffset = frame.properties.get(property);
+    if (firstOffset !== undefined) {
+      findings.push({
+        rule: "duplicate-css-property",
+        file: relativePath,
+        line: getLineNumber(source, declarationOffset),
+        text: declaration.replace(/\s+/g, " "),
+        message: `CSS property "${property}" is duplicated in one declaration block; first declared on line ${getLineNumber(source, firstOffset)}.`
+      });
+      return;
+    }
+    frame.properties.set(property, declarationOffset);
+  };
+
+  for (let index = 0; index < css.length; index += 1) {
+    const character = css[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") {
+      parenthesesDepth += 1;
+      continue;
+    }
+    if (character === ")" && parenthesesDepth > 0) {
+      parenthesesDepth -= 1;
+      continue;
+    }
+    if (parenthesesDepth > 0) {
+      continue;
+    }
+    if (character === "{") {
+      if (frames.length > 0) {
+        frames[frames.length - 1].declarationStart = index + 1;
+      }
+      frames.push({
+        declarationStart: index + 1,
+        properties: new Map()
+      });
+      continue;
+    }
+    if (character === ";" && frames.length > 0) {
+      const frame = frames[frames.length - 1];
+      processDeclaration(frame, index);
+      frame.declarationStart = index + 1;
+      continue;
+    }
+    if (character === "}" && frames.length > 0) {
+      const frame = frames.pop();
+      processDeclaration(frame, index);
+      if (frames.length > 0) {
+        frames[frames.length - 1].declarationStart = index + 1;
+      }
+    }
+  }
+}
+
 if (process.argv.includes("--self-test")) {
   const selfTestFindings = [];
   addEmptyCatchFindings("function demo() {\n  try {\n    work();\n  } catch (error) {\n  }\n}\n", "self-test.ts", selfTestFindings);
   if (!selfTestFindings.some((finding) => finding.rule === "empty-catch" && finding.line === 4)) {
     console.error("Class-wide gates self-test failed: multiline empty catch was not detected.");
+    process.exit(1);
+  }
+  const duplicateCssFindings = [];
+  addDuplicateCssDeclarationFindings(".demo {\n  width: 10px;\n  color: red;\n  width: 20px;\n}\n", "self-test.css", duplicateCssFindings);
+  if (!duplicateCssFindings.some((finding) => finding.rule === "duplicate-css-property" && finding.line === 4)) {
+    console.error("Class-wide gates self-test failed: duplicate CSS property was not detected.");
+    process.exit(1);
+  }
+  const validCssFindings = [];
+  addDuplicateCssDeclarationFindings("@media (max-width: 600px) {\n  .demo { width: var(--width, 0%); }\n}\n@keyframes fade { from { opacity: 0; } to { opacity: 1; } }\n", "valid.css", validCssFindings);
+  if (validCssFindings.length > 0) {
+    console.error("Class-wide gates self-test failed: valid nested CSS produced a false positive.");
     process.exit(1);
   }
   console.log("Class-wide gates self-test passed.");
@@ -245,6 +352,18 @@ for (const target of parseTargets(process.argv.slice(2))) {
       }
     });
   }
+}
+
+if (!fs.existsSync(stylesPath)) {
+  findings.push({
+    rule: "missing-styles",
+    file: "styles.css",
+    line: 0,
+    text: "",
+    message: "styles.css is required for CSS linting."
+  });
+} else {
+  addDuplicateCssDeclarationFindings(fs.readFileSync(stylesPath, "utf8"), "styles.css", findings);
 }
 
 if (findings.length === 0) {

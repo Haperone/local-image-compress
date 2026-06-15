@@ -12,8 +12,8 @@ Exact license texts copied from the pinned packages are tracked locally:
   JavaScript wrappers.
 - `licenses/jpeg-codec.txt` for the bundled libjpeg-turbo codec.
 - `licenses/png-codec.txt` for the bundled PNG codec.
-- `LICENSE` for `imagequant`/libimagequant and this GPL-3.0-or-later
-  distribution.
+- `licenses/imagequant.txt` for `imagequant`/libimagequant.
+- `LICENSE` for this GPL-3.0-or-later distribution.
 
 `npm run test:release` verifies these copies byte-for-byte against the pinned
 installed packages and validates the embedded WASM hashes.
@@ -55,7 +55,8 @@ Exact texts: `licenses/Apache-2.0.txt` and `licenses/png-codec.txt`.
 ## imagequant / libimagequant integrity
 
 - Package version: `0.1.2`.
-- Exact GPL-3.0 text: `LICENSE`.
+- Exact upstream package license: `licenses/imagequant.txt`.
+- Distribution license: `LICENSE`.
 - Embedded codec hashes: `wasm-hashes.json`.
 
 The release artifact does not include native compressor executables or
