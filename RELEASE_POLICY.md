@@ -48,6 +48,12 @@ The ignored `build/` staging directory is recreated on every release. It must
 not contain source workspaces, package metadata, caches, settings, backups,
 QA output, or dependencies.
 
+Releases are built, attested, and published by the tag-triggered GitHub Actions
+workflow. The workflow records GitHub artifact attestations for the staged
+install files before uploading them. Manual local release uploads are not part
+of the supported release process because they cannot establish build
+provenance from the repository workflow.
+
 ## Version ownership
 
 The current version must agree across `manifest.json`, `versions.json`, root

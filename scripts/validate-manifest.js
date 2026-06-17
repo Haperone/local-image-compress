@@ -173,6 +173,15 @@ assert(
 assert(releaseWorkflow.includes('"*.*.*"'), "Release workflow must trigger on dotted tag candidates");
 assert(releaseWorkflow.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$"), "Release workflow must validate exact numeric SemVer tags");
 assert(!releaseWorkflow.includes("GITHUB_REF_NAME#v") && !releaseWorkflow.includes('"v*"'), "Release workflow must reject v-prefixed tags");
+const releaseJobIndex = releaseWorkflow.indexOf("\n  release:\n");
+assert(releaseJobIndex >= 0, "Release workflow must define a release job");
+const releaseJob = releaseWorkflow.slice(releaseJobIndex);
+const prepareIndex = releaseJob.indexOf("- name: Prepare artifacts");
+const attestIndex = releaseJob.indexOf("uses: actions/attest@v4");
+const publishIndex = releaseJob.indexOf("uses: softprops/action-gh-release@v2");
+assert(releaseJob.includes("attestations: write") && releaseJob.includes("id-token: write"), "Release job must grant artifact attestation permissions");
+assert(releaseJob.includes("subject-path: build/*"), "Release job must attest the staged release allowlist");
+assert(prepareIndex >= 0 && prepareIndex < attestIndex && attestIndex < publishIndex, "Release job must prepare, attest, then publish artifacts");
 assert(releasePrepare.includes('["manifest.json", "main.js", "styles.css"]'), "Release preparation script must use the explicit install-file allowlist");
 assert(!releaseWorkflow.includes("build/versions.json"), "Release workflow must not upload versions.json as a GitHub Release asset");
 assert(!releasePrepare.includes('"versions.json"'), "Release preparation script must not stage versions.json as a GitHub Release asset");
