@@ -148,7 +148,7 @@ Cache entries pointing to removed or missing files. You can clear them in settin
 ### Metadata
 - ID: `local-image-compress`
 - Name: `Local Image Compress`
-- Version: `1.0.0`
+- Version: `1.0.1`
 - Min app version: `1.4.0`
 - Desktop-only: yes
 - Repository: `https://github.com/haperone/local-image-compress`

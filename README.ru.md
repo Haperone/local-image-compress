@@ -148,7 +148,7 @@ WebP, GIF, BMP, HEIC/HEIF и AVIF в этом релизе намеренно п
 ### Метаданные
 - ID: `local-image-compress`
 - Имя: `Local Image Compress`
-- Версия: `1.0.0`
+- Версия: `1.0.1`
 - Минимальная версия приложения: `1.4.0`
 - Desktop-only: да
 - Репозиторий: `https://github.com/haperone/local-image-compress`
