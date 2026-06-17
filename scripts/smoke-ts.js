@@ -973,12 +973,18 @@ if (isDevLayout) {
   assert(rootPackageSource.scripts.build === "npm run build:root", "Standalone package.json build must use the local source build");
   assert(rootPackageSource.scripts.test.includes("npm run test:ts") && rootPackageSource.scripts["test:release"].includes("npm run verify:release"), "Standalone package.json test scripts must run local source and release verification");
 }
-assert(Array.isArray(rootPackageSource.files) && JSON.stringify(rootPackageSource.files) === JSON.stringify(["manifest.json", "main.js", "styles.css", "versions.json"]), "Root package.json files allowlist must contain only Obsidian install artifacts");
+assert(Array.isArray(rootPackageSource.files) && JSON.stringify(rootPackageSource.files) === JSON.stringify(["manifest.json", "main.js", "styles.css"]), "Root package.json files allowlist must contain only Obsidian install artifacts");
 assert(!releaseWorkflowSource.includes("build/package.json") && !releaseWorkflowSource.includes("build/README.md") && releaseWorkflowSource.includes("npm run test:release"), "Release workflow still ships dev package metadata or bypasses root test:release");
 assert(releaseWorkflowSource.includes('"*.*.*"') && releaseWorkflowSource.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$") && !releaseWorkflowSource.includes('"v*"') && !releaseWorkflowSource.includes("GITHUB_REF_NAME#v"), "Release workflow does not combine a dotted tag trigger with exact numeric SemVer validation");
 assert((releaseWorkflowSource.match(/actions\/checkout@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/actions\/setup-node@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/node-version:\s*"24"/g) || []).length === 2, "Release workflow must use checkout/setup-node v6 and Node 24 in both jobs");
 const releasePrepareCommand = isDevLayout ? "npm --prefix source-recovery run prepare:release" : "npm run prepare:release";
-assert(releaseWorkflowSource.includes(releasePrepareCommand) && prepareReleaseSource.includes('["manifest.json", "main.js", "styles.css", "versions.json"]'), "Release workflow does not use the exact install-file staging allowlist");
+assert(
+  releaseWorkflowSource.includes(releasePrepareCommand)
+    && prepareReleaseSource.includes('["manifest.json", "main.js", "styles.css"]')
+    && !releaseWorkflowSource.includes("build/versions.json")
+    && !prepareReleaseSource.includes('"versions.json"'),
+  "Release workflow does not use the exact supported Obsidian install-file staging allowlist"
+);
 assert(validateManifestSource.includes("forbiddenReleaseEntries") && validateManifestSource.includes("package.json must declare a files allowlist"), "Manifest validation does not guard release packaging against dev artifact leaks");
 assert(validateManifestSource.includes("MIN_API_SURFACE_APP_VERSION") && validateManifestSource.includes("activeWindow/activeDocument/getBasePath"), "Manifest validation does not enforce API-surface minAppVersion");
 assert(validateManifestSource.includes("manifest.json authorUrl must be a valid URL") && validateManifestSource.includes("must not point to localhost"), "Manifest validation does not reject malformed or local authorUrl values");

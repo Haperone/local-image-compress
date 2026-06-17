@@ -15,7 +15,7 @@ Release самодостаточный. Устанавливать `pngquant`, `
 
 Исходники находятся в `src-ts`. Корневой `main.js` генерируется и игнорируется Git, поэтому в репозитории остаётся читаемый TypeScript, а не compiled output. `npm run build` создаёт production-minified локальный bundle; `npm run test:release` собирает его дважды, проверяет детерминированные байты, inline WASM и точный allowlist релиза.
 
-GitHub release artifact содержит только install-файлы Obsidian: `manifest.json`, `main.js`, `styles.css` и `versions.json`. Минификация не является обфускацией: полный читаемый исходный код остаётся в репозитории. Теги имеют точный numeric SemVer без префикса `v`. См. [RELEASE_POLICY.md](RELEASE_POLICY.md).
+GitHub release artifact содержит только install-файлы Obsidian: `manifest.json`, `main.js` и `styles.css`. `versions.json` остаётся в репозитории как compatibility metadata, но не загружается как release asset. Минификация не является обфускацией: полный читаемый исходный код остаётся в репозитории. Теги имеют точный numeric SemVer без префикса `v`. См. [RELEASE_POLICY.md](RELEASE_POLICY.md).
 
 ### Возможности
 - **Локальное сжатие**: PNG через libimagequant-wasm и PNG WASM decode; JPEG через mozjpeg-wasm.

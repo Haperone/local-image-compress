@@ -23,7 +23,7 @@ installed production bundle locally or in CI.
 3. Rebuilds production output and requires byte-identical SHA-256 results.
 4. Runs `verify:root-ts` to prove root `main.js` equals the generated
    production artifact.
-5. Recreates `build/` from an explicit four-file allowlist.
+5. Recreates `build/` from the explicit Obsidian install-file allowlist.
 
 The production build has no source map and keeps WASM codecs inline, so users
 do not need package dependencies, external binaries, or separate `.wasm`
@@ -40,7 +40,9 @@ GitHub release assets are exactly:
 - `manifest.json`
 - `main.js`
 - `styles.css`
-- `versions.json`
+
+`versions.json` remains tracked in the repository for compatibility metadata,
+but it is not a GitHub Release asset.
 
 The ignored `build/` staging directory is recreated on every release. It must
 not contain source workspaces, package metadata, caches, settings, backups,

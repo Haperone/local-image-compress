@@ -8,8 +8,7 @@
   "files": [
     "manifest.json",
     "main.js",
-    "styles.css",
-    "versions.json"
+    "styles.css"
   ],
   "scripts": {
     "lint": "node scripts/class-wide-gates.js",

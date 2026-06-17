@@ -33,7 +33,7 @@ The release is self-contained. You do not need `pngquant`, `mozjpeg`, Homebrew, 
 
 Source lives in `src-ts`. Root `main.js` is generated and ignored, so readable TypeScript rather than compiled output stays in Git. `npm run build` creates a production-minified local bundle; `npm run test:release` rebuilds it twice, requires deterministic bytes, validates inline WASM, and stages the release allowlist.
 
-The GitHub release artifact contains only Obsidian install files: `manifest.json`, `main.js`, `styles.css`, and `versions.json`. Production minification is not obfuscation: the complete source remains readable in the repository. Tags are exact numeric SemVer without a `v` prefix. See [RELEASE_POLICY.md](RELEASE_POLICY.md).
+The GitHub release artifact contains only Obsidian install files: `manifest.json`, `main.js`, and `styles.css`. `versions.json` stays in the repository for compatibility metadata, but it is not uploaded as a release asset. Production minification is not obfuscation: the complete source remains readable in the repository. Tags are exact numeric SemVer without a `v` prefix. See [RELEASE_POLICY.md](RELEASE_POLICY.md).
 
 ### Commands
 - **Compress all images in note**: Processes images referenced/used in the active note.

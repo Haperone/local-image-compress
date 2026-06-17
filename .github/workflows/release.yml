@@ -76,6 +76,5 @@ jobs:
             build/manifest.json
             build/main.js
             build/styles.css
-            build/versions.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

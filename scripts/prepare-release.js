@@ -6,7 +6,7 @@ const { resolveRepositoryLayout } = require("./repository-layout");
 
 const { repositoryRoot: root } = resolveRepositoryLayout();
 const buildDir = path.join(root, "build");
-const releaseFiles = ["manifest.json", "main.js", "styles.css", "versions.json"];
+const releaseFiles = ["manifest.json", "main.js", "styles.css"];
 
 fs.rmSync(buildDir, { recursive: true, force: true });
 fs.mkdirSync(buildDir, { recursive: true });

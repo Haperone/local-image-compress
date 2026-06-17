@@ -136,8 +136,7 @@ for (const [version, minAppVersion] of Object.entries(versions)) {
 const releaseFiles = [
   "manifest.json",
   "main.js",
-  "styles.css",
-  "versions.json"
+  "styles.css"
 ];
 const forbiddenReleaseEntries = [
   "cache-backups",
@@ -174,7 +173,9 @@ assert(
 assert(releaseWorkflow.includes('"*.*.*"'), "Release workflow must trigger on dotted tag candidates");
 assert(releaseWorkflow.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$"), "Release workflow must validate exact numeric SemVer tags");
 assert(!releaseWorkflow.includes("GITHUB_REF_NAME#v") && !releaseWorkflow.includes('"v*"'), "Release workflow must reject v-prefixed tags");
-assert(releasePrepare.includes('["manifest.json", "main.js", "styles.css", "versions.json"]'), "Release preparation script must use the explicit install-file allowlist");
+assert(releasePrepare.includes('["manifest.json", "main.js", "styles.css"]'), "Release preparation script must use the explicit install-file allowlist");
+assert(!releaseWorkflow.includes("build/versions.json"), "Release workflow must not upload versions.json as a GitHub Release asset");
+assert(!releasePrepare.includes('"versions.json"'), "Release preparation script must not stage versions.json as a GitHub Release asset");
 for (const pattern of [
   /^node_modules\/$/m,
   /^main\.js$/m,
