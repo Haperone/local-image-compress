@@ -176,9 +176,9 @@ assert(
 assert(
   releaseWorkflow.includes(isDevLayout ? "npm --prefix source-recovery run prepare:release-notes" : "npm run prepare:release-notes")
     && releaseWorkflow.includes("body_path: release-notes.md")
-    && releaseNotesPrepare.includes("CHANGELOG.md")
-    && releaseNotesPrepare.includes("## Unreleased"),
-  "Release workflow must publish notes from the promoted CHANGELOG"
+    && releaseNotesPrepare.includes('gitOutput(["log", "-1", "--format=%B", "HEAD"])')
+    && releaseNotesPrepare.includes("Release commit message has no promoted DEV subjects"),
+  "Release workflow must publish notes from the promoted PROD commit body"
 );
 assert(releaseWorkflow.includes('"*.*.*"'), "Release workflow must trigger on dotted tag candidates");
 assert(releaseWorkflow.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$"), "Release workflow must validate exact numeric SemVer tags");

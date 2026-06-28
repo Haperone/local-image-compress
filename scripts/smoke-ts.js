@@ -1048,7 +1048,7 @@ assert(
     && !prepareReleaseSource.includes('"versions.json"'),
   "Release workflow does not use the exact supported Obsidian install-file staging allowlist"
 );
-assert(releaseWorkflowSource.includes(releaseNotesCommand) && releaseWorkflowSource.includes("body_path: release-notes.md") && prepareReleaseNotesSource.includes("## Unreleased"), "Release workflow must generate its body from the promoted CHANGELOG Unreleased section");
+assert(releaseWorkflowSource.includes(releaseNotesCommand) && releaseWorkflowSource.includes("body_path: release-notes.md") && prepareReleaseNotesSource.includes('gitOutput(["log", "-1", "--format=%B", "HEAD"])') && prepareReleaseNotesSource.includes("Release commit message has no promoted DEV subjects"), "Release workflow must generate its body from the promoted PROD commit body");
 assert(validateManifestSource.includes("forbiddenReleaseEntries") && validateManifestSource.includes("package.json must declare a files allowlist"), "Manifest validation does not guard release packaging against dev artifact leaks");
 assert(validateManifestSource.includes("MIN_API_SURFACE_APP_VERSION") && validateManifestSource.includes("activeWindow/activeDocument/getBasePath"), "Manifest validation does not enforce API-surface minAppVersion");
 assert(validateManifestSource.includes("manifest.json authorUrl must be a valid URL") && validateManifestSource.includes("must not point to localhost"), "Manifest validation does not reject malformed or local authorUrl values");

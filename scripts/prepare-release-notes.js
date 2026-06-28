@@ -2,25 +2,31 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawnSync } = require("child_process");
 const { resolveRepositoryLayout } = require("./repository-layout");
 
 const { repositoryRoot } = resolveRepositoryLayout(__dirname);
-const changelogPath = path.join(repositoryRoot, "CHANGELOG.md");
 const outputPath = path.join(repositoryRoot, "release-notes.md");
 
-if (!fs.existsSync(changelogPath)) {
-  throw new Error("CHANGELOG.md is missing; run DEV to PROD promotion before creating a release");
+function gitOutput(args) {
+  const result = spawnSync("git", args, {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    windowsHide: true
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim()}`);
+  }
+  return result.stdout;
 }
 
-const changelog = fs.readFileSync(changelogPath, "utf8").replace(/\r\n/g, "\n");
-const heading = "## Unreleased";
-const headingIndex = changelog.indexOf(heading);
-const contentStart = headingIndex < 0 ? -1 : changelog.indexOf("\n", headingIndex) + 1;
-const nextSection = contentStart <= 0 ? -1 : changelog.indexOf("\n## ", contentStart);
-const notes = contentStart <= 0 ? "" : changelog.slice(contentStart, nextSection < 0 ? changelog.length : nextSection).trim();
-if (!notes || notes.includes("_No changes._")) {
-  throw new Error("CHANGELOG.md has no unreleased changes");
+const commitMessage = gitOutput(["log", "-1", "--format=%B", "HEAD"]).replace(/\r\n/g, "\n").trimEnd();
+const [, ...bodyLines] = commitMessage.split("\n");
+const notes = bodyLines.join("\n").trim();
+if (!notes) {
+  throw new Error("Release commit message has no promoted DEV subjects; create the PROD commit with npm run prod:commit");
 }
 
 fs.writeFileSync(outputPath, `${notes}\n`);
-process.stdout.write(`Prepared GitHub release notes from CHANGELOG.md: ${outputPath}\n`);
+process.stdout.write(`Prepared GitHub release notes from the release commit body: ${outputPath}\n`);
