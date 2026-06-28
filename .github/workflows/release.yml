@@ -69,6 +69,9 @@ jobs:
       - name: Prepare artifacts
         run: npm run prepare:release
 
+      - name: Prepare release notes
+        run: npm run prepare:release-notes
+
       - name: Attest release artifacts
         uses: actions/attest@v4
         with:
@@ -79,6 +82,7 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
+          body_path: release-notes.md
           files: |
             build/manifest.json
             build/main.js

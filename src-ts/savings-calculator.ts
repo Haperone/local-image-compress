@@ -285,7 +285,7 @@ export class SavingsCalculator {
     const currentFormatted = this.formatFileSize(savings.currentSize || 0);
     const savedFormatted = this.formatFileSize(savings.savedSize || 0);
     const estimatedIndicator = (savings.estimatedFiles || 0) > 0 ? " ~" : "";
-    const estimatedText = (savings.estimatedFiles || 0) > 0 ? ` (${savings.estimatedFiles} ${t(this.plugin.app, "tooltip.savings.estimated")})` : "";
+    const estimatedText = (savings.estimatedFiles || 0) > 0 ? ` (${t(this.plugin.app, "tooltip.savings.estimated")}: ${savings.estimatedFiles})` : "";
 
     return {
       originalFormatted,

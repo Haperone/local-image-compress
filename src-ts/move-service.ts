@@ -14,6 +14,9 @@ type CompressedFileRecord = {
   size: number;
   originalPath?: string;
   compressedSha256?: string;
+  originalSizeBeforeMove?: number;
+  originalMtimeMsBeforeMove?: number;
+  originalSha256BeforeMove?: string;
   moveSkipReason?: string;
   moveCandidates?: string[];
 };
@@ -427,13 +430,6 @@ export class MoveService {
           compressedFile.moveSkipReason = this.getMoveText("move.skip.compressedMissingBeforeBackup");
           return { compressedFile, skipped: true };
         }
-        const [originalSha256, compressedSha256] = await Promise.all([
-          streamHashSha256(originalPath),
-          streamHashSha256(compressedFile.compressedPath)
-        ]);
-        if (this.isUnloading()) {
-          return this.skipForUnload(compressedFile);
-        }
         const relativeToVault = path.relative(this.getVaultBasePath(), originalPath);
         const compressedRelativePath = path.relative(this.getVaultBasePath(), compressedFile.compressedPath);
         // Defensive: originals/compressed are expected inside the vault (allowed roots). Refuse to
@@ -444,6 +440,29 @@ export class MoveService {
         if (pathEscapesVault(relativeToVault) || pathEscapesVault(compressedRelativePath)) {
           compressedFile.moveSkipReason = this.getMoveText("move.skip.originalMissingBeforeBackup");
           return { compressedFile, skipped: true };
+        }
+        const pendingMove = await this.plugin.cache.resolvePendingMoveEntry({
+          path: normalizeVaultPath(relativeToVault),
+          stat: { mtime: originalStats.mtimeMs, size: originalStats.size }
+        }, normalizeVaultPath(compressedRelativePath));
+        if (pendingMove.status === "conflict") {
+          compressedFile.moveSkipReason = this.getMoveText("move.skip.externalModification");
+          return { compressedFile, skipped: true };
+        }
+        if (pendingMove.status === "match" && pendingMove.entry) {
+          const outputMatchesStats = this.plugin.cache.normalizeMtime(pendingMove.entry.outputMtime) === this.plugin.cache.normalizeMtime(compressedStats.mtimeMs)
+            && Number(pendingMove.entry.outputSize) === compressedStats.size;
+          if (!outputMatchesStats) {
+            compressedFile.moveSkipReason = this.getMoveText("move.skip.externalModification");
+            return { compressedFile, skipped: true };
+          }
+        }
+        const [originalSha256, compressedSha256] = await Promise.all([
+          streamHashSha256(originalPath),
+          streamHashSha256(compressedFile.compressedPath)
+        ]);
+        if (this.isUnloading()) {
+          return this.skipForUnload(compressedFile);
         }
         return {
           compressedFile,
@@ -534,6 +553,9 @@ export class MoveService {
           // BR-H1: carry the backup-verified content hash so the destructive overwrite
           // (moveSingleFile) can re-verify content, not just byte length.
           compressedFile.compressedSha256 = task.compressedSha256;
+          compressedFile.originalSizeBeforeMove = task.originalSize;
+          compressedFile.originalMtimeMsBeforeMove = task.originalMtimeMs;
+          compressedFile.originalSha256BeforeMove = task.originalSha256;
           result.files.push(compressedFile);
         } catch (error) {
           result.errorCount++;
@@ -632,6 +654,19 @@ export class MoveService {
       if (this.isUnloading()) {
         compressedFile.moveSkipReason = this.getMoveText("move.skip.unloading");
         return;
+      }
+      if (compressedFile.originalSizeBeforeMove !== undefined
+        && compressedFile.originalMtimeMsBeforeMove !== undefined
+        && (originalStats.size !== compressedFile.originalSizeBeforeMove || originalStats.mtimeMs !== compressedFile.originalMtimeMsBeforeMove)) {
+        compressedFile.moveSkipReason = this.getMoveText("move.skip.externalModification");
+        return;
+      }
+      if (compressedFile.originalSha256BeforeMove) {
+        const currentOriginalSha256 = await streamHashSha256(originalPath);
+        if (currentOriginalSha256 !== compressedFile.originalSha256BeforeMove) {
+          compressedFile.moveSkipReason = this.getMoveText("move.skip.externalModification");
+          return;
+        }
       }
       const vaultBasePath = this.getVaultBasePath();
       const originalRelativePath = normalizeVaultPath(path.relative(vaultBasePath, originalPath));

@@ -64,11 +64,7 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
   imageIndexConfigKey: string;
   indexRefreshTimers: Map<string, TimerHandle>;
   readonly BACKGROUND_COMPRESSION_NOTICE_COOLDOWN_MS: number;
-  readonly GHOST_CLEANUP_COMPRESSED_THRESHOLD: number;
-  readonly STALE_CACHE_PRUNE_COMPRESSED_THRESHOLD: number;
   backgroundCompressionNoticeAt: number;
-  ghostEntryDirtyCount: number;
-  staleCacheDirtyCount: number;
   compressionLimiter: ConcurrencyLimiter;
   pluginsToDisableDuringCompression: string[];
   pluginGuardService: PluginGuardService;
@@ -109,11 +105,7 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
     this.imageIndexConfigKey = "";
     this.indexRefreshTimers = new Map();
     this.BACKGROUND_COMPRESSION_NOTICE_COOLDOWN_MS = 30 * 60 * 1000;
-    this.GHOST_CLEANUP_COMPRESSED_THRESHOLD = 100;
-    this.STALE_CACHE_PRUNE_COMPRESSED_THRESHOLD = 100;
     this.backgroundCompressionNoticeAt = 0;
-    this.ghostEntryDirtyCount = 0;
-    this.staleCacheDirtyCount = 0;
     this.compressionLimiter = new ConcurrencyLimiter(1);
     this.pluginsToDisableDuringCompression = ["obsidian-paste-image-rename"];
     this.pluginGuardService = new PluginGuardService(this);
@@ -305,6 +297,7 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
     try {
       this.statusBarItem?.setText?.(t(this.app, "status.indexing"));
       await this.rebuildImageIndex("startup");
+      await this.cache.compactCache();
       if (!this.isUnloading) {
         await this.statusBarController.update();
       }
@@ -314,21 +307,6 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
   }
 
   async runStartupMaintenance() {
-    let cacheChanged = false;
-    if (this.settings.autoCleanupGhostsOnStart) {
-      try {
-        const removed = await this.cleanupGhostEntries();
-        cacheChanged = cacheChanged || removed > 0;
-      } catch (e) {
-        console.error(getLogTag(this), 'Startup ghost cleanup error:', e);
-      }
-    }
-    try {
-      const pruned = await this.cache.pruneStaleCacheEntries(this.settings.cacheRetentionMonths);
-      cacheChanged = cacheChanged || pruned > 0;
-    } catch (e) {
-      console.error(getLogTag(this), 'Startup cache retention error:', e);
-    }
     try {
       const backupDir = this.getBackupStoragePaths().originalFilesBackups;
       if (this.settings.autoBackupsRetentionEnabled) {
@@ -341,14 +319,9 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
     if (this.settings.autoMoveCompressedEnabled) {
       try {
         await this.tryAutoMoveCompressed();
-        cacheChanged = true;
       } catch (e) {
         console.error(getLogTag(this), 'Startup auto-move error:', e);
       }
-    }
-    if (cacheChanged) {
-      await this.rebuildImageIndex("startup-maintenance");
-      await this.statusBarController.update();
     }
   }
 
@@ -604,6 +577,7 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
     } else {
       this.removeImageIndexFile(file?.path);
     }
+    await this.cache.compactDeletedPath(file?.path);
     this.scheduleStatusBarUpdate("vault-delete");
   }
   async handleVaultRename(file: obsidian.TAbstractFile, oldPath: string) {
@@ -783,10 +757,6 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
         await this.cache.createBackup();
         // Update savings indicator in settings
         await this.updateSavingsIndicatorInSettings();
-        await this.maybeCleanupGhostEntriesAfterCompression(compressed);
-        if (await this.maybePruneStaleCacheEntriesAfterCompression(compressed) > 0) {
-          await this.rebuildImageIndex("cache-retention");
-        }
       }
       return {
         compressed,
@@ -799,50 +769,6 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
       };
     } finally {
       this.compressionWorkflowsInFlight--;
-    }
-  }
-  async maybeCleanupGhostEntriesAfterCompression(compressedCount: number) {
-    if (this.isUnloading || !this.cache?.isAcceptingWrites?.()) {
-      return 0;
-    }
-    const safeCompressedCount = typeof compressedCount === "number" && Number.isFinite(compressedCount) ? Math.max(0, Math.trunc(compressedCount)) : 0;
-    if (safeCompressedCount <= 0) {
-      return 0;
-    }
-    this.ghostEntryDirtyCount += safeCompressedCount;
-    if (this.ghostEntryDirtyCount < this.GHOST_CLEANUP_COMPRESSED_THRESHOLD) {
-      return 0;
-    }
-    try {
-      const removedCount = await this.cleanupGhostEntries();
-      this.ghostEntryDirtyCount = 0;
-      return removedCount;
-    } catch (error) {
-      this.ghostEntryDirtyCount = this.GHOST_CLEANUP_COMPRESSED_THRESHOLD;
-      console.error(getLogTag(this), "Automatic ghost cleanup error:", error);
-      return 0;
-    }
-  }
-  async maybePruneStaleCacheEntriesAfterCompression(compressedCount: number) {
-    if (this.isUnloading || !this.cache?.isAcceptingWrites?.()) {
-      return 0;
-    }
-    const safeCompressedCount = typeof compressedCount === "number" && Number.isFinite(compressedCount) ? Math.max(0, Math.trunc(compressedCount)) : 0;
-    if (safeCompressedCount <= 0) {
-      return 0;
-    }
-    this.staleCacheDirtyCount += safeCompressedCount;
-    if (this.staleCacheDirtyCount < this.STALE_CACHE_PRUNE_COMPRESSED_THRESHOLD) {
-      return 0;
-    }
-    try {
-      const prunedCount = await this.cache.pruneStaleCacheEntries(this.settings.cacheRetentionMonths);
-      this.staleCacheDirtyCount = 0;
-      return prunedCount;
-    } catch (error) {
-      this.staleCacheDirtyCount = this.STALE_CACHE_PRUNE_COMPRESSED_THRESHOLD;
-      console.error(getLogTag(this), "Automatic cache retention error:", error);
-      return 0;
     }
   }
   // Batch compression in background (no modal)
@@ -1202,9 +1128,6 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
     await this.cache.addToCache(cacheKey, sizeSnapshot, file, this.savingsCalculator.getCompressedFilePath(pathSnapshot), pathSnapshot, mtimeSnapshot);
     await this.cache.createBackup();
     await this.updateImageIndexForFile(file);
-    if (await this.maybePruneStaleCacheEntriesAfterCompression(1) > 0) {
-      await this.rebuildImageIndex("cache-retention");
-    }
     await this.statusBarController.update();
     
     // Update savings indicator in settings if settings tab is open
@@ -1443,14 +1366,10 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
   }
   async getStatsSnapshot() {
     const imageStats = await this.savingsCalculator.collectImageStats(this.getAllImageFiles());
-    const [ghostCount, compressedFilesCount] = await Promise.all([
-      this.getGhostEntriesCount(),
-      this.moveService.getCompressedFilesCount()
-    ]);
+    const compressedFilesCount = await this.moveService.getCompressedFilesCount();
     return {
       ...imageStats,
       cacheStats: this.cache.getCacheStats(),
-      ghostCount,
       compressedFilesCount
     };
   }
@@ -1478,17 +1397,6 @@ export default class LocalImageCompressPlugin extends obsidian.Plugin {
       progressModal.setError(sanitizeErrorForUser(error));
       throw error;
     }
-  }
-  // Get number of ghost entries in cache
-  async getGhostEntriesCount() {
-    return await this.cache.getGhostEntriesCount();
-  }
-  // Remove ghost entries from cache
-  async cleanupGhostEntries() {
-    const removedCount = await this.cache.cleanupGhostEntries();
-    await this.rebuildImageIndex("cleanup-ghosts");
-    await this.statusBarController.update();
-    return removedCount;
   }
   // ========================================================================
   // STATUS BAR

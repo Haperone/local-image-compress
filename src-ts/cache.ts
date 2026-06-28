@@ -6,7 +6,7 @@ import { pipeline } from "stream/promises";
 import { getBackupStoragePaths } from "./backup-storage";
 import { getBrokenCacheFilePath, getCacheBackupPath as buildCacheBackupPath, getCacheBackupTimestamp as buildCacheBackupTimestamp, getCacheTempFilePath, isBrokenCacheFileName, isCacheBackupFileName, isCacheTempFileName as isLegacyCacheTempFileName, isValidCacheBackupFileName, LEGACY_CACHE_FILE_NAME } from "./cache-file-names";
 import { ConcurrencyLimiter } from "./concurrency-limiter";
-import type { CacheData, CacheEntry, CacheEntryState, CachePathEntries, FileStatsLike, FreshCacheEntry, ImageFileLike, TimerHandle } from "./types";
+import type { CacheCompactionResult, CacheData, CacheEntry, CacheEntryState, CachePathEntries, FileStatsLike, FreshCacheEntry, ImageFileLike, TimerHandle } from "./types";
 import { getErrorCode, getLogTag, getVaultBasePath, getVaultFileByPath, isAbsoluteFilesystemPath, isSafeVaultRelativePath, normalizeVaultPathForComparison, randomHexSuffix, randomHexSuffixSync, toVaultRelativePath, vaultPathsEqual } from "./utils";
 
 type CacheWriteOptions = {
@@ -14,6 +14,14 @@ type CacheWriteOptions = {
   // Authoritative writes (e.g. clearCache) must NOT merge disk entries even when coalesced with a
   // concurrent additive save — they intentionally overwrite the whole cache.
   authoritative?: boolean;
+};
+
+type CacheFileIdentity = {
+  path: string;
+  stat: {
+    mtime: number;
+    size: number;
+  };
 };
 
 type CacheApp = obsidian.App & {
@@ -54,7 +62,7 @@ export class Cache {
   acceptingWrites: boolean;
   syncFlushReplayPromise: Promise<void> | null;
   retainedFilesStatBatchSize: number;
-  staleEntryPruneBatchSize: number;
+  compactionBatchSize: number;
   lastInvalidMtimeFallback: number;
   cacheLockOwnerId: string;
   pendingSaveMergeDiskEntries: boolean;
@@ -96,7 +104,7 @@ export class Cache {
     this.acceptingWrites = true;
     this.syncFlushReplayPromise = null;
     this.retainedFilesStatBatchSize = 1000;
-    this.staleEntryPruneBatchSize = 1000;
+    this.compactionBatchSize = 200;
     this.lastInvalidMtimeFallback = 0;
     this.cacheLockOwnerId = `${process.pid}-${Date.now()}-${randomHexSuffixSync()}`;
     this.pendingSaveMergeDiskEntries = true;
@@ -1118,6 +1126,7 @@ export class Cache {
       }
       this.cacheData.entries = nextEntries;
       await this.saveCache({ mergeDiskEntries: false });
+      await this.compactPath(newNormalized);
     }
   }
   getEntriesByPathMap() {
@@ -1218,13 +1227,13 @@ export class Cache {
     const stateAwareEntry = sortedEntries.find(([, entry]) => !this.isLegacyEntry(entry));
     return stateAwareEntry || sortedEntries[0] || null;
   }
-  sourceMatchesCurrentFile(entry: CacheEntry, file: ImageFileLike) {
+  sourceMatchesCurrentFile(entry: CacheEntry, file: CacheFileIdentity) {
     if (!this.hasFiniteNumber(entry.sourceMtime) || !this.hasNonNegativeSize(entry.sourceSize) || !this.hasFiniteNumber(file?.stat?.mtime) || !this.hasNonNegativeSize(file?.stat?.size)) {
       return false;
     }
     return this.normalizeMtime(entry.sourceMtime) === this.normalizeMtime(file.stat.mtime) && Number(entry.sourceSize) === Number(file.stat.size);
   }
-  processedMatchesCurrentFile(entry: CacheEntry, file: ImageFileLike) {
+  processedMatchesCurrentFile(entry: CacheEntry, file: CacheFileIdentity) {
     if (!this.hasFiniteNumber(entry.processedMtime) || !this.hasNonNegativeSize(entry.processedSize) || !this.hasFiniteNumber(file?.stat?.mtime) || !this.hasNonNegativeSize(file?.stat?.size)) {
       return false;
     }
@@ -1269,9 +1278,6 @@ export class Cache {
         if (this.sourceMatchesCurrentFile(entry, file)) {
           return true;
         }
-        if (this.isLegacyEntry(entry)) {
-          return true;
-        }
         return false;
     }
     return false;
@@ -1287,9 +1293,7 @@ export class Cache {
       return null;
     }
     const sortedEntries = this.sortEntriesByTimestamp(entries);
-    const stateAwareEntries = sortedEntries.filter(([, entry]) => !this.isLegacyEntry(entry));
-    const candidates = stateAwareEntries.length > 0 ? stateAwareEntries : sortedEntries;
-    for (const [cacheKey, entry] of candidates) {
+    for (const [cacheKey, entry] of sortedEntries.filter(([, entry]) => !this.isLegacyEntry(entry))) {
       if (await this.entryMatchesCurrentFile(entry, file)) {
         if (this.touchCacheEntry(entry)) {
           this.scheduleLastAccessSave();
@@ -1377,6 +1381,7 @@ export class Cache {
         ...(outputMetadata?.outputSize !== undefined ? { outputSize: outputMetadata.outputSize } : {})
       };
       await this.saveCache({ mergeDiskEntries: true });
+      await this.compactPath(filePath);
     } catch (error) {
       console.warn(getLogTag(this), "addToCache failed:", error);
     }
@@ -1415,6 +1420,7 @@ export class Cache {
       };
       this.cacheData.entries[cacheKey] = entry;
       await this.saveCache({ mergeDiskEntries: true });
+      await this.compactPath(normalizedFilePath);
     } catch (error) {
       console.warn(getLogTag(this), "addSkippedEntry failed:", error);
     }
@@ -1466,6 +1472,7 @@ export class Cache {
       }
       this.cacheData.entries[cacheKey] = movedEntry;
       await this.saveCache({ mergeDiskEntries: true });
+      await this.compactPath(normalizedPath);
     } catch (error) {
       console.warn(getLogTag(this), "markProcessedFileMoved failed:", error);
     }
@@ -1518,6 +1525,7 @@ export class Cache {
       }
       this.cacheData.entries[cacheKey] = skippedEntry;
       await this.saveCache({ mergeDiskEntries: true });
+      await this.compactPath(normalizedPath);
     } catch (error) {
       console.warn(getLogTag(this), "markProcessedFileSkippedIdentical failed:", error);
     }
@@ -1861,11 +1869,6 @@ export class Cache {
       return [];
     }
   }
-  // Count ghost entries (files that no longer exist)
-  async getGhostEntriesCount() {
-    const entriesToRemove = await this.collectGhostEntryKeys();
-    return entriesToRemove.length;
-  }
   async yieldToUi() {
     await new Promise((resolve) => {
       try {
@@ -1877,92 +1880,160 @@ export class Cache {
       window.setTimeout(resolve, 0);
     });
   }
-  async pathExists(filePath: string) {
-    try {
-      if (!filePath) {
+  isModernCompactionEntry(entry: CacheEntry) {
+    const state = this.getCacheEntryState(entry);
+    const hasSourceIdentity = this.hasFiniteNumber(entry.sourceMtime) && this.hasNonNegativeSize(entry.sourceSize);
+    const hasProcessedIdentity = this.hasFiniteNumber(entry.processedMtime) && this.hasNonNegativeSize(entry.processedSize);
+    const hasOutputIdentity = !!this.getEntryOutputPath(entry)
+      && this.hasFiniteNumber(entry.outputMtime)
+      && this.hasNonNegativeSize(entry.outputSize);
+    switch (state) {
+      case "pending_move":
+        return hasSourceIdentity && hasOutputIdentity;
+      case "moved":
+        return hasProcessedIdentity;
+      case "skipped":
+      case "skipped_identical":
+        return hasSourceIdentity;
+      case "processed":
         return false;
-      }
-      await fs2.promises.access(filePath);
-      return true;
-    } catch {
-      return false;
     }
   }
-  async collectGhostEntryKeys() {
-    const entriesToRemove: string[] = [];
-    const entries = this.getCachePathEntries();
-    const batchSize = 200;
-    for (let index = 0; index < entries.length; index++) {
-      const entryPair = entries[index];
-      if (!entryPair) {
+  isSourceHashCompactionState(entry: CacheEntry) {
+    const state = this.getCacheEntryState(entry);
+    return state === "pending_move" || state === "skipped" || state === "skipped_identical";
+  }
+  compactionEntryMatchesCurrentFile(entry: CacheEntry, file: ImageFileLike) {
+    switch (this.getCacheEntryState(entry)) {
+      case "pending_move":
+      case "skipped":
+      case "skipped_identical":
+        return this.sourceMatchesCurrentFile(entry, file);
+      case "moved":
+        return this.processedMatchesCurrentFile(entry, file);
+      case "processed":
+        return false;
+    }
+  }
+  async findCanonicalCompactionKey(file: ImageFileLike, entries: CachePathEntries) {
+    const matching: CachePathEntries = [];
+    for (const entryPair of entries) {
+      if (this.compactionEntryMatchesCurrentFile(entryPair[1], file)) {
+        matching.push(entryPair);
+      }
+    }
+    if (matching.length === 1) {
+      return matching[0]?.[0] || null;
+    }
+    if (matching.length < 2 || !matching.every(([, entry]) => this.isSourceHashCompactionState(entry) && /^[a-f0-9]{32}$/i.test(entry.md5 || ""))) {
+      return null;
+    }
+    const currentMd5 = await this.getFileMd5(file);
+    if (!currentMd5) {
+      return null;
+    }
+    const normalizedCurrentMd5 = currentMd5.toLowerCase();
+    const hashMatches = matching.filter(([, entry]) => entry.md5?.toLowerCase() === normalizedCurrentMd5);
+    return hashMatches.length === 1 ? hashMatches[0]?.[0] || null : null;
+  }
+  async pendingOutputExists(entry: CacheEntry) {
+    return this.getCacheEntryState(entry) === "pending_move" && await this.outputMatchesEntry(entry);
+  }
+  async collectCompactionKeys(entries: CachePathEntries) {
+    const groups = new Map<string, CachePathEntries>();
+    for (const entryPair of entries) {
+      const entryPath = this.getEntryPath(entryPair[0], entryPair[1]);
+      const pathKey = normalizeVaultPathForComparison(entryPath);
+      const pathEntries = groups.get(pathKey) || [];
+      pathEntries.push(entryPair);
+      groups.set(pathKey, pathEntries);
+    }
+    const keys = new Set<string>();
+    let missingFilesRemoved = 0;
+    let supersededRemoved = 0;
+    let processedGroups = 0;
+    for (const groupEntries of groups.values()) {
+      const modernEntries = groupEntries.filter(([, entry]) => this.isModernCompactionEntry(entry));
+      if (modernEntries.length === 0) {
         continue;
       }
-      const [cacheKey, entry] = entryPair;
-      const filePath = this.getEntryPath(cacheKey, entry);
-      try {
-        const fullPath = this.resolveVaultPath(filePath);
-        if (!await this.pathExists(fullPath)) {
-          entriesToRemove.push(cacheKey);
+      const firstModernEntry = modernEntries[0];
+      if (!firstModernEntry) {
+        continue;
+      }
+      const filePath = this.getEntryPath(firstModernEntry[0], firstModernEntry[1]);
+      const file = getVaultFileByPath(this.app.vault, filePath);
+      if (!file) {
+        for (const [cacheKey] of modernEntries) {
+          keys.add(cacheKey);
+          missingFilesRemoved++;
         }
-      } catch {
-        entriesToRemove.push(cacheKey);
+      } else {
+        const canonicalKey = await this.findCanonicalCompactionKey(file, modernEntries);
+        if (canonicalKey) {
+          for (const [cacheKey, entry] of modernEntries) {
+            if (cacheKey === canonicalKey || await this.pendingOutputExists(entry)) {
+              continue;
+            }
+            keys.add(cacheKey);
+            supersededRemoved++;
+          }
+        }
       }
-      if ((index + 1) % batchSize === 0) {
+      processedGroups++;
+      if (processedGroups % this.compactionBatchSize === 0) {
         await this.yieldToUi();
       }
     }
-    return entriesToRemove;
+    return { keys, missingFilesRemoved, supersededRemoved };
   }
-  // Cleanup ghost entries from cache
-  async cleanupGhostEntries() {
-    if (!this.isAcceptingWrites()) {
-      return 0;
+  async applyCompaction(entries: CachePathEntries): Promise<CacheCompactionResult> {
+    const emptyResult = { removed: 0, missingFilesRemoved: 0, supersededRemoved: 0 };
+    if (!this.isAcceptingWrites() || entries.length === 0) {
+      return emptyResult;
     }
-    const entriesToRemove = await this.collectGhostEntryKeys();
-    if (entriesToRemove.length === 0) {
-      return 0;
-    }
-    if (!this.isAcceptingWrites()) {
-      return 0;
+    const collected = await this.collectCompactionKeys(entries);
+    if (collected.keys.size === 0 || !this.isAcceptingWrites()) {
+      return emptyResult;
     }
     await this.createBackup();
-    for (const cacheKey of entriesToRemove) {
+    for (const cacheKey of collected.keys) {
       delete this.cacheData.entries[cacheKey];
     }
-    await this.saveCache({ mergeDiskEntries: false });
-    return entriesToRemove.length;
+    await this.saveCache({ mergeDiskEntries: false, authoritative: true });
+    return {
+      removed: collected.keys.size,
+      missingFilesRemoved: collected.missingFilesRemoved,
+      supersededRemoved: collected.supersededRemoved
+    };
   }
-  async pruneStaleCacheEntries(retentionMonths: number, now = Date.now()) {
-    if (!this.isAcceptingWrites()) {
-      return 0;
+  async compactCache() {
+    return await this.applyCompaction(this.getCachePathEntries());
+  }
+  async compactPath(filePath: string) {
+    return await this.applyCompaction(this.getEntriesForPath(filePath));
+  }
+  async compactDeletedPath(filePath: string) {
+    const normalized = this.normalizeVaultPath(filePath);
+    const entries = this.getCachePathEntries().filter(([cacheKey, entry]) => {
+      const entryPath = this.getEntryPath(cacheKey, entry);
+      return vaultPathsEqual(entryPath, normalized) || normalizeVaultPathForComparison(entryPath).startsWith(`${normalizeVaultPathForComparison(normalized)}/`);
+    });
+    return await this.applyCompaction(entries);
+  }
+  async resolvePendingMoveEntry(file: CacheFileIdentity, outputPath: string): Promise<{ status: "none" | "match" | "conflict"; entry?: CacheEntry }> {
+    const normalizedOutput = this.normalizeVaultPath(outputPath);
+    const candidates = this.sortEntriesByTimestamp(this.getEntriesForPath(file.path)).filter(([, entry]) =>
+      this.getCacheEntryState(entry) === "pending_move" && vaultPathsEqual(this.getEntryOutputPath(entry), normalizedOutput)
+    );
+    if (candidates.length === 0) {
+      return { status: "none" };
     }
-    const numericMonths = Number(retentionMonths);
-    const safeMonths = Number.isFinite(numericMonths) ? Math.max(1, Math.min(60, Math.trunc(numericMonths))) : 12;
-    const cutoffMs = now - safeMonths * 30 * 24 * 60 * 60 * 1000;
-    const entries = this.getCachePathEntries();
-    const entriesToRemove: string[] = [];
-    for (let index = 0; index < entries.length; index++) {
-      const entryPair = entries[index];
-      if (!entryPair) {
-        continue;
+    for (const [, entry] of candidates) {
+      if (this.isModernCompactionEntry(entry) && this.sourceMatchesCurrentFile(entry, file) && await this.outputMatchesEntry(entry)) {
+        return { status: "match", entry };
       }
-      const [cacheKey, entry] = entryPair;
-      const retentionTime = this.getEntryRetentionTime(entry);
-      if (retentionTime > 0 && retentionTime < cutoffMs) {
-        entriesToRemove.push(cacheKey);
-      }
-      if ((index + 1) % this.staleEntryPruneBatchSize === 0) {
-        await this.yieldToUi();
-      }
     }
-    if (entriesToRemove.length === 0 || !this.isAcceptingWrites()) {
-      return 0;
-    }
-    await this.createBackup();
-    for (const cacheKey of entriesToRemove) {
-      delete this.cacheData.entries[cacheKey];
-    }
-    await this.saveCache({ mergeDiskEntries: false });
-    return entriesToRemove.length;
+    return { status: "conflict" };
   }
 }

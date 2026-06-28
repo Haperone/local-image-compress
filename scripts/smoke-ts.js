@@ -204,6 +204,8 @@ if (!fs.existsSync(artifact)) {
 }
 
 const source = fs.readFileSync(artifact, "utf8");
+const runRuntimeQaWrapperSource = fs.readFileSync(path.join(root, "scripts", "run-runtime-qa.js"), "utf8");
+const devVaultSource = isDevLayout ? fs.readFileSync(path.join(repositoryRoot, "scripts", "dev-vault.mjs"), "utf8") : "";
 
 const requiredArtifactTokens = [
   "require(\"obsidian\")",
@@ -240,6 +242,27 @@ assert(
   !source.includes("spawnSync(") && !source.includes("spawn("),
   "TypeScript artifact still spawns native compressor binaries"
 );
+
+assert(
+  runRuntimeQaWrapperSource.includes("OBSIDIAN_CLI_TIMEOUT_MS")
+    && /spawnSync\(cliPath, cliArgs,[\s\S]*timeout: timeoutMs/.test(runRuntimeQaWrapperSource),
+  "Runtime QA wrapper does not bound Obsidian CLI calls with a timeout"
+);
+assert(
+  runRuntimeQaWrapperSource.includes("cleanupRuntimeQaVaultArtifacts")
+    && runRuntimeQaWrapperSource.includes("QA_ARTIFACT_PARENTS")
+    && runRuntimeQaWrapperSource.includes("removePathInsideVault")
+    && runRuntimeQaWrapperSource.includes("cleanupRuntimeQaVaultArtifacts();"),
+  "Runtime QA wrapper does not clean marker-owned Vault artifacts after hard timeout"
+);
+
+if (isDevLayout) {
+  assert(
+    devVaultSource.includes("OBSIDIAN_CLI_TIMEOUT_MS")
+      && /spawnSync\(cliPath, cliArgs,[\s\S]*timeout: timeoutMs/.test(devVaultSource),
+    "DEV vault helper does not bound Obsidian CLI calls with a timeout"
+  );
+}
 
 assert(
   !source.includes(".innerHTML"),
@@ -296,6 +319,18 @@ const backgroundCompressionServiceSource = fs.readFileSync(path.join(sourceTsRoo
 const statusBarControllerSource = fs.readFileSync(path.join(sourceTsRoot, "status-bar-controller.ts"), "utf8");
 const stylesSource = fs.readFileSync(path.join(repositoryRoot, "styles.css"), "utf8");
 const runtimeQaSource = fs.readFileSync(path.join(root, "scripts", "runtime-qa.js"), "utf8");
+assert(
+  runtimeQaSource.includes("removeRuntimeQaVaultArtifacts")
+    && runtimeQaSource.includes("staleQaArtifactParents")
+    && runtimeQaSource.includes("entry.name.startsWith(qaStateMarker)")
+    && runtimeQaSource.includes("IsolatedBackupStorage")
+    && runtimeQaSource.includes("originalFilesBackups: path.join(qaBackupStorageRoot")
+    && runtimeQaSource.includes("Runtime QA attempted ${action} outside ${qaRoot}")
+    && runtimeQaSource.includes("originalRunCompressionBatch")
+    && runtimeQaSource.includes("assertQaRuntimeScope(`before command ${commandId}`)")
+    && (runtimeQaSource.match(/finally \{\n        await restoreQaDefaults\(\);/g) || []).length >= 5,
+  "Runtime QA no longer cleans QA-owned Vault artifacts, isolates backups, or fails closed outside its QA root"
+);
 const pluginGuardSource = fs.readFileSync(path.join(sourceTsRoot, "plugin-guard-service.ts"), "utf8");
 const savingsCalculatorSource = fs.readFileSync(path.join(sourceTsRoot, "savings-calculator.ts"), "utf8");
 const commandRegistrySource = fs.readFileSync(path.join(sourceTsRoot, "services", "command-registry.ts"), "utf8");
@@ -304,6 +339,13 @@ const migrationRunnerSource = fs.readFileSync(path.join(sourceTsRoot, "services"
 const folderSelectorModalSource = fs.readFileSync(path.join(sourceTsRoot, "services", "folder-selector-modal.ts"), "utf8");
 const newFileQueueSource = fs.readFileSync(path.join(sourceTsRoot, "services", "new-file-queue.ts"), "utf8");
 const cacheBackupsViewSource = fs.readFileSync(path.join(sourceTsRoot, "services", "cache-backups-view.ts"), "utf8");
+const localesIndexSource = fs.readFileSync(path.join(sourceTsRoot, "locales", "index.ts"), "utf8");
+const englishLocale = JSON.parse(fs.readFileSync(path.join(sourceTsRoot, "locales", "en.json"), "utf8"));
+const i18nCatalogSource = fs.readdirSync(path.join(sourceTsRoot, "locales"))
+  .filter((fileName) => fileName.endsWith(".json"))
+  .sort()
+  .map((fileName) => fs.readFileSync(path.join(sourceTsRoot, "locales", fileName), "utf8"))
+  .join("\n");
 const serviceSources = [
   "background-compression-service.ts",
   "image-scanner.ts",
@@ -314,7 +356,7 @@ const serviceSources = [
   "status-bar-controller.ts"
 ].map((fileName) => fs.readFileSync(path.join(sourceTsRoot, fileName), "utf8"));
 const readmeSource = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
-const readmeRuSource = fs.readFileSync(path.join(repositoryRoot, "README.ru.md"), "utf8");
+const readmeRuSource = fs.readFileSync(path.join(repositoryRoot, "assets", "README.ru.md"), "utf8");
 const releasePolicySource = fs.readFileSync(path.join(repositoryRoot, "RELEASE_POLICY.md"), "utf8");
 const releaseReadinessPath = path.join(repositoryRoot, "RELEASE_READINESS.md");
 const obsidianReleaseAuditPath = path.join(repositoryRoot, "OBSIDIAN_RELEASE_AUDIT.md");
@@ -340,6 +382,7 @@ const validateManifestSource = fs.readFileSync(path.join(root, "scripts", "valid
 const buildRootSource = fs.readFileSync(path.join(root, "scripts", "build-root.js"), "utf8");
 const buildTsSource = fs.readFileSync(path.join(root, "scripts", "build-ts.js"), "utf8");
 const prepareReleaseSource = fs.readFileSync(path.join(root, "scripts", "prepare-release.js"), "utf8");
+const prepareReleaseNotesSource = fs.readFileSync(path.join(root, "scripts", "prepare-release-notes.js"), "utf8");
 const verifyReleaseSource = fs.readFileSync(path.join(root, "scripts", "verify-release.js"), "utf8");
 const classWideGatesSource = fs.readFileSync(path.join(root, "scripts", "class-wide-gates.js"), "utf8");
 const auditPolicySource = fs.readFileSync(path.join(root, "scripts", "audit-policy.js"), "utf8");
@@ -363,6 +406,7 @@ const combinedTsSource = [
   compressorSource,
   concurrencyLimiterSource,
   i18nSource,
+  localesIndexSource,
   imageScannerSource,
   moveServiceSource,
   pluginGuardSource,
@@ -516,7 +560,8 @@ assert(settingsSource.includes("function getInternalWorkerPoolSize") && settings
 assert(!settingsTabSource.includes("auto.pasteRenameGuard.timeout") && !settingsTabSource.includes("settings.workerPoolSize") && !settingsTabSource.includes("settings.compressionTimeout") && !settingsTabSource.includes("settings.wasmInitTimeout") && !settingsTabSource.includes("settings.maxInputSize") && !settingsTabSource.includes("settings.maxImagePixels"), "Technical settings returned to the settings UI");
 assert(!utilsSource.includes("|| /^[a-zA-Z]:/.test(normalizedPath)") && !settingsSource.includes("const outputFolder = typeof source.outputFolder"), "Low-severity utility/settings cleanup regressions are present");
 assert(settingsSource.includes("inactivityThresholdMinutes") && settingsTabSource.includes("auto.bg.inactivity"), "Settings are missing configurable inactivity threshold support");
-assert(settingsSource.includes("cacheRetentionMonths") && settingsTabSource.includes("stats.cache.retention"), "Settings are missing configurable cache retention support");
+assert(settingsSource.includes('"cacheRetentionMonths"') && settingsSource.includes('"autoCleanupGhostsOnStart"'), "Settings normalization does not silently drop removed cache-maintenance fields");
+assert(!settingsTabSource.includes("cacheRetentionMonths") && !settingsTabSource.includes("autoCleanupGhostsOnStart"), "Removed cache-maintenance controls remain in settings UI");
 assert(compressorSource.includes("applySettings(settings") && pluginSource.includes("this.compressor?.applySettings?.(this.settings)"), "Compressor runtime limits are not applied from normalized settings");
 assert(compressorSource.includes("app: App | null") && !compressorSource.includes("app: any | null"), "Compressor app reference is still typed as any");
 assert(!settingsSource.includes("integer || 4"), "Worker pool sizing still contains a dead integer fallback");
@@ -570,27 +615,41 @@ assert(settingsTabSource.includes("debouncedSaveSettings"), "Settings tab qualit
 assert(!/add(?:Slider|Text)\([\s\S]{0,700}await this\.plugin\.saveSettings\(\)/.test(settingsTabSource), "Settings tab slider/text controls still save settings on every change event");
 assert(settingsTabSource.includes("flushPendingSaveSettings") && settingsTabSource.includes("_renderRootsCleanups"), "Settings tab does not flush debounced saves or clean allowed-root pill listeners");
 assert(settingsTabSource.includes("class AllowedRootsFolderSuggestModal extends obsidian.FuzzySuggestModal<string>") && !settingsTabSource.includes("new (class extends obsidian.FuzzySuggestModal"), "Allowed-roots picker still uses an anonymous FuzzySuggestModal subclass");
-assert(settingsTabSource.includes("normalizeAllowedRootSelection") && settingsTabSource.includes("paths.allowedRoots.cannotAddRoot") && i18nSource.includes("paths.allowedRoots.cannotAddRoot"), "Allowed-roots picker does not handle root selection explicitly");
+assert(settingsTabSource.includes("normalizeAllowedRootSelection") && settingsTabSource.includes("paths.allowedRoots.cannotAddRoot") && i18nCatalogSource.includes("paths.allowedRoots.cannotAddRoot"), "Allowed-roots picker does not handle root selection explicitly");
 assert(settingsTabSource.includes("tiny-local-warning-block") && stylesSource.includes(".tiny-local-warning-block") && settingsTabSource.includes("tiny-local-roots-pill") && stylesSource.includes(".tiny-local-roots-pill") && !settingsTabSource.includes("warn.style.") && !settingsTabSource.includes("pill.style."), "Settings tab static warning/root-pill styles still live inline");
 assert(settingsTabSource.includes('list.createEl("button", { text: root, cls: "badge tiny-local-roots-pill"') && settingsTabSource.includes('pill.setAttribute("aria-label"'), "Allowed-root removal pills are not keyboard-accessible buttons");
 assert(!settingsTabSource.includes("debouncedWorkerPoolRestartNotice") && !settingsTabSource.includes("settings.workerPoolSize.restartNote"), "Settings tab still contains worker-pool restart UI for removed technical settings");
-assert(settingsTabSource.includes("runButtonTask") && settingsTabSource.includes("common.refreshing") && settingsTabSource.includes("common.clearing") && i18nSource.includes("common.refreshing") && i18nSource.includes("common.clearing"), "Settings async stats buttons are missing loading/disabled state");
-assert(settingsTabSource.includes("stats.ghosts.clearedCount") && i18nSource.includes("stats.ghosts.clearedCount") && !settingsTabSource.includes("stats.ghosts.name\").toLowerCase()"), "Ghost cleanup Notice still concatenates translated fragments");
+assert(settingsTabSource.includes("runButtonTask") && settingsTabSource.includes("common.refreshing") && settingsTabSource.includes("common.clearing") && i18nCatalogSource.includes("common.refreshing") && i18nCatalogSource.includes("common.clearing"), "Settings async stats buttons are missing loading/disabled state");
+assert(
+  settingsTabSource.includes('`${t(this.plugin.app, "stats.uncompressed.ready")}: ${stats.uncompressedImages}`')
+    && settingsTabSource.includes('`${t(this.plugin.app, "move.ready")}: ${stats.compressedFilesCount}`')
+    && !settingsTabSource.includes('`${stats.uncompressedImages} ${t(this.plugin.app, "stats.uncompressed.ready")}`'),
+  "Settings count labels must precede values so translations do not require numeric plural forms"
+);
+assert(
+  savingsCalculatorSource.includes('` (${t(this.plugin.app, "tooltip.savings.estimated")}: ${savings.estimatedFiles})`')
+    && !savingsCalculatorSource.includes('`${savings.estimatedFiles} ${t(this.plugin.app, "tooltip.savings.estimated")}`'),
+  "Estimated-file labels must precede values so translations do not require numeric plural forms"
+);
+assert(!settingsTabSource.includes("stats.ghosts") && !i18nCatalogSource.includes("stats.ghosts") && !i18nCatalogSource.includes("stats.cache.retention"), "Removed ghost/retention strings remain in runtime UI locales");
 assert(settingsTabSource.includes("applySubsettingVisibility") && (settingsTabSource.match(/\.settingEl\.toggle\(/g) || []).length === 1, "Settings conditional rows still duplicate raw settingEl.toggle calls");
 assert(settingsTabSource.includes("registerDomEvent(container, 'mouseenter'") && !settingsTabSource.includes("container.addEventListener('mouseenter'"), "Savings tooltip listeners are not registered through the plugin lifecycle");
 assert(settingsTabSource.includes("tooltipRoot") && !settingsTabSource.includes("activeDocument.body.appendChild") && !settingsTabSource.includes("activeDocument.body.removeChild"), "Savings tooltip DOM operations lack a body guard");
-assert(settingsTabSource.includes("showSettingsOperationError") && settingsTabSource.includes("Move compressed files action failed") && settingsTabSource.includes("Cache restore action failed") && i18nSource.includes("notice.operationFailed"), "Settings async actions are missing shared error feedback");
+assert(settingsTabSource.includes("showSettingsOperationError") && settingsTabSource.includes("Move compressed files action failed") && settingsTabSource.includes("Cache restore action failed") && i18nCatalogSource.includes("notice.operationFailed"), "Settings async actions are missing shared error feedback");
 assert(settingsTabSource.includes("getSavingsBarWidths") && settingsTabSource.includes("Number.isFinite(savings.savedSize)") && settingsTabSource.includes("Number.isFinite(savings.originalSize)"), "Savings bar widths are missing finite-number guards");
 assert(stylesSource.includes(".tiny-local-savings-tooltip-wrapper") && stylesSource.includes(".tiny-local-savings-tooltip-target") && !settingsTabSource.includes("tooltip.style.position") && !settingsTabSource.includes("tooltip.style.zIndex") && !settingsTabSource.includes("tooltip.style.pointerEvents") && !settingsTabSource.includes("container.style.cursor"), "Savings tooltip static styles still live inline");
 // Obsidian plugin guidelines compliance (2026-05-31): GL1 heading wording, GL2 setHeading not raw h3, GL3 tooltip position via CSS custom properties
-assert(!/"section\.paths":\s*"[^"]*[Ss]ettings/.test(i18nSource) && !/"section\.paths":\s*"Настройки/.test(i18nSource), "section.paths heading still contains a redundant 'settings' word (Obsidian guideline #7)");
+assert(!/"section\.paths":\s*"[^"]*[Ss]ettings/.test(i18nCatalogSource) && !/"section\.paths":\s*"Настройки/.test(i18nCatalogSource), "section.paths heading still contains a redundant 'settings' word (Obsidian guideline #7)");
 assert(!pluginSource.includes('createEl("h3"') && !pluginSource.includes("createEl('h3'"), "Backups modal still renders a raw h3 heading instead of Setting().setHeading() (Obsidian guideline #8)");
 assert(settingsTabSource.includes("tooltip.setCssProps({") && settingsTabSource.includes('"--local-image-compress-savings-tooltip-left"') && settingsTabSource.includes('"--local-image-compress-savings-tooltip-top"') && !settingsTabSource.includes("tooltip.style.left") && !settingsTabSource.includes("tooltip.style.top") && stylesSource.includes("--local-image-compress-savings-tooltip-left") && stylesSource.includes("--local-image-compress-savings-tooltip-top"), "Savings tooltip position is not driven by CSS custom properties (Obsidian guideline #23)");
 assert(i18nSource.includes("preloadExternalLanguages") && pluginSource.includes("await preloadExternalLanguages") && !i18nSource.includes("fs.existsSync") && !i18nSource.includes("fs.statSync") && !i18nSource.includes("fs.readFileSync"), "i18n still performs sync filesystem reads in the t() hot path");
+assert(i18nSource.includes("export const I18N = BUILTIN_I18N") && localesIndexSource.includes("export const BUILTIN_I18N") && (localesIndexSource.match(/\.json";/g) || []).length === 21, "README UI locales are not statically bundled into main.js");
+assert(i18nSource.includes('"zh-hans": "zh-cn"') && i18nSource.includes('"zh-hant": "zh-tw"') && i18nSource.includes("replace(/_/g, \"-\")"), "Regional Obsidian language aliases are incomplete");
+assert(i18nSource.includes("getLanguage as getObsidianLanguage") && i18nSource.includes('requireApiVersion("1.8.7")') && !i18nSource.includes("app?.getLanguage"), "i18n must detect the locale through Obsidian's guarded module-level getLanguage API");
 assert(!i18nSource.includes("process.cwd()") && i18nSource.includes("if (!pluginDir)") && i18nSource.includes("return {};") && i18nSource.includes("pluginDir ? LOADED_LANGS"), "i18n external-language resolution does not fail closed when the vault plugin directory is unavailable");
 assert(i18nSource.includes("TranslationParams") && i18nSource.includes("interpolateTranslation") && !/t\([^\n]+\)\.replace\(/.test(combinedTsSource), "Translated placeholders still rely on caller-side string replacement");
-assert(i18nSource.includes("WARNED_LANG_LOAD_ERRORS") && i18nSource.includes("console.warn") && i18nSource.includes("i18n.externalLoadFailed"), "External language parse/load failures are still silent");
-assert(i18nSource.includes('primary === "be"') && i18nSource.includes('primary === "by"') && i18nSource.includes("[missing translation key]") && i18nSource.includes("`[${key}]`"), "i18n locale/missing-key fallback semantics are incomplete");
+assert(i18nSource.includes("WARNED_LANG_LOAD_ERRORS") && i18nSource.includes("console.warn") && i18nCatalogSource.includes("i18n.externalLoadFailed"), "External language parse/load failures are still silent");
+assert(i18nSource.includes('be: "ru"') && i18nSource.includes('by: "ru"') && i18nSource.includes('ua: "uk"') && i18nSource.includes("[missing translation key]") && i18nSource.includes("`[${key}]`"), "i18n locale/missing-key fallback semantics are incomplete");
 assert(compressionWorkerSource.includes("getCachedWasmModule") && !compressionWorkerSource.includes("new WebAssembly.Module(message.wasm.jpeg"), "Compression worker still recompiles JPEG WASM modules for every init");
 assert(compressionWorkerSource.includes("getImagequantBindingModule") && !compressionWorkerSource.includes("as any"), "Compression worker still bypasses imagequant binding validation with any casts");
 assert(imageIndexSource.includes("pendingRebuildMutations") && imageIndexSource.includes("const nextRecords = new Map") && imageIndexSource.includes("this.records = nextRecords") && !imageIndexSource.includes("this.records.clear()"), "ImageIndex rebuild still mutates the live records map instead of atomically swapping");
@@ -673,7 +732,7 @@ assert(pluginSource.includes("isImageFile(file: unknown): file is obsidian.TFile
 assert(pluginSource.includes("intentionally uses || instead of ??") && pluginSource.includes("Returns every supported image file") && pluginSource.includes("Returns only uncompressed image files"), "Plugin output-folder fallback or image-file method naming intent is undocumented");
 assert(pluginSource.includes("progress.error\")} (${fileLabel})") && pluginSource.includes('reason === "too_large"') && cacheSource.includes('skipReason === "too_large"'), "Compression errors or too_large skip settings keys are missing class-wide guards");
 assert(pluginSource.includes('new Set(["/", ...folders.map') && !pluginSource.includes('folderPaths.unshift("/")'), "Folder selector still filters root and re-adds it with unshift");
-assert(pluginSource.includes("notice.compressionDeferredDueToMove") && i18nSource.includes("notice.compressionDeferredDueToMove"), "Move-in-progress compression deferral Notice is missing specific i18n coverage");
+assert(pluginSource.includes("notice.compressionDeferredDueToMove") && i18nCatalogSource.includes("notice.compressionDeferredDueToMove"), "Move-in-progress compression deferral Notice is missing specific i18n coverage");
 assert(pluginSource.includes("Snapshot defensively because UI/event mutations") && pluginSource.includes("const indexUpdatePromise = isOutputPath"), "Batch settings snapshot or modify-event scheduling intent is not guarded");
 assert(pluginSource.includes("PLUGIN_BACKUP_DELETE_CONCURRENCY") && pluginSource.includes("backupDeleteLimiter") && pluginSource.includes("Promise.allSettled(backups.map") && !pluginSource.includes("for (const backup of backups)"), "Original-files backup cleanup still deletes backup directories sequentially");
 assert(pluginSource.includes("readdir(backupDir, { withFileTypes: true })") && !pluginSource.includes("fs3.promises.lstat(backupPath)") && pluginSource.includes("backup.isFile()") && pluginSource.includes("fs3.promises.unlink(backupPath)"), "Original-files backup cleanup still uses lstat per entry or leaves orphan files in backupDir");
@@ -693,6 +752,7 @@ assert(statusBarControllerSource.includes("this.plugin.isUnloading") && statusBa
 assert(pluginSource.includes("registerDomEvent(this.statusBarItem") && !statusBarControllerSource.includes(".onclick ="), "Status bar click handler is still reassigned from update()");
 assert(pluginSource.includes('setAttribute?.("role", "button")') && pluginSource.includes('setAttribute?.("tabindex", "0")') && pluginSource.includes('setAttribute?.("aria-haspopup", "menu")') && pluginSource.includes('setAttribute?.("aria-expanded", "false")'), "Status bar item is missing keyboard/ARIA button semantics");
 assert(pluginSource.includes('registerDomEvent(this.statusBarItem, "keydown"') && pluginSource.includes('event.key !== "Enter" && event.key !== " "') && pluginSource.includes("keyboard: true"), "Status bar item is missing Enter/Space keyboard activation");
+assert(statusBarControllerSource.includes('setAttribute?.("aria-label", accessibleStatusText)') && statusBarControllerSource.includes('removeAttribute?.("title")') && !statusBarControllerSource.includes('setAttribute?.("title"'), "Status bar item must use one tooltip surface: aria-label without a native title");
 assert(statusBarControllerSource.includes('menu.setAttribute("role", "menu")') && statusBarControllerSource.includes('menu.createEl("button"') && statusBarControllerSource.includes('setAttribute("role", "menuitem")') && !statusBarControllerSource.includes('const menuItem = menu.createEl("div"'), "Status menu actions are not button-backed menuitems");
 assert(statusBarControllerSource.includes("focusFirstMenuItem(menu)") && statusBarControllerSource.includes("restoreStatusMenuFocus") && statusBarControllerSource.includes("requestWindowAnimationFrame") && statusBarControllerSource.includes("e.stopImmediatePropagation()") && statusBarControllerSource.includes('"ArrowDown"') && statusBarControllerSource.includes('"ArrowUp"') && statusBarControllerSource.includes('"Home"') && statusBarControllerSource.includes('"End"'), "Status menu keyboard focus management is missing");
 assert(!statusBarControllerSource.includes("console.debug"), "Status bar controller still logs debug output in production paths");
@@ -750,7 +810,7 @@ assert(moveServiceSource.includes("isCandidateOriginalFile(file: unknown): file 
 assert(moveServiceSource.includes("normalizeVaultPath(compressedFile.relativePath") && !/compressedFile\.relativePath[\s\S]{0,100}\.replace\(/.test(moveServiceSource), "MoveService still normalizes compressed relative paths with inline string replacement");
 assert(moveServiceSource.includes("pathsReferToSameFile") && moveServiceSource.includes("move.skip.selfMove"), "MoveService does not guard compressed/original self-moves");
 assert(moveServiceSource.includes("move.skip.noOriginalCandidate") && moveServiceSource.includes("displaySkippedCount"), "MoveService does not account zero-candidate originals or derive skipped totals from reason groups");
-assert(i18nSource.includes("move.backup.createdCount") && i18nSource.includes("backups.imagesFolder.deletedCount"), "Backup notices are missing i18n keys");
+assert(i18nCatalogSource.includes("move.backup.createdCount") && i18nCatalogSource.includes("backups.imagesFolder.deletedCount"), "Backup notices are missing i18n keys");
 assert(i18nSource.includes("normalizeVaultPathForComparison(pluginDir)") && i18nSource.includes("LOADED_LANGS[cacheKey]"), "i18n external-language cache is not scoped by plugin directory");
 assert(!moveServiceSource.includes("Created backup of ${") && !pluginSource.includes("Backups folder not found") && !pluginSource.includes("No backups to delete"), "Backup notices still contain hardcoded English text");
 assert(pluginSource.includes("compressionWorkflowsInFlight") && pluginSource.includes("waitForCompressionIdle") && moveServiceSource.includes("await this.plugin.waitForCompressionIdle()"), "Move flow does not wait for active compression workflows");
@@ -758,9 +818,12 @@ assert(pluginSource.includes("indexRefreshTimers: Map<string, TimerHandle>") && 
 assert(pluginSource.includes("waitForCompressionIdle(maxWaitMs = 60_000)") && pluginSource.includes("waitForCompressionIdle giving up after") && !pluginSource.includes("queueMicrotask(() => resolve(undefined))"), "Compression idle wait can still spin forever or fall back to a microtask-only tick");
 assert(newFileQueueSource.includes("NEW_FILE_PENDING_MAX") && newFileQueueSource.includes("auto.queueFull"), "Plugin does not cap the new-file auto-compress queue");
 assert(pluginSource.includes("background.starting") && pluginSource.includes("background.finished"), "Background compression does not notify users about larger batches");
-assert(pluginSource.includes("GHOST_CLEANUP_COMPRESSED_THRESHOLD") && pluginSource.includes("maybeCleanupGhostEntriesAfterCompression"), "Plugin does not automatically clean ghost cache entries after enough successful compressions");
-assert(pluginSource.includes("STALE_CACHE_PRUNE_COMPRESSED_THRESHOLD") && pluginSource.includes("maybePruneStaleCacheEntriesAfterCompression"), "Plugin does not automatically prune stale cache entries after enough successful compressions");
-assert(cacheSource.includes("pruneStaleCacheEntries") && cacheSource.includes("lastAccessMs"), "Cache is missing stale-entry retention with last-access tracking");
+assert(pluginSource.includes('rebuildImageIndex("startup")') && pluginSource.includes("await this.cache.compactCache()"), "Startup indexing is not followed by full cache compaction");
+assert(cacheSource.includes("compactCache") && cacheSource.includes("compactPath") && cacheSource.includes("compactDeletedPath"), "Cache is missing full or point compaction operations");
+assert(cacheSource.includes("filter(([, entry]) => !this.isLegacyEntry(entry))") && !cacheSource.includes("if (this.isLegacyEntry(entry))"), "Legacy cache entries can still become fresh processing/statistics candidates");
+assert(cacheSource.includes("resolvePendingMoveEntry") && moveServiceSource.includes("move.skip.externalModification"), "Move flow does not reject conflicting pending cache identity");
+assert(moveServiceSource.includes("originalSha256BeforeMove") && moveServiceSource.includes("currentOriginalSha256"), "Move flow does not revalidate the backup-verified original before replacement");
+assert(!pluginSource.includes("GHOST_CLEANUP_COMPRESSED_THRESHOLD") && !pluginSource.includes("STALE_CACHE_PRUNE_COMPRESSED_THRESHOLD") && !cacheSource.includes("pruneStaleCacheEntries") && !cacheSource.includes("cleanupGhostEntries"), "Legacy threshold/retention cache cleanup remains active");
 assert(cacheSource.includes("scheduleLastAccessSave") && cacheSource.includes("lastAccessSaveIntervalMs"), "Cache lastAccessMs touches are not persisted through a bounded save path");
 assert(cacheSource.includes("!this.hasNonNegativeSize(entry.outputSize)") && cacheSource.includes("!this.hasFiniteNumber(entry.outputMtime)"), "pending_move output matching still accepts entries without output size/mtime identity");
 assert(cacheSource.includes("Cannot mark moved file without processed mtime/size"), "Moved cache entries still allow missing processed identity");
@@ -799,7 +862,7 @@ assert(!pluginSource.includes("await this.setupStatusBar()") && pluginSource.ind
 assert(!setupStatusBarSource.includes('rebuildImageIndex("startup")') && !setupStatusBarSource.includes("await this.statusBarController.update()"), "setupStatusBar() still blocks on startup image indexing");
 assert(pluginSource.includes('const key = "startup-image-index"') && pluginSource.includes("await this.runStartupImageIndexRebuild()") && pluginSource.includes("Startup image-index rebuild failed"), "Startup image index rebuild is missing timer ownership or error handling");
 assert(pluginSource.indexOf("this.isInitialized = true;") < pluginSource.indexOf("this.scheduleStartupImageIndexRebuild();"), "Startup image index rebuild is scheduled before base plugin initialization is complete");
-assert(i18nSource.includes("init.failed"), "Initialization failure notice is missing i18n coverage");
+assert(i18nCatalogSource.includes("init.failed"), "Initialization failure notice is missing i18n coverage");
 assert(pluginGuardSource.includes("guard.disabled") && pluginGuardSource.includes("guard.restored") && pluginGuardSource.includes("new obsidian.Notice"), "Plugin guard does not notify on disable/restore");
 assert(pluginGuardSource.includes("releaseAllGuards") && pluginSource.includes("releaseAllGuards"), "Plugin guard does not restore guarded plugins during unload");
 assert(pluginGuardSource.includes("observedEnabledAfterGuardDisable") && pluginGuardSource.includes("shouldRestoreGuardedPlugin") && pluginGuardSource.includes("startGuardStateMonitor"), "Plugin guard restore does not respect user/external toggles during guard");
@@ -833,13 +896,13 @@ assert(progressModalSource.includes('setAttribute("role", "progressbar")') && pr
 assert(moveServiceSource.includes('setAttribute("role", "progressbar")') && moveServiceSource.includes('setAttribute("aria-valuetext"') && moveServiceSource.includes('setAttribute("aria-live", "polite")'), "Move progress modal is missing accessible progress semantics");
 assert(pluginSource.includes("signal: abortController.signal") && pluginSource.includes("cancelled_batch_aborted") && pluginSource.includes("cancelled: isCancelled()"), "Batch compression does not propagate ProgressModal cancellation");
 assert(pluginSource.includes("Batch compression failed unexpectedly") && pluginSource.includes("progressModal.setError(errorMessage)"), "processBatchCompression does not surface unexpected batch failures in the modal");
-assert(i18nSource.includes("progress.cancelling") && i18nSource.includes("progress.cancelled") && i18nSource.includes("common.cancel"), "Progress cancellation i18n keys are missing");
+assert(i18nCatalogSource.includes("progress.cancelling") && i18nCatalogSource.includes("progress.cancelled") && i18nCatalogSource.includes("common.cancel"), "Progress cancellation i18n keys are missing");
 assert(!pluginSource.includes("app.setting") && pluginSource.includes("settingsTab?.refreshStatsIfVisible()") && settingsTabSource.includes("refreshStatsIfVisible()") && settingsTabSource.includes("this._isVisible = true"), "Settings indicator refresh still depends on private app.setting state instead of plugin-owned visibility");
 assert(settingsTabSource.includes("requestRerenderAfterCurrentRender()") && settingsTabSource.includes("refreshStatsIfVisible()") && !pluginSource.includes("settingsTab._isRendering") && !pluginSource.includes("settingsTab._pendingRerender"), "Settings indicator refresh still mutates SettingsTab render internals directly");
 assert(settingsTabSource.includes('setAttribute("tabindex", "0")') && settingsTabSource.includes('setAttribute("role", "group")') && settingsTabSource.includes("'focus', onFocus") && settingsTabSource.includes('"Escape"') && settingsTabSource.includes("container.doc || ownerWindow.document"), "Savings tooltip is not keyboard-accessible or popout-owned");
-assert(!i18nSource.includes('"Command Palette →"') && !i18nSource.includes('"Space Savings Details"') && !i18nSource.includes('"Original Size:"'), "English built-in locale contains title-case UI copy");
-assert(pluginSource.includes("new ProgressModal(this, t(this.app, \"common.refreshCache\")") && i18nSource.includes("status.indexing"), "forceRefreshCache does not show progress for cache/index refresh");
-assert(pluginSource.includes('setText(t(this.app, "status.loading"))') && pluginSource.includes('setText(t(this.app, "status.indexing"))') && !pluginSource.includes('setText("…")') && i18nSource.includes("status.loading"), "Status bar startup still uses a magic loading string or lacks indexing feedback");
+assert(!i18nCatalogSource.includes('"Command Palette →"') && !i18nCatalogSource.includes('"Space Savings Details"') && !i18nCatalogSource.includes('"Original Size:"'), "English built-in locale contains title-case UI copy");
+assert(pluginSource.includes("new ProgressModal(this, t(this.app, \"common.refreshCache\")") && i18nCatalogSource.includes("status.indexing"), "forceRefreshCache does not show progress for cache/index refresh");
+assert(pluginSource.includes('setText(t(this.app, "status.loading"))') && pluginSource.includes('setText(t(this.app, "status.indexing"))') && !pluginSource.includes('setText("…")') && i18nCatalogSource.includes("status.loading"), "Status bar startup still uses a magic loading string or lacks indexing feedback");
 assert(pluginSource.includes("async showCacheBackupsList()") && settingsTabSource.includes("showCacheBackupsList") && !settingsTabSource.includes("openBackupsFolder"), "Cache backup list method is still named or called as opening a folder");
 assert(cacheBackupsViewSource.includes("backupInfoLimiter = new ConcurrencyLimiter(8)") && cacheBackupsViewSource.includes("toLocaleString(locale)") && !cacheBackupsViewSource.includes("toLocaleString(locale === 'en'"), "Cache backup list stat/locale formatting is not bounded or explicit");
 assert(savingsCalculatorSource.includes("Promise<number | null>") && savingsCalculatorSource.includes('getErrorCode(error) === "ENOENT"') && savingsCalculatorSource.includes(".catch(() => null)"), "Compressed size lookup does not distinguish missing files from stat errors");
@@ -887,7 +950,7 @@ for (const staleBinaryLocaleKey of [
   "paths.mozjpeg.desc",
   "binaries.available"
 ]) {
-  assert(!i18nSource.includes(`"${staleBinaryLocaleKey}"`), `Obsolete native-binary locale key returned: ${staleBinaryLocaleKey}`);
+  assert(!i18nCatalogSource.includes(`"${staleBinaryLocaleKey}"`), `Obsolete native-binary locale key returned: ${staleBinaryLocaleKey}`);
 }
 assert(compressorSource.includes('"compress.error.pngQuality"') && !compressorSource.includes('"compress.error.pngquantExit"'), "PNG quality failure still uses native pngquant wording");
 assert(!settingsSource.includes("workerPoolSize") && !settingsSource.includes("pluginGuardTimeoutMs"), "Settings source still exposes technical runtime settings");
@@ -896,54 +959,52 @@ assert(!readmeRuSource.includes("Размер пула воркеров сжат
 assert(readmeSource.includes("WebP, GIF, BMP") && readmeSource.includes("Internal safety limits are fixed") && readmeSource.includes("100 million"), "README.md is missing supported-format limitations or internal safety-limit documentation");
 assert(readmeRuSource.includes("WebP, GIF, BMP") && readmeRuSource.includes("Внутренние лимиты безопасности фиксированы") && readmeRuSource.includes("100 млн"), "README.ru.md is missing supported-format limitations or internal safety-limit documentation");
 assert(readmeSource.includes("| PNG quality (min-max) | Quality range for lossy PNG quantization | 1-100") && !readmeSource.includes("PNG quality (min-max) | Quality range for lossy PNG quantization | 0-100"), "README.md PNG quality range is out of sync with settings clamp");
-assert(readmeRuSource.includes("| Качество PNG (мин-макс) | Диапазон качества для lossy PNG quantization | 1-100") && !readmeRuSource.includes("Качество PNG (мин-макс) | Диапазон качества для lossy PNG quantization | 0-100"), "README.ru.md PNG quality range is out of sync with settings clamp");
+assert(readmeRuSource.includes("| Качество PNG (мин-макс) | Диапазон качества квантования PNG с потерями | 1-100") && !readmeRuSource.includes("Качество PNG (мин-макс) | Диапазон качества квантования PNG с потерями | 0-100"), "README.ru.md PNG quality range is out of sync with settings clamp");
 for (const token of [
   "Inactivity threshold",
-  "Cache retention",
   "Auto backup retention",
   "Auto-move compressed files",
   "Auto-move threshold",
   "conservative estimates with capped ratios",
-  "skips restore ownership"
+  "does not attempt to restore it"
 ]) {
   assert(readmeSource.includes(token), `README.md is missing settings/savings/guard documentation token: ${token}`);
 }
 assert(!readmeSource.includes("Disable Paste Image Rename during compression") && !readmeSource.includes("with the setting off"), "README.md still documents a Paste Image Rename opt-out setting");
 for (const token of [
   "Порог неактивности",
-  "Срок хранения кэша",
-  "Автохранение бэкапов",
+  "Автохранение резервных копий",
   "Автоперемещение сжатых файлов",
   "Порог автоперемещения",
   "консервативную оценку с ограниченными коэффициентами",
-  "не присваивает себе восстановление"
+  "не пытается восстановить его"
 ]) {
   assert(readmeRuSource.includes(token), `README.ru.md is missing settings/savings/guard documentation token: ${token}`);
 }
 assert(!readmeRuSource.includes("Отключать Paste Image Rename при сжатии") && !readmeRuSource.includes("если выключить"), "README.ru.md still documents a Paste Image Rename opt-out setting");
 assert(manifestSource.minAppVersion === "1.4.0", "manifest.json minAppVersion must match the activeWindow/activeDocument/getBasePath API minimum");
 assert(versionsSource[manifestSource.version] === manifestSource.minAppVersion, "versions.json current version must match manifest minAppVersion");
-assert(readmeSource.includes("Requires Obsidian `1.4.0+`") && readmeSource.includes("Min app version: `1.4.0`"), "README.md minimum Obsidian version is out of sync with manifest");
-assert(readmeRuSource.includes("Требуется Obsidian `1.4.0+`") && readmeRuSource.includes("Минимальная версия приложения: `1.4.0`"), "README.ru.md minimum Obsidian version is out of sync with manifest");
-assert(readmeSource.includes("Build and release model") && readmeSource.includes("RELEASE_POLICY.md") && readmeRuSource.includes("Модель сборки и релиза") && readmeRuSource.includes("RELEASE_POLICY.md"), "README files must link the release policy and explain the build/release model");
 assert(manifestSource.authorUrl === "https://github.com/haperone", "manifest.json authorUrl must point to the author profile");
 assert(packageSource.scripts["build:root"] === "node scripts/build-root.js", "package.json is missing build:root");
 assert(packageSource.scripts.build === "npm run build:root", "package.json build must delegate to the TypeScript root build");
 assert(!packageSource.scripts["build:baseline"] && !packageSource.scripts["test:baseline"] && !packageSource.scripts.verify && !packageSource.scripts.extract, "byte-exact baseline recovery scripts must stay decommissioned");
 assert(packageSource.scripts["test:release"] === "npm test && npm run build:root && npm run audit:policy:bundle && npm run verify:release && npm run verify:root-ts", "package.json test:release must build and verify deterministic release output");
 assert(packageSource.scripts["validate:license"] === "node scripts/validate-license.js", "package.json is missing validate:license");
+assert(packageSource.scripts["validate:readmes"] === "node scripts/validate-readme-locales.js" && packageSource.scripts.test.includes("npm run validate:readmes"), "package.json must keep localized README validation blocking in npm test");
+assert(packageSource.scripts["qa:i18n"] === "node scripts/validate-i18n.js" && packageSource.scripts.test.includes("npm run qa:i18n"), "package.json must keep interface localization QA blocking in npm test");
 assert(packageSource.scripts["audit:policy"] === "node scripts/audit-policy.js" && packageSource.scripts.test.includes("npm run audit:policy"), "package.json must keep the policy audit blocking in npm test");
 assert(packageSource.scripts["audit:policy:bundle"] === "node scripts/audit-policy.js --require-bundle" && packageSource.scripts["test:release"].includes("npm run audit:policy:bundle"), "Release tests must run the policy audit against the built production bundle");
 assert(packageSource.scripts["lint:eslint"] === "eslint src-ts/" && packageSource.scripts.test.includes("npm run lint:eslint"), "package.json must keep lint:eslint executable and wired into npm test");
 assert(packageSource.scripts["lint:obsidian"] === "node scripts/lint-obsidian.js" && packageSource.scripts.test.includes("npm run lint:obsidian"), "package.json must keep the Obsidian scanner executable and blocking in npm test");
 assert(eslintConfigSource.includes("\"@typescript-eslint/no-unnecessary-type-assertion\": \"error\""), "Standard ESLint must reject unnecessary type assertions");
-assert(eslintObsidianConfigSource.includes("recommendedWithLocalesEn") && eslintObsidianConfigSource.includes("src-ts/i18n.ts") && eslintObsidianConfigSource.includes("sourcePrefix"), "Obsidian scanner config must cover the current recommended rules and layout-aware English locale source");
+assert(eslintObsidianConfigSource.includes("recommendedWithLocalesEn") && eslintObsidianConfigSource.includes("src-ts/locales/en.json") && eslintObsidianConfigSource.includes('language: "json/json"') && eslintObsidianConfigSource.includes("sourcePrefix"), "Obsidian scanner config must cover the current recommended rules and layout-aware English locale source");
 assert(lintObsidianSource.includes("warningCount === 0") && lintObsidianSource.includes("errorCount === 0"), "Obsidian scanner wrapper must reject both errors and warnings");
 assert(packageSource.devDependencies["@jsquash/jpeg"], "package.json is missing @jsquash/jpeg");
 assert(packageSource.devDependencies["@jsquash/png"], "package.json is missing @jsquash/png");
 assert(packageSource.devDependencies["@types/node"] === "25.7.0", "@types/node must be pinned exactly for repeatable type checks");
 assert(packageSource.devDependencies.obsidian === "1.13.0", "obsidian API types must stay pinned to the reviewed 1.13.0 baseline");
 assert(packageSource.devDependencies["eslint-plugin-obsidianmd"] === "0.3.0", "eslint-plugin-obsidianmd must stay pinned to the reviewed 0.3.0 scanner baseline");
+assert(packageSource.devDependencies["@eslint/json"] === "0.14.0", "@eslint/json must stay pinned for English locale linting");
 assert(packageSource.devDependencies.eslint && packageSource.devDependencies["@typescript-eslint/parser"] && packageSource.devDependencies["@typescript-eslint/eslint-plugin"], "ESLint devDependencies are required for lint:eslint");
 assertExactPackageSeries(packageSource.devDependencies.imagequant, /^0\.1\.\d+$/, "imagequant must stay on the 0.1.x series while pngquant_quality_failed depends on its error contract");
 assertExactPackageSeries(packageSource.devDependencies.typescript, /^6\.0\.\d+$/, "typescript must stay on the reviewed 6.0.x series");
@@ -968,6 +1029,7 @@ assert(!releaseWorkflowSource.includes("|| true"), "Release workflow still silen
 assert(rootPackageSource.license === "GPL-3.0-or-later", "Root package.json license must match bundled GPL codec obligations");
 if (isDevLayout) {
   assert(rootPackageSource.scripts.build === "npm --prefix source-recovery run build:root", "Root package.json build must delegate to the real source-recovery build");
+  assert(rootPackageSource.scripts["qa:i18n"] === "npm --prefix source-recovery run qa:i18n", "Root package.json must expose the fast interface localization QA");
   assert(rootPackageSource.scripts.test === "npm run dev:test && npm run prod:test && npm --prefix source-recovery test" && rootPackageSource.scripts["test:release"] === "npm run dev:test && npm run prod:test && npm --prefix source-recovery run test:release", "Root package.json test scripts must run DEV deployment tests, promotion tests, and delegate to source-recovery");
 } else {
   assert(rootPackageSource.scripts.build === "npm run build:root", "Standalone package.json build must use the local source build");
@@ -978,6 +1040,7 @@ assert(!releaseWorkflowSource.includes("build/package.json") && !releaseWorkflow
 assert(releaseWorkflowSource.includes('"*.*.*"') && releaseWorkflowSource.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$") && !releaseWorkflowSource.includes('"v*"') && !releaseWorkflowSource.includes("GITHUB_REF_NAME#v"), "Release workflow does not combine a dotted tag trigger with exact numeric SemVer validation");
 assert((releaseWorkflowSource.match(/actions\/checkout@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/actions\/setup-node@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/node-version:\s*"24"/g) || []).length === 2, "Release workflow must use checkout/setup-node v6 and Node 24 in both jobs");
 const releasePrepareCommand = isDevLayout ? "npm --prefix source-recovery run prepare:release" : "npm run prepare:release";
+const releaseNotesCommand = isDevLayout ? "npm --prefix source-recovery run prepare:release-notes" : "npm run prepare:release-notes";
 assert(
   releaseWorkflowSource.includes(releasePrepareCommand)
     && prepareReleaseSource.includes('["manifest.json", "main.js", "styles.css"]')
@@ -985,6 +1048,7 @@ assert(
     && !prepareReleaseSource.includes('"versions.json"'),
   "Release workflow does not use the exact supported Obsidian install-file staging allowlist"
 );
+assert(releaseWorkflowSource.includes(releaseNotesCommand) && releaseWorkflowSource.includes("body_path: release-notes.md") && prepareReleaseNotesSource.includes("## Unreleased"), "Release workflow must generate its body from the promoted CHANGELOG Unreleased section");
 assert(validateManifestSource.includes("forbiddenReleaseEntries") && validateManifestSource.includes("package.json must declare a files allowlist"), "Manifest validation does not guard release packaging against dev artifact leaks");
 assert(validateManifestSource.includes("MIN_API_SURFACE_APP_VERSION") && validateManifestSource.includes("activeWindow/activeDocument/getBasePath"), "Manifest validation does not enforce API-surface minAppVersion");
 assert(validateManifestSource.includes("manifest.json authorUrl must be a valid URL") && validateManifestSource.includes("must not point to localhost"), "Manifest validation does not reject malformed or local authorUrl values");
@@ -1049,7 +1113,7 @@ if (releaseReadinessSource) {
 for (const token of ["Network", "Telemetry and ads", "Accounts and payments", "External files", "Other plugins"]) {
   assert(readmeSource.includes(token), `README.md is missing policy disclosure: ${token}`);
 }
-for (const token of ["Сеть", "Телеметрия и реклама", "Аккаунты и платежи", "Внешние файлы", "Другие плагины"]) {
+for (const token of ["Сеть", "Телеметрия и реклама", "Учётные записи и платежи", "Внешние файлы", "Другие плагины"]) {
   assert(readmeRuSource.includes(token), `README.ru.md is missing policy disclosure: ${token}`);
 }
 assert(!rootPackageSource.dependencies?.["pngquant-bin"], "Root package.json still depends on pngquant-bin");
@@ -1076,6 +1140,7 @@ assert(
 
 const originalLoad = Module._load;
 let cachedObsidianMock = null;
+let mockObsidianLanguage = "en";
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === "obsidian") {
     if (cachedObsidianMock) {
@@ -1187,7 +1252,8 @@ Module._load = function patchedLoad(request, parent, isMain) {
       TFile: class {},
       TFolder: class {},
       FuzzySuggestModal: class {},
-      getLanguage: () => "en"
+      getLanguage: () => mockObsidianLanguage,
+      requireApiVersion: () => true
     };
     return cachedObsidianMock;
   }
@@ -1921,6 +1987,19 @@ try {
   }
   assert(plugin.imageIndex?.isReady?.() === true, "Deferred startup image index rebuild did not make the index ready");
   assert(plugin.app._getFilesCalls > 0, "Deferred startup image index rebuild did not scan vault files after onload");
+  const localeTitleExpectations = {};
+  for (const fileName of fs.readdirSync(path.join(sourceTsRoot, "locales")).filter((fileName) => fileName.endsWith(".json"))) {
+    localeTitleExpectations[path.basename(fileName, ".json")] = JSON.parse(fs.readFileSync(path.join(sourceTsRoot, "locales", fileName), "utf8"))["settings.title"];
+  }
+  for (const [locale, expectedTitle] of Object.entries(localeTitleExpectations)) {
+    mockObsidianLanguage = locale;
+    assert(plugin.moveService.getMoveText("settings.title") === expectedTitle, `Module-level Obsidian language detection did not select ${locale}`);
+  }
+  for (const [localeAlias, canonicalLocale] of [["pt_BR", "pt-br"], ["zh", "zh-cn"], ["zh_Hant", "zh-tw"], ["be", "ru"], ["ua", "uk"]]) {
+    mockObsidianLanguage = localeAlias;
+    assert(plugin.moveService.getMoveText("settings.title") === localeTitleExpectations[canonicalLocale], `Language alias ${localeAlias} did not select ${canonicalLocale}`);
+  }
+  mockObsidianLanguage = "en";
 
   const originalBasePathForPathSmoke = plugin.app.vault.adapter.basePath;
   const originalAbsolutePathForPathSmoke = plugin.app.vault.adapter.path.absolute;
@@ -2156,6 +2235,7 @@ try {
       autoBackgroundThreshold: -1,
       inactivityThresholdMinutes: 99,
       cacheRetentionMonths: 999,
+      autoCleanupGhostsOnStart: true,
       pluginGuardTimeoutMs: 999999,
       autoBackupsRetentionDays: 9999,
       autoMoveCompressedThreshold: 0
@@ -2175,7 +2255,7 @@ try {
     assert(plugin.settings.autoBackgroundThreshold === 10, "normalizeSettings did not clamp autoBackgroundThreshold");
     assert(plugin.settings.inactivityThresholdMinutes === 60, "normalizeSettings did not clamp inactivityThresholdMinutes");
     assert(plugin.backgroundCompressionService.USER_INACTIVITY_THRESHOLD === 60 * 60 * 1000, "loadSettings() did not apply runtime inactivity threshold");
-    assert(plugin.settings.cacheRetentionMonths === 60, "normalizeSettings did not clamp cacheRetentionMonths");
+    assert(!("cacheRetentionMonths" in plugin.settings) && !("autoCleanupGhostsOnStart" in plugin.settings), "normalizeSettings kept removed cache-maintenance settings");
     assert(plugin.pluginGuardService.operationTimeoutMs === 8000, "loadSettings() did not apply internal plugin guard timeout");
     assert(plugin.settings.autoBackupsRetentionDays === 365, "normalizeSettings did not clamp autoBackupsRetentionDays");
     assert(plugin.settings.autoMoveCompressedThreshold === 1, "normalizeSettings did not clamp autoMoveCompressedThreshold");
@@ -2201,7 +2281,6 @@ try {
       await plugin.loadSettings();
       assert(plugin.settings.outputFolder === "Compressed", "loadSettings() did not fall back to defaults after loadData failure");
       assert(plugin.settings.inactivityThresholdMinutes === 2 && plugin.backgroundCompressionService.USER_INACTIVITY_THRESHOLD === 2 * 60 * 1000, "loadSettings() did not restore default inactivity threshold after loadData failure");
-      assert(plugin.settings.cacheRetentionMonths === 12, "loadSettings() did not restore default cache retention after loadData failure");
       assert(plugin.pluginGuardService.operationTimeoutMs === 8000, "loadSettings() did not restore internal plugin guard timeout after loadData failure");
       assert(plugin.compressor.processTimeoutMs === 120000, "loadSettings() did not restore internal compression timeout after loadData failure");
       assert(plugin.compressor.initTimeoutMs === 60000, "loadSettings() did not restore internal WASM init timeout after loadData failure");
@@ -2378,6 +2457,7 @@ try {
     plugin.autoCompressNewFile = originalAutoCompressNewFile;
     plugin.settings.autoCompressNewFiles = false;
     plugin.isUnloading = false;
+    plugin.cache.acceptingWrites = true;
     plugin.newFileQueue.newFileCompressionTimers.clear();
   }
 
@@ -2614,54 +2694,6 @@ try {
     plugin.maybeAutoMoveCompressed = originalMaybeAutoMoveForBackgroundNotice;
     plugin.backgroundCompressionNoticeAt = 0;
     ObsidianMock.Notice = originalNoticeForBackgroundNotice;
-  }
-
-  const originalValidateForGhostAutoCleanup = plugin.validateFileForCompression;
-  const originalRunLimitedForGhostAutoCleanup = plugin.runLimitedCompression;
-  const originalIsProcessedForGhostAutoCleanup = plugin.cache.isFileAlreadyProcessed;
-  const originalGetCacheKeyForGhostAutoCleanup = plugin.cache.getCacheKey;
-  const originalAddToCacheForGhostAutoCleanup = plugin.cache.addToCache;
-  const originalCreateBackupForGhostAutoCleanup = plugin.cache.createBackup;
-  const originalUpdateImageIndexForGhostAutoCleanup = plugin.updateImageIndexForFile;
-  const originalCleanupGhostEntriesForAutoCleanup = plugin.cleanupGhostEntries;
-  const originalUpdateSavingsIndicatorForGhostAutoCleanup = plugin.updateSavingsIndicatorInSettings;
-  try {
-    plugin.isUnloading = false;
-    plugin.cache.acceptingWrites = true;
-    plugin.moveService.moveOperationInProgress = false;
-    plugin.ghostEntryDirtyCount = 0;
-    let automaticGhostCleanupCalls = 0;
-    plugin.validateFileForCompression = async () => ({ valid: true });
-    plugin.runLimitedCompression = async () => ({ success: true, savings: 10 });
-    plugin.cache.isFileAlreadyProcessed = async () => false;
-    plugin.cache.getCacheKey = async (file) => `ghost-auto:${file.path}`;
-    plugin.cache.addToCache = async () => {};
-    plugin.cache.createBackup = async () => {};
-    plugin.updateImageIndexForFile = async () => {};
-    plugin.updateSavingsIndicatorInSettings = () => {};
-    plugin.cleanupGhostEntries = async () => {
-      automaticGhostCleanupCalls += 1;
-      return 3;
-    };
-    const firstGhostBatch = Array.from({ length: 99 }, (_, index) => createMockFile(`Images/ghost-auto-${index}.jpg`, 100000, index + 1));
-    const secondGhostBatch = [createMockFile("Images/ghost-auto-trigger.jpg", 100000, 200)];
-    await plugin.runCompressionBatch(firstGhostBatch);
-    assert(automaticGhostCleanupCalls === 0, "Automatic ghost cleanup ran before the compression threshold");
-    assert(plugin.ghostEntryDirtyCount === 99, `Automatic ghost cleanup tracked wrong dirty count before threshold: ${plugin.ghostEntryDirtyCount}`);
-    await plugin.runCompressionBatch(secondGhostBatch);
-    assert(automaticGhostCleanupCalls === 1, `Automatic ghost cleanup ran ${automaticGhostCleanupCalls} times instead of once at threshold`);
-    assert(plugin.ghostEntryDirtyCount === 0, "Automatic ghost cleanup did not reset the dirty counter after cleanup");
-  } finally {
-    plugin.validateFileForCompression = originalValidateForGhostAutoCleanup;
-    plugin.runLimitedCompression = originalRunLimitedForGhostAutoCleanup;
-    plugin.cache.isFileAlreadyProcessed = originalIsProcessedForGhostAutoCleanup;
-    plugin.cache.getCacheKey = originalGetCacheKeyForGhostAutoCleanup;
-    plugin.cache.addToCache = originalAddToCacheForGhostAutoCleanup;
-    plugin.cache.createBackup = originalCreateBackupForGhostAutoCleanup;
-    plugin.updateImageIndexForFile = originalUpdateImageIndexForGhostAutoCleanup;
-    plugin.cleanupGhostEntries = originalCleanupGhostEntriesForAutoCleanup;
-    plugin.updateSavingsIndicatorInSettings = originalUpdateSavingsIndicatorForGhostAutoCleanup;
-    plugin.ghostEntryDirtyCount = 0;
   }
 
   const originalRunLimitedForUnload = plugin.runLimitedCompression;
@@ -3912,7 +3944,6 @@ try {
   assert(settingsTab.normalizeAllowedRootSelection("") === null, "Allowed roots should reject the empty vault root selection");
   assert(settingsTab.normalizeAllowedRootSelection("/") === null, "Allowed roots should reject the slash vault root selection");
   assert(settingsTab.normalizeAllowedRootSelection("Images") === "Images/", "Allowed roots should normalize folder selections with a trailing slash");
-  assert(settingsTab.formatCountMessage("stats.ghosts.clearedCount", 3) === "3 ghost entries cleared", "Ghost cleanup count Notice should use a translated count template");
 
   const loadingButtonCalls = [];
   const loadingButton = {
@@ -3958,11 +3989,11 @@ try {
         failedButtonCalls.push(["text", value]);
         return this;
       }
-    }, "common.clearGhosts", "common.clearing", async () => {
+    }, "common.clear", "common.clearing", async () => {
       throw new Error("simulated settings action failure");
     });
     assert(failedButtonNotices.some((message) => message.includes("Operation failed")), "runButtonTask() did not show a Notice after a failed async settings action");
-    assert(JSON.stringify(failedButtonCalls.slice(-2)) === JSON.stringify([["text", "Clear ghosts"], ["disabled", false]]), "runButtonTask() did not restore button state after failure");
+    assert(JSON.stringify(failedButtonCalls.slice(-2)) === JSON.stringify([["text", "Clear"], ["disabled", false]]), "runButtonTask() did not restore button state after failure");
   } finally {
     ObsidianMockForButtonFailure.Notice = originalNoticeForButtonFailure;
     console.error = originalConsoleErrorForButtonFailure;
@@ -4909,11 +4940,11 @@ try {
       assert(disableCalls === 1, `Plugin guard notice test disabled plugin ${disableCalls} times`);
       assert(enableCalls === 1, `Plugin guard notice test restored plugin ${enableCalls} times`);
       assert(
-        guardNotices.some((notice) => String(notice.message).includes("temporarily disabled") && String(notice.message).includes(guardedPluginId) && notice.duration === 5000),
+        guardNotices.some((notice) => String(notice.message).includes(englishLocale["guard.disabled"].replace("{id}", guardedPluginId)) && notice.duration === 5000),
         `Plugin guard did not notify about disable: ${guardNotices.map((notice) => notice.message).join(" | ")}`
       );
       assert(
-        guardNotices.some((notice) => String(notice.message).includes("restored") && String(notice.message).includes(guardedPluginId) && notice.duration === 5000),
+        guardNotices.some((notice) => String(notice.message).includes(englishLocale["guard.restored"].replace("{id}", guardedPluginId)) && notice.duration === 5000),
         `Plugin guard did not notify about restore: ${guardNotices.map((notice) => notice.message).join(" | ")}`
       );
     } finally {
@@ -5412,135 +5443,95 @@ try {
     fs.rmSync(corruptCacheTemp, { recursive: true, force: true });
   }
 
-  const ghostTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-ghosts-"));
+  const originalFilesForCompaction = plugin.app._files;
+  const originalCacheCreateBackupForCompaction = plugin.cache.createBackup;
+  const originalCacheSaveCacheForCompaction = plugin.cache.saveCache;
+  const originalGetFileMd5ForCompaction = plugin.cache.getFileMd5;
+  const originalGetOutputMetadataForCompaction = plugin.cache.getOutputMetadata;
   try {
-    plugin.app.vault.adapter.basePath = ghostTemp;
-    plugin.app.vault.adapter.path.absolute = ghostTemp;
-    const existingGhostFile = path.join(ghostTemp, "Existing", "ok.png");
-    fs.mkdirSync(path.dirname(existingGhostFile), { recursive: true });
-    fs.writeFileSync(existingGhostFile, Buffer.alloc(10));
-    plugin.cache.cacheData.entries = {
-      [plugin.cache.buildCacheKey("Existing/ok.png", MOCK_MD5, 1)]: {
-        path: "Existing/ok.png",
-        timestamp: 1
-      },
-      ...Object.fromEntries(Array.from({ length: 401 }, (_, index) => [
-        plugin.cache.buildCacheKey(`Missing/file-${index}.png`, MOCK_MD5, index + 1),
-        {
-          path: `Missing/file-${index}.png`,
-          timestamp: index + 1
-        }
-      ]))
-    };
-    const originalExistsSync = fs.existsSync;
-    const originalCacheYieldToUi = plugin.cache.yieldToUi;
-    const originalCacheCreateBackup = plugin.cache.createBackup;
-    const originalCacheSaveCache = plugin.cache.saveCache;
-    let ghostYieldCalls = 0;
-    let ghostBackupCalls = 0;
-    let ghostSaveCalls = 0;
-    try {
-      fs.existsSync = () => {
-        throw new Error("ghost paths must not use fs.existsSync");
-      };
-      plugin.cache.yieldToUi = async () => {
-        ghostYieldCalls += 1;
-      };
-      plugin.cache.createBackup = () => {
-        ghostBackupCalls += 1;
-      };
-      plugin.cache.saveCache = async () => {
-        ghostSaveCalls += 1;
-      };
-      const ghostCount = await plugin.cache.getGhostEntriesCount();
-      assert(ghostCount === 401, `Async ghost count returned wrong count: ${ghostCount}`);
-      assert(ghostYieldCalls >= 2, `Async ghost count did not yield across batches: ${ghostYieldCalls}`);
-      const removedGhosts = await plugin.cache.cleanupGhostEntries();
-      assert(removedGhosts === 401, `Async ghost cleanup removed wrong count: ${removedGhosts}`);
-      assert(ghostBackupCalls === 1, `Ghost cleanup created backup wrong number of times: ${ghostBackupCalls}`);
-      assert(ghostSaveCalls === 1, `Ghost cleanup saved cache wrong number of times: ${ghostSaveCalls}`);
-      assert(plugin.cache.getEntriesForPath("Existing/ok.png").length === 1, "Ghost cleanup removed an existing file entry");
+    const currentFile = createMockFile("Images/current.png", 80, 20);
+    const conflictFile = createMockFile("Images/conflict.png", 70, 30);
+    const activePendingFile = createMockFile("Images/active-pending.png", 60, 40);
+    const ambiguousFile = createMockFile("Images/ambiguous.png", 50, 50);
+    const ambiguousMovedFile = createMockFile("Images/ambiguous-moved.png", 40, 60);
+    plugin.app._files = [currentFile, conflictFile, activePendingFile, ambiguousFile, ambiguousMovedFile];
 
-      ghostBackupCalls = 0;
-      ghostSaveCalls = 0;
-      const removedNone = await plugin.cache.cleanupGhostEntries();
-      assert(removedNone === 0, "Ghost cleanup removed entries when no ghosts remained");
-      assert(ghostBackupCalls === 0, "Ghost cleanup created backup when no ghosts were removed");
-      assert(ghostSaveCalls === 0, "Ghost cleanup saved cache when no ghosts were removed");
-    } finally {
-      fs.existsSync = originalExistsSync;
-      plugin.cache.yieldToUi = originalCacheYieldToUi;
-      plugin.cache.createBackup = originalCacheCreateBackup;
-      plugin.cache.saveCache = originalCacheSaveCache;
-    }
-  } finally {
-    plugin.app.vault.adapter.basePath = root;
-    plugin.app.vault.adapter.path.absolute = root;
-    restoreCacheTestPaths();
-    plugin.cache.cacheData = originalCacheData;
-    fs.rmSync(ghostTemp, { recursive: true, force: true });
-  }
-
-  try {
-    const now = Date.now();
-    const oldTimestamp = now - 13 * 30 * 24 * 60 * 60 * 1000;
-    const recentTimestamp = now - 2 * 24 * 60 * 60 * 1000;
-    const oldKey = plugin.cache.buildCacheKey("Images/old-cache.png", MOCK_MD5, oldTimestamp);
-    const recentKey = plugin.cache.buildCacheKey("Images/recent-cache.png", MOCK_MD5, recentTimestamp);
-    const unknownKey = "legacy:path-only-cache";
+    const currentKey = "modern:current";
+    const staleKey = "modern:stale";
+    const missingModernKey = "modern:missing";
+    const missingLegacyKey = "legacy:missing";
+    const conflictCurrentKey = "modern:conflict-current";
+    const conflictPendingKey = "modern:conflict-pending";
+    const stalePendingKey = "modern:stale-pending";
+    const activePendingKey = "modern:active-pending";
+    const ambiguousLeftKey = "modern:ambiguous-left";
+    const ambiguousRightKey = "modern:ambiguous-right";
+    const movedLeftKey = "modern:moved-left";
+    const movedRightKey = "modern:moved-right";
     plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
     plugin.cache.cacheData.entries = {
-      [oldKey]: {
-        path: "Images/old-cache.png",
-        timestamp: oldTimestamp,
-        lastAccessMs: oldTimestamp
-      },
-      [recentKey]: {
-        path: "Images/recent-cache.png",
-        timestamp: oldTimestamp,
-        lastAccessMs: recentTimestamp
-      },
-      [unknownKey]: {
-        path: "Images/path-only-cache.png"
-      }
+      [currentKey]: { path: currentFile.path, state: "skipped", sourceMtime: 20, sourceSize: 80, md5: "1".repeat(32) },
+      [staleKey]: { path: currentFile.path, state: "skipped", sourceMtime: 10, sourceSize: 100, md5: "2".repeat(32) },
+      [missingModernKey]: { path: "Missing/modern.png", state: "skipped", sourceMtime: 1, sourceSize: 10, md5: "3".repeat(32) },
+      [missingLegacyKey]: { path: "Missing/legacy.png", state: "processed", timestamp: 1 },
+      [conflictCurrentKey]: { path: conflictFile.path, state: "skipped", sourceMtime: 30, sourceSize: 70, md5: "4".repeat(32) },
+      [conflictPendingKey]: { path: conflictFile.path, state: "pending_move", sourceMtime: 29, sourceSize: 90, outputPath: "Compressed/conflict.png", outputMtime: 31, outputSize: 45, md5: "5".repeat(32) },
+      [stalePendingKey]: { path: conflictFile.path, state: "pending_move", sourceMtime: 28, sourceSize: 95, outputPath: "Compressed/stale.png", outputMtime: 32, outputSize: 46, md5: "6".repeat(32) },
+      [activePendingKey]: { path: activePendingFile.path, state: "pending_move", sourceMtime: 40, sourceSize: 60, outputPath: "Compressed/active-pending.png", outputMtime: 41, outputSize: 35, md5: "7".repeat(32) },
+      [ambiguousLeftKey]: { path: ambiguousFile.path, state: "skipped", sourceMtime: 50, sourceSize: 50, md5: "8".repeat(32) },
+      [ambiguousRightKey]: { path: ambiguousFile.path, state: "skipped", sourceMtime: 50, sourceSize: 50, md5: "9".repeat(32) },
+      [movedLeftKey]: { path: ambiguousMovedFile.path, state: "moved", processedMtime: 60, processedSize: 40, md5: "a".repeat(32) },
+      [movedRightKey]: { path: ambiguousMovedFile.path, state: "moved", processedMtime: 60, processedSize: 40, md5: "b".repeat(32) }
     };
-    const originalCacheCreateBackupForPrune = plugin.cache.createBackup;
-    const originalCacheSaveCacheForPrune = plugin.cache.saveCache;
-    let pruneBackupCalls = 0;
-    let pruneSaveCalls = 0;
-    try {
-      plugin.cache.createBackup = async () => {
-        pruneBackupCalls += 1;
-      };
-      plugin.cache.saveCache = async () => {
-        pruneSaveCalls += 1;
-      };
-      const prunedCount = await plugin.cache.pruneStaleCacheEntries(12, now);
-      assert(prunedCount === 1, `Stale cache retention pruned wrong number of entries: ${prunedCount}`);
-      assert(!plugin.cache.cacheData.entries[oldKey], "Stale cache retention kept an expired entry");
-      assert(plugin.cache.cacheData.entries[recentKey], "Stale cache retention removed a recently accessed entry");
-      assert(plugin.cache.cacheData.entries[unknownKey], "Stale cache retention removed an entry with no retention timestamp");
-      assert(pruneBackupCalls === 1 && pruneSaveCalls === 1, "Stale cache retention did not back up and save exactly once");
 
-      const touchKey = plugin.cache.buildCacheKey("Images/touched-cache.png", MOCK_MD5, oldTimestamp);
-      plugin.cache.cacheData.entries = {
-        [touchKey]: {
-          path: "Images/touched-cache.png",
-          timestamp: oldTimestamp
-        }
-      };
-      const touchedFile = createMockFile("Images/touched-cache.png", 50000, oldTimestamp);
-      const freshEntry = await plugin.cache.getFreshEntryForFile(touchedFile);
-      assert(freshEntry?.cacheKey === touchKey, "Fresh cache lookup did not return the touched entry");
-      assert(plugin.cache.cacheData.entries[touchKey].lastAccessMs >= now, "Fresh cache lookup did not update lastAccessMs");
-      const untouchedPrunedCount = await plugin.cache.pruneStaleCacheEntries(12, Date.now());
-      assert(untouchedPrunedCount === 0, "Stale cache retention pruned an entry touched during lookup");
-    } finally {
-      plugin.cache.createBackup = originalCacheCreateBackupForPrune;
-      plugin.cache.saveCache = originalCacheSaveCacheForPrune;
-    }
+    const md5Paths = [];
+    let compactionBackupCalls = 0;
+    let compactionSaveCalls = 0;
+    let compactionSaveOptions = null;
+    plugin.cache.getFileMd5 = async (file) => {
+      md5Paths.push(file.path);
+      return "f".repeat(32);
+    };
+    plugin.cache.getOutputMetadata = async (outputPath) => {
+      if (outputPath === "Compressed/conflict.png") return { outputPath, outputMtime: 31, outputSize: 45 };
+      if (outputPath === "Compressed/active-pending.png") return { outputPath, outputMtime: 41, outputSize: 35 };
+      return null;
+    };
+    plugin.cache.createBackup = async () => {
+      compactionBackupCalls += 1;
+    };
+    plugin.cache.saveCache = async (options) => {
+      compactionSaveCalls += 1;
+      compactionSaveOptions = options;
+    };
+
+    const compactionResult = await plugin.cache.compactCache();
+    assert(compactionResult.removed === 3 && compactionResult.missingFilesRemoved === 1 && compactionResult.supersededRemoved === 2, `Cache compaction returned wrong counts: ${JSON.stringify(compactionResult)}`);
+    assert(!plugin.cache.cacheData.entries[staleKey] && !plugin.cache.cacheData.entries[missingModernKey] && !plugin.cache.cacheData.entries[stalePendingKey], "Cache compaction kept proven stale modern entries");
+    assert(plugin.cache.cacheData.entries[currentKey] && plugin.cache.cacheData.entries[missingLegacyKey], "Cache compaction removed current or legacy entries");
+    assert(plugin.cache.cacheData.entries[conflictPendingKey] && plugin.cache.cacheData.entries[activePendingKey], "Cache compaction removed active/conflicting pending_move entries");
+    assert(plugin.cache.cacheData.entries[ambiguousLeftKey] && plugin.cache.cacheData.entries[ambiguousRightKey], "Cache compaction removed ambiguous source records");
+    assert(plugin.cache.cacheData.entries[movedLeftKey] && plugin.cache.cacheData.entries[movedRightKey], "Cache compaction removed ambiguous moved records");
+    assert(JSON.stringify(md5Paths) === JSON.stringify([ambiguousFile.path]), `Cache compaction hashed unexpected states: ${JSON.stringify(md5Paths)}`);
+    assert(compactionBackupCalls === 1 && compactionSaveCalls === 1, "Cache compaction did not create exactly one backup and one save");
+    assert(compactionSaveOptions?.mergeDiskEntries === false && compactionSaveOptions?.authoritative === true, "Cache compaction save was not authoritative");
+
+    const secondCompactionResult = await plugin.cache.compactCache();
+    assert(secondCompactionResult.removed === 0, "Cache compaction removed ambiguous/current entries on a repeated pass");
+    assert(compactionBackupCalls === 1 && compactionSaveCalls === 1, "No-op cache compaction wrote a backup or cache file");
+
+    plugin.cache.cacheData.entries["deleted:modern"] = { path: "Deleted/child.png", state: "skipped", sourceMtime: 1, sourceSize: 10 };
+    plugin.cache.cacheData.entries["deleted:legacy"] = { path: "Deleted/legacy.png", state: "processed", timestamp: 1 };
+    const deletedPathResult = await plugin.cache.compactDeletedPath("Deleted");
+    assert(deletedPathResult.removed === 1 && !plugin.cache.cacheData.entries["deleted:modern"], "Point compaction did not remove a deleted modern child entry");
+    assert(plugin.cache.cacheData.entries["deleted:legacy"], "Point compaction removed a deleted legacy child entry");
+    assert(compactionBackupCalls === 2 && compactionSaveCalls === 2, "Point compaction did not create exactly one backup and one save");
   } finally {
-    restoreCacheTestPaths();
+    plugin.app._files = originalFilesForCompaction;
+    plugin.cache.createBackup = originalCacheCreateBackupForCompaction;
+    plugin.cache.saveCache = originalCacheSaveCacheForCompaction;
+    plugin.cache.getFileMd5 = originalGetFileMd5ForCompaction;
+    plugin.cache.getOutputMetadata = originalGetOutputMetadataForCompaction;
     plugin.cache.cacheData = originalCacheData;
   }
 
@@ -5941,8 +5932,8 @@ try {
     await plugin.cache.addSkippedEntry("Images/skipped-after-unload.png", "too_small");
     await plugin.cache.markProcessedFileMoved("Images/write-lock.png", { mtimeMs: 2, size: 50 }, 100);
     await plugin.cache.clearCache();
-    const removedLockedGhosts = await plugin.cache.cleanupGhostEntries();
-    assert(removedLockedGhosts === 0, "cleanupGhostEntries() removed entries after cache writes were locked");
+    const lockedCompactionResult = await plugin.cache.compactCache();
+    assert(lockedCompactionResult.removed === 0, "compactCache() removed entries after cache writes were locked");
     assert(
       JSON.stringify(plugin.cache.cacheData.entries) === JSON.stringify(lockedEntrySnapshot),
       "Cache write lock allowed a post-unload mutation"
@@ -7048,7 +7039,7 @@ try {
     }
   });
   counts = await plugin.getImageCompressionCounts();
-  assert(counts.uncompressedImages === 0, "Legacy moved compressed file was not treated as processed");
+  assert(counts.uncompressedImages === 1, "Legacy original-size cache entry still hid an original from compression");
 
   await setMockFiles(plugin, [createMockFile("Images/legacy-mtime-only.jpg", 100000, 9)]);
   await setCacheEntries(plugin, {
@@ -7059,7 +7050,7 @@ try {
     }
   });
   counts = await plugin.getImageCompressionCounts();
-  assert(counts.uncompressedImages === 0, "Legacy mtime-only cache entry was not treated as processed");
+  assert(counts.uncompressedImages === 1, "Legacy mtime-only cache entry still hid an original from compression");
 
   await setMockFiles(plugin, [createMockFile("Images/legacy-path-only.jpg", 120000, 99)]);
   await setCacheEntries(plugin, {
@@ -7071,7 +7062,8 @@ try {
     }
   });
   counts = await plugin.getImageCompressionCounts();
-  assert(counts.uncompressedImages === 0, "Legacy path-only cache entry should stay processed for old pre-fingerprint caches");
+  assert(counts.uncompressedImages === 1, "Legacy path-only cache entry still hid an original from compression");
+  assert(plugin.cache.getEntriesForPath("Images/legacy-path-only.jpg").length === 1, "Legacy path-only cache entry was deleted instead of being ignored");
 
   await setMockFiles(plugin, [createMockFile("Images/future-moved.jpg", 70000, 9)]);
   await setCacheEntries(plugin, {
@@ -7667,6 +7659,70 @@ try {
       assert(selfMoveCopyCalls === 0, "Backup self-move copied a file onto itself");
     } finally {
       fs.promises.copyFile = originalCopyFileForSelfMove;
+    }
+
+    const pendingConflictOriginal = path.join(moveLookupTemp, "Images", "pending-conflict.jpg");
+    const pendingConflictCompressed = path.join(moveLookupTemp, "Compressed", "Images", "pending-conflict.jpg");
+    fs.mkdirSync(path.dirname(pendingConflictOriginal), { recursive: true });
+    fs.mkdirSync(path.dirname(pendingConflictCompressed), { recursive: true });
+    fs.writeFileSync(pendingConflictOriginal, Buffer.alloc(100, 0x11));
+    fs.writeFileSync(pendingConflictCompressed, Buffer.alloc(50, 0x22));
+    const pendingConflictOriginalStats = fs.statSync(pendingConflictOriginal);
+    const pendingConflictCompressedStats = fs.statSync(pendingConflictCompressed);
+    const pendingConflictFile = Object.assign(new ObsidianMock.TFile(), createMockFile("Images/pending-conflict.jpg", pendingConflictOriginalStats.size, pendingConflictOriginalStats.mtimeMs));
+    const previousMoveLookupFiles = plugin.app._files;
+    const previousMoveLookupEntries = plugin.cache.cacheData.entries;
+    try {
+      plugin.app._files = [];
+      plugin.cache.cacheData.entries = {
+        "pending-conflict": {
+          path: pendingConflictFile.path,
+          state: "pending_move",
+          md5: MOCK_MD5,
+          sourceMtime: pendingConflictOriginalStats.mtimeMs - 1,
+          sourceSize: pendingConflictOriginalStats.size,
+          outputPath: "Compressed/Images/pending-conflict.jpg",
+          outputMtime: pendingConflictCompressedStats.mtimeMs,
+          outputSize: pendingConflictCompressedStats.size
+        }
+      };
+      const pendingConflictRecord = {
+        compressedPath: pendingConflictCompressed,
+        originalPath: pendingConflictOriginal,
+        relativePath: "Images/pending-conflict.jpg",
+        name: "pending-conflict.jpg",
+        size: pendingConflictCompressedStats.size
+      };
+      const pendingConflictResult = await plugin.moveService.createBackupBeforeMove([pendingConflictRecord]);
+      assert(pendingConflictResult.files.length === 0 && pendingConflictResult.skippedCount === 1, "Pending identity conflict entered the move set");
+      assert(pendingConflictRecord.moveSkipReason === plugin.moveService.getMoveText("move.skip.externalModification"), `Pending identity conflict used wrong skip reason: ${pendingConflictRecord.moveSkipReason}`);
+      assert(fs.statSync(pendingConflictOriginal).size === 100 && fs.existsSync(pendingConflictCompressed), "Pending identity conflict changed move inputs");
+
+      plugin.cache.cacheData.entries = {};
+      const postBackupOriginal = path.join(moveLookupTemp, "Images", "post-backup-change.jpg");
+      const postBackupCompressed = path.join(moveLookupTemp, "Compressed", "Images", "post-backup-change.jpg");
+      fs.writeFileSync(postBackupOriginal, Buffer.alloc(100, 0x33));
+      fs.writeFileSync(postBackupCompressed, Buffer.alloc(50, 0x44));
+      const postBackupStats = fs.statSync(postBackupOriginal);
+      plugin.app._files = [Object.assign(new ObsidianMock.TFile(), createMockFile("Images/post-backup-change.jpg", postBackupStats.size, postBackupStats.mtimeMs))];
+      const postBackupRecord = {
+        compressedPath: postBackupCompressed,
+        originalPath: postBackupOriginal,
+        relativePath: "Images/post-backup-change.jpg",
+        name: "post-backup-change.jpg",
+        size: 50
+      };
+      const postBackupResult = await plugin.moveService.createBackupBeforeMove([postBackupRecord]);
+      assert(postBackupResult.files.length === 1, "No-record fallback did not produce a backup-verified move task");
+      const verifiedPostBackupRecord = postBackupResult.files[0];
+      fs.writeFileSync(postBackupOriginal, Buffer.alloc(100, 0x55));
+      verifiedPostBackupRecord.originalMtimeMsBeforeMove = fs.statSync(postBackupOriginal).mtimeMs;
+      await plugin.moveService.moveSingleFile(verifiedPostBackupRecord);
+      assert(verifiedPostBackupRecord.moveSkipReason === plugin.moveService.getMoveText("move.skip.externalModification"), "Post-backup original content change was not rejected");
+      assert(fs.readFileSync(postBackupOriginal).equals(Buffer.alloc(100, 0x55)) && fs.existsSync(postBackupCompressed), "Post-backup conflict overwrote the changed original or removed the output");
+    } finally {
+      plugin.app._files = previousMoveLookupFiles;
+      plugin.cache.cacheData.entries = previousMoveLookupEntries;
     }
 
     const backupRaceOriginal = path.join(moveLookupTemp, "Images", "backup-race.jpg");

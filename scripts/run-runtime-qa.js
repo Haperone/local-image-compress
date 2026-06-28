@@ -10,12 +10,15 @@ const { repositoryRoot: repoRoot, sourceRoot } = resolveRepositoryLayout();
 const runnerPath = path.join(__dirname, "runtime-qa.js");
 const reportDir = path.join(repoRoot, "qa-backups");
 const pluginInstallDir = resolvePluginInstallDirectory();
+const vaultRoot = path.resolve(pluginInstallDir, "..", "..", "..");
 const dataJsonPath = path.join(pluginInstallDir, "data.json");
 const preQaSettingsBackupPath = path.join(reportDir, "pre-qa-data-backup.json");
 const QA_STATE_MARKER = "QA-LIC-Runtime-";
+const QA_ARTIFACT_PARENTS = ["", "Compressed", "files", "files/Compressed"];
 const cliPath = process.env.OBSIDIAN_CLI || (
   process.platform === "win32" ? "C:\\Program Files\\Obsidian\\Obsidian.com" : "obsidian"
 );
+const DEFAULT_OBSIDIAN_CLI_TIMEOUT_MS = 10 * 60 * 1000;
 
 const args = new Set(process.argv.slice(2));
 const skipReload = args.has("--skip-reload");
@@ -48,13 +51,18 @@ function timestampForFile() {
 }
 
 function runObsidianCli(cliArgs, description, options = {}) {
+  const timeoutMs = getObsidianCliTimeoutMs();
   const result = spawnSync(cliPath, cliArgs, {
     cwd: pluginInstallDir,
     encoding: "utf8",
     windowsHide: true,
-    maxBuffer: 64 * 1024 * 1024
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: timeoutMs
   });
   if (result.error) {
+    if (result.error.code === "ETIMEDOUT") {
+      throw new Error(`Obsidian CLI timed out during ${description} after ${timeoutMs}ms.\nCLI: ${cliPath}`);
+    }
     throw new Error(`Failed to run Obsidian CLI for ${description}: ${result.error.message}\nCLI: ${cliPath}`);
   }
   if (result.status !== 0 && !options.allowFailure) {
@@ -65,6 +73,11 @@ function runObsidianCli(cliArgs, description, options = {}) {
     ].filter(Boolean).join("\n"));
   }
   return result;
+}
+
+function getObsidianCliTimeoutMs() {
+  const timeoutMs = Number(process.env.OBSIDIAN_CLI_TIMEOUT_MS);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.trunc(timeoutMs) : DEFAULT_OBSIDIAN_CLI_TIMEOUT_MS;
 }
 
 function extractEvalPayload(stdout) {
@@ -171,6 +184,41 @@ function restoreSettingsIfPolluted() {
   }
 }
 
+function removePathInsideVault(targetPath) {
+  const resolvedBase = path.resolve(vaultRoot);
+  const resolvedTarget = path.resolve(targetPath);
+  const relative = path.relative(resolvedBase, resolvedTarget);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Refusing to remove outside vault: ${targetPath}`);
+  }
+  fs.rmSync(resolvedTarget, { recursive: true, force: true });
+}
+
+function cleanupRuntimeQaVaultArtifacts() {
+  for (const parentRel of QA_ARTIFACT_PARENTS) {
+    const parentPath = parentRel ? path.join(vaultRoot, ...parentRel.split("/")) : vaultRoot;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(parentPath, { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        console.warn(`Could not read runtime QA artifact parent ${parentPath}: ${error.message}`);
+      }
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(QA_STATE_MARKER)) {
+        continue;
+      }
+      try {
+        removePathInsideVault(path.join(parentPath, entry.name));
+      } catch (error) {
+        console.warn(`Could not remove runtime QA artifact ${entry.name}: ${error.message}`);
+      }
+    }
+  }
+}
+
 async function main() {
   if (args.has("--help") || args.has("-h")) {
     printHelp();
@@ -242,4 +290,5 @@ main().catch((error) => {
   process.exitCode = 1;
 }).finally(() => {
   restoreSettingsIfPolluted();
+  cleanupRuntimeQaVaultArtifacts();
 });

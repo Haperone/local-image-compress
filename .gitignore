@@ -1,6 +1,7 @@
 node_modules/
 main.js
 build/
+release-notes.md
 dist-ts/
 .DS_Store
 Thumbs.db

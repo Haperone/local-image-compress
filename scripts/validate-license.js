@@ -25,7 +25,7 @@ const packageJson = readJson("package.json");
 const licenseText = readText("LICENSE");
 const thirdPartyNotices = readText("THIRD_PARTY_NOTICES.md");
 const readme = readText("README.md");
-const readmeRu = readText("README.ru.md");
+const readmeRu = readText("assets/README.ru.md");
 const apacheLicense = readText("licenses/Apache-2.0.txt");
 const jpegCodecLicense = readText("licenses/jpeg-codec.txt");
 const pngCodecLicense = readText("licenses/png-codec.txt");
@@ -46,9 +46,9 @@ if (bundlesGplCodec) {
   assert(licenseText.includes("END OF TERMS AND CONDITIONS") && licenseText.includes("How to Apply These Terms to Your New Programs"), "LICENSE is missing the canonical GPL ending");
   assert(!/libimagequant|pngquant's original license|Local Image Compress/i.test(licenseText), "LICENSE must not mix project or third-party notices into the canonical GPL text");
   assert(/GPL-3\.0-or-later/i.test(readme), "README.md must document the GPL-3.0-or-later distribution license");
-  assert(/GPL-3\.0-or-later/i.test(readmeRu), "README.ru.md must document the GPL-3.0-or-later distribution license");
+  assert(/GPL-3\.0-or-later/i.test(readmeRu), "assets/README.ru.md must document the GPL-3.0-or-later distribution license");
   assert(!/Plugin code:\s*MIT/i.test(readme), "README.md still documents plugin code as MIT");
-  assert(!/Код плагина:\s*MIT/i.test(readmeRu), "README.ru.md still documents plugin code as MIT");
+  assert(!/Код плагина:\s*MIT/i.test(readmeRu), "assets/README.ru.md still documents plugin code as MIT");
 }
 
 assert(apacheLicense === installedApacheLicense, "Tracked Apache-2.0 text does not match @jsquash/jpeg");

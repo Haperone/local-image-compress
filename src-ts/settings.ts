@@ -14,8 +14,6 @@ export interface LocalImageCompressSettings {
   autoBackgroundCompression: boolean;
   autoBackgroundThreshold: number;
   inactivityThresholdMinutes: number;
-  cacheRetentionMonths: number;
-  autoCleanupGhostsOnStart: boolean;
   autoBackupsRetentionEnabled: boolean;
   autoBackupsRetentionDays: number;
   autoMoveCompressedEnabled: boolean;
@@ -34,8 +32,6 @@ export const DEFAULT_SETTINGS: LocalImageCompressSettings = {
   autoBackgroundCompression: true,
   autoBackgroundThreshold: 50,
   inactivityThresholdMinutes: 2,
-  cacheRetentionMonths: 12,
-  autoCleanupGhostsOnStart: false,
   autoBackupsRetentionEnabled: false,
   autoBackupsRetentionDays: 30,
   autoMoveCompressedEnabled: false,
@@ -43,7 +39,7 @@ export const DEFAULT_SETTINGS: LocalImageCompressSettings = {
 };
 
 const REMOVED_PASTE_RENAME_GUARD_SETTING = "disablePasteImageRename" + "DuringCompression";
-const REMOVED_TECHNICAL_SETTING_KEYS = [
+const REMOVED_SETTING_KEYS = [
   "pngquantPath",
   "mozjpegPath",
   "pluginGuard" + "TimeoutMs",
@@ -52,6 +48,8 @@ const REMOVED_TECHNICAL_SETTING_KEYS = [
   "wasmInit" + "TimeoutSeconds",
   "maxInput" + "SizeMB",
   "maxImagePixels" + "Millions",
+  "cacheRetentionMonths",
+  "autoCleanupGhostsOnStart",
   REMOVED_PASTE_RENAME_GUARD_SETTING
 ];
 
@@ -101,7 +99,7 @@ function normalizePngQuality(value: unknown): PngQualitySettings {
 export function normalizeSettings(loadedData: unknown): LocalImageCompressSettings {
   const rawSource = loadedData && typeof loadedData === "object" ? loadedData as Partial<LocalImageCompressSettings> & Record<string, unknown> : {};
   const source = { ...rawSource };
-  for (const key of REMOVED_TECHNICAL_SETTING_KEYS) {
+  for (const key of REMOVED_SETTING_KEYS) {
     delete source[key];
   }
   return {
@@ -118,8 +116,6 @@ export function normalizeSettings(loadedData: unknown): LocalImageCompressSettin
     autoBackgroundCompression: normalizeBoolean(source.autoBackgroundCompression, DEFAULT_SETTINGS.autoBackgroundCompression),
     autoBackgroundThreshold: clampInteger(source.autoBackgroundThreshold, DEFAULT_SETTINGS.autoBackgroundThreshold, 10, 1000),
     inactivityThresholdMinutes: clampInteger(source.inactivityThresholdMinutes, DEFAULT_SETTINGS.inactivityThresholdMinutes, 1, 60),
-    cacheRetentionMonths: clampInteger(source.cacheRetentionMonths, DEFAULT_SETTINGS.cacheRetentionMonths, 1, 60),
-    autoCleanupGhostsOnStart: normalizeBoolean(source.autoCleanupGhostsOnStart, DEFAULT_SETTINGS.autoCleanupGhostsOnStart),
     autoBackupsRetentionEnabled: normalizeBoolean(source.autoBackupsRetentionEnabled, DEFAULT_SETTINGS.autoBackupsRetentionEnabled),
     autoBackupsRetentionDays: clampInteger(source.autoBackupsRetentionDays, DEFAULT_SETTINGS.autoBackupsRetentionDays, 1, 365),
     autoMoveCompressedEnabled: normalizeBoolean(source.autoMoveCompressedEnabled, DEFAULT_SETTINGS.autoMoveCompressedEnabled),

@@ -47,7 +47,6 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   _savingsTooltipDocuments: Set<Document>;
   currentStatsSnapshot: StatsSnapshot | null;
   cacheStatsElement: HTMLElement | null;
-  ghostStatsElement: HTMLElement | null;
   uncompressedStatsElement: HTMLElement | null;
   compressedFilesCountElement: HTMLElement | null;
   savingsHostElement: HTMLElement | null;
@@ -66,7 +65,6 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     this._savingsTooltipDocuments = new Set();
     this.currentStatsSnapshot = null;
     this.cacheStatsElement = null;
-    this.ghostStatsElement = null;
     this.uncompressedStatsElement = null;
     this.compressedFilesCountElement = null;
     this.savingsHostElement = null;
@@ -207,9 +205,6 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       row.settingEl.addClass("tiny-local-subsetting");
     }
   }
-  formatCountMessage(key: string, count: number) {
-    return t(this.plugin.app, key, { count });
-  }
   getSavingsBarWidths(savings: SavingsSnapshot) {
     const originalSize = Number.isFinite(savings.originalSize) && savings.originalSize > 0 ? savings.originalSize : 0;
     const savedSize = Number.isFinite(savings.savedSize) && savings.savedSize > 0 ? savings.savedSize : 0;
@@ -336,16 +331,13 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     this.currentStatsSnapshot = stats;
     if (this.cacheStatsElement) {
       const cacheStats = stats.cacheStats;
-      this.cacheStatsElement.setText(`${cacheStats.total} ${t(this.plugin.app, "stats.cache.entries")}, ${t(this.plugin.app, "stats.cache.size")}: ${Math.round(cacheStats.size / 1024)} ${t(this.plugin.app, "units.kb")}`);
-    }
-    if (this.ghostStatsElement) {
-      this.ghostStatsElement.setText(`${stats.ghostCount} ${t(this.plugin.app, "stats.ghosts.pointToMissing")}`);
+      this.cacheStatsElement.setText(`${t(this.plugin.app, "stats.cache.entries")}: ${cacheStats.total}, ${t(this.plugin.app, "stats.cache.size")}: ${Math.round(cacheStats.size / 1024)} ${t(this.plugin.app, "units.kb")}`);
     }
     if (this.uncompressedStatsElement) {
-      this.uncompressedStatsElement.setText(`${stats.uncompressedImages} ${t(this.plugin.app, "stats.uncompressed.ready")}`);
+      this.uncompressedStatsElement.setText(`${t(this.plugin.app, "stats.uncompressed.ready")}: ${stats.uncompressedImages}`);
     }
     if (this.compressedFilesCountElement) {
-      this.compressedFilesCountElement.setText(`${stats.compressedFilesCount} ${t(this.plugin.app, "move.ready")}`);
+      this.compressedFilesCountElement.setText(`${t(this.plugin.app, "move.ready")}: ${stats.compressedFilesCount}`);
     }
     if (this.savingsHostElement) {
       this.cleanupSavingsTooltips();
@@ -389,7 +381,6 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     
     // Keep references to elements for updates
     this.cacheStatsElement = null;
-    this.ghostStatsElement = null;
     this.uncompressedStatsElement = null;
     this.compressedFilesCountElement = null;
     this.savingsHostElement = null;
@@ -605,16 +596,11 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       })
     );
     this.applySubsettingVisibility(this.plugin.settings.autoMoveCompressedEnabled, autoMoveRow);
-    // Add at the end of Automation section
-    new obsidian.Setting(containerEl).setName(t(this.plugin.app, "auto.cleanupGhosts.name")).setDesc(t(this.plugin.app, "auto.cleanupGhosts.desc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.autoCleanupGhostsOnStart).onChange(async (value) => {
-      this.plugin.settings.autoCleanupGhostsOnStart = value;
-      await this.plugin.saveSettings();
-    }));
     // ========================================================================
     // STATISTICS & CACHE
     // ========================================================================
     this.renderSection(containerEl, "section.stats");
-    const uncompressedSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.uncompressed.name")).setDesc(`${statsSnapshot.uncompressedImages} ${t(this.plugin.app, "stats.uncompressed.ready")}`);
+    const uncompressedSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.uncompressed.name")).setDesc(`${t(this.plugin.app, "stats.uncompressed.ready")}: ${statsSnapshot.uncompressedImages}`);
     this.uncompressedStatsElement = uncompressedSetting.descEl;
     uncompressedSetting.addButton((button) => button.setButtonText(t(this.plugin.app, "common.refresh")).onClick(async () => {
       await this.runButtonTask(button, "common.refresh", "common.refreshing", async () => {
@@ -624,7 +610,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       });
     }));
     const cacheStats = statsSnapshot.cacheStats;
-    const cacheSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.cache.name")).setDesc(`${cacheStats.total} ${t(this.plugin.app, "stats.cache.entries")}, ${t(this.plugin.app, "stats.cache.size")}: ${Math.round(cacheStats.size / 1024)} ${t(this.plugin.app, "units.kb")}`);
+    const cacheSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.cache.name")).setDesc(`${t(this.plugin.app, "stats.cache.entries")}: ${cacheStats.total}, ${t(this.plugin.app, "stats.cache.size")}: ${Math.round(cacheStats.size / 1024)} ${t(this.plugin.app, "units.kb")}`);
     this.cacheStatsElement = cacheSetting.descEl;
     cacheSetting.addButton((button) => this.setDestructiveButton(button).setButtonText(t(this.plugin.app, "common.clearCache")).onClick(async () => {
       await this.runButtonTask(button, "common.clearCache", "common.clearing", async () => {
@@ -641,32 +627,13 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         new obsidian.Notice(`${getPluginName(this)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
       });
     }));
-    new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.cache.retention.name")).setDesc(t(this.plugin.app, "stats.cache.retention.desc")).addSlider((slider) => slider
-      .setLimits(1, 60, 1)
-      .setValue(this.plugin.settings.cacheRetentionMonths)
-      .setDynamicTooltip()
-      .onChange((value) => {
-        this.plugin.settings.cacheRetentionMonths = value;
-        this.debouncedSaveSettings();
-      })
-    );
-    const ghostSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.ghosts.name")).setDesc(`${statsSnapshot.ghostCount} ${t(this.plugin.app, "stats.ghosts.pointToMissing")}`);
-    this.ghostStatsElement = ghostSetting.descEl;
-    ghostSetting.addButton((button) => this.setDestructiveButton(button).setButtonText(t(this.plugin.app, "common.clearGhosts")).onClick(async () => {
-      await this.runButtonTask(button, "common.clearGhosts", "common.clearing", async () => {
-        const removedCount = await this.plugin.cleanupGhostEntries();
-        await this.updateStats();
-        new obsidian.Notice(`${getPluginName(this)}: ${this.formatCountMessage("stats.ghosts.clearedCount", removedCount)}`);
-      });
-    }));
-    
     // ========================================================================
     // AUTO MOVE
     // ========================================================================
     this.renderSection(containerEl, "section.move");
     
     // Button: move compressed files
-    const moveSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "move.title")).setDesc(`${statsSnapshot.compressedFilesCount} ${t(this.plugin.app, "move.ready")}`);
+    const moveSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "move.title")).setDesc(`${t(this.plugin.app, "move.ready")}: ${statsSnapshot.compressedFilesCount}`);
     this.compressedFilesCountElement = moveSetting.descEl;
     moveSetting.addButton((button) => this.setDestructiveButton(button).setButtonText(t(this.plugin.app, "move.button")).onClick(async () => {
       await this.runButtonTask(button, "move.button", "common.processing", async () => {

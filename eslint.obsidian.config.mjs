@@ -1,6 +1,7 @@
 // Blocking mirror of the current Obsidian community-plugin submission scanner.
 import fs from "node:fs";
 import path from "node:path";
+import json from "@eslint/json";
 import tsParser from "@typescript-eslint/parser";
 import tseslint from "typescript-eslint";
 import obsidianmd from "eslint-plugin-obsidianmd";
@@ -10,6 +11,9 @@ const isDevLayout = path.basename(import.meta.dirname) === "source-recovery"
   && fs.existsSync(path.join(import.meta.dirname, "..", "manifest.json"));
 const sourcePrefix = isDevLayout ? "source-recovery/" : "";
 const sourceFiles = [`${sourcePrefix}src-ts/**/*.ts`];
+const disabledObsidianJsonRules = Object.fromEntries(
+  Object.keys(obsidianmd.rules).map((ruleName) => [`obsidianmd/${ruleName}`, "off"])
+);
 
 export default [
   {
@@ -41,9 +45,13 @@ export default [
     }
   },
   {
-    files: [`${sourcePrefix}src-ts/i18n.ts`],
+    files: [`${sourcePrefix}src-ts/locales/en.json`],
+    plugins: { json },
+    language: "json/json",
     rules: {
-      "obsidianmd/ui/sentence-case-locale-module": "error"
+      ...disabledObsidianJsonRules,
+      "no-irregular-whitespace": "off",
+      "obsidianmd/ui/sentence-case-json": "error"
     }
   }
 ];

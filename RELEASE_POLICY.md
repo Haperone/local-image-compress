@@ -41,6 +41,10 @@ GitHub release assets are exactly:
 - `main.js`
 - `styles.css`
 
+The release body is generated from the `Unreleased` section of `CHANGELOG.md`.
+Promotion builds that section from the DEV Conventional Commit subjects, so
+release notes do not depend on reconstructing changes from memory.
+
 `versions.json` remains tracked in the repository for compatibility metadata,
 but it is not a GitHub Release asset.
 
@@ -57,6 +61,6 @@ provenance from the repository workflow.
 ## Version ownership
 
 The current version must agree across `manifest.json`, `versions.json`, root
-`package.json`, README metadata, and the release tag. `minAppVersion` remains
+`package.json`, and the release tag. `minAppVersion` remains
 `1.4.0` while current API types are used only as a compile-time review
 surface.

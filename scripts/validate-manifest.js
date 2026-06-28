@@ -11,6 +11,7 @@ const packagePath = path.join(root, "package.json");
 const releaseWorkflowPath = path.join(root, ".github", "workflows", "release.yml");
 const gitignorePath = path.join(root, ".gitignore");
 const releasePreparePath = path.join(sourceRoot, "scripts", "prepare-release.js");
+const releaseNotesPreparePath = path.join(sourceRoot, "scripts", "prepare-release-notes.js");
 const sourceTsRoot = path.join(sourceRoot, "src-ts");
 const MIN_API_SURFACE_APP_VERSION = "1.4.0";
 const DESKTOP_ONLY_REQUIRED_REASON = "cache, move, backup, and WASM artifact paths still depend on desktop Node fs/path APIs";
@@ -165,10 +166,19 @@ assert(fs.existsSync(releaseWorkflowPath), "Release workflow is required");
 const releaseWorkflow = fs.readFileSync(releaseWorkflowPath, "utf8");
 assert(fs.existsSync(releasePreparePath), "Release preparation script is required");
 const releasePrepare = fs.readFileSync(releasePreparePath, "utf8");
+assert(fs.existsSync(releaseNotesPreparePath), "Release notes preparation script is required");
+const releaseNotesPrepare = fs.readFileSync(releaseNotesPreparePath, "utf8");
 const gitignore = fs.readFileSync(gitignorePath, "utf8");
 assert(
   releaseWorkflow.includes(isDevLayout ? "npm --prefix source-recovery run prepare:release" : "npm run prepare:release"),
   "Release workflow must use the validated release preparation script"
+);
+assert(
+  releaseWorkflow.includes(isDevLayout ? "npm --prefix source-recovery run prepare:release-notes" : "npm run prepare:release-notes")
+    && releaseWorkflow.includes("body_path: release-notes.md")
+    && releaseNotesPrepare.includes("CHANGELOG.md")
+    && releaseNotesPrepare.includes("## Unreleased"),
+  "Release workflow must publish notes from the promoted CHANGELOG"
 );
 assert(releaseWorkflow.includes('"*.*.*"'), "Release workflow must trigger on dotted tag candidates");
 assert(releaseWorkflow.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$"), "Release workflow must validate exact numeric SemVer tags");
@@ -189,6 +199,7 @@ for (const pattern of [
   /^node_modules\/$/m,
   /^main\.js$/m,
   /^build\/$/m,
+  /^release-notes\.md$/m,
   /^(?:source-recovery\/)?dist-ts\/$/m,
   /^\.obsidian\/$/m,
   /^data\.json$/m,

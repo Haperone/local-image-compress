@@ -22,15 +22,18 @@
     "typecheck": "tsc --noEmit",
     "validate:manifest": "node scripts/validate-manifest.js",
     "validate:license": "node scripts/validate-license.js",
+    "validate:readmes": "node scripts/validate-readme-locales.js",
+    "qa:i18n": "node scripts/validate-i18n.js",
     "validate:wasm": "node scripts/validate-wasm.js",
     "qa:runtime": "node scripts/run-runtime-qa.js",
     "test:ts": "npm run build:ts && npm run smoke:ts",
     "verify:root-ts": "node scripts/verify-root-ts.js",
     "verify:release": "node scripts/verify-release.js",
     "prepare:release": "node scripts/prepare-release.js",
+    "prepare:release-notes": "node scripts/prepare-release-notes.js",
     "build:root": "node scripts/build-root.js",
     "test:release": "npm test && npm run build:root && npm run audit:policy:bundle && npm run verify:release && npm run verify:root-ts",
-    "test": "npm run lint && npm run audit:policy && npm run lint:eslint && npm run lint:obsidian && npm run test:ts && npm run typecheck && npm run validate:manifest && npm run validate:license && npm run validate:wasm",
+    "test": "npm run lint && npm run audit:policy && npm run lint:eslint && npm run lint:obsidian && npm run qa:i18n && npm run test:ts && npm run typecheck && npm run validate:manifest && npm run validate:license && npm run validate:readmes && npm run validate:wasm",
     "release": "node -e \"process.stdout.write('Release tag must be exact numeric SemVer: ' + require('./package.json').version + '\\n')\""
   },
   "keywords": [
@@ -52,6 +55,7 @@
   },
   "homepage": "https://github.com/haperone/local-image-compress#readme",
   "devDependencies": {
+    "@eslint/json": "0.14.0",
     "@jsquash/jpeg": "1.6.0",
     "@jsquash/png": "3.1.1",
     "@types/node": "25.7.0",

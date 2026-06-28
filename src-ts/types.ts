@@ -92,8 +92,13 @@ export interface ImageStatsSnapshot {
 
 export interface StatsSnapshot extends ImageStatsSnapshot {
   cacheStats: CacheStats;
-  ghostCount: number;
   compressedFilesCount: number;
+}
+
+export interface CacheCompactionResult {
+  removed: number;
+  missingFilesRemoved: number;
+  supersededRemoved: number;
 }
 
 export interface FileStatsLike {

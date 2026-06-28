@@ -6,7 +6,9 @@
   const pluginId = "local-image-compress";
   const startedAt = new Date().toISOString();
   const runStamp = startedAt.replace(/[:.]/g, "-").replace(/Z$/, "");
-  const qaRoot = `QA-LIC-Runtime-${runStamp}`;
+  const qaStateMarker = "QA-LIC-Runtime-";
+  const qaRoot = `${qaStateMarker}${runStamp}`;
+  const staleQaArtifactParents = ["", "Compressed", "files", "files/Compressed"];
   const report = {
     startedAt,
     pluginId,
@@ -103,13 +105,62 @@
     assert(relative && !relative.startsWith("..") && !path.isAbsolute(relative), "Refusing to remove outside vault", { targetAbs, vaultBase });
     await fs.promises.rm(resolvedTarget, { recursive: true, force: true });
   };
+  const removeQaRunRootsUnder = async (parentRel) => {
+    const parentAbs = parentRel ? absolute(parentRel) : vaultBase;
+    let entries = [];
+    try {
+      entries = await fs.promises.readdir(parentAbs, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        recordWarning("cleanup.read-qa-artifact-parent", { parentRel, error: serializeError(error) });
+      }
+      return;
+    }
+    await Promise.all(entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(qaStateMarker))
+      .map((entry) => safeRmAbs(path.join(parentAbs, entry.name))));
+  };
+  const removeRuntimeQaVaultArtifacts = async () => {
+    await safeRmAbs(absolute(qaRoot));
+    await Promise.all(staleQaArtifactParents.map((parentRel) => removeQaRunRootsUnder(parentRel)));
+  };
+  const isQaOwnedVaultPath = (vaultRel) => {
+    const normalized = normalizeVaultPath(vaultRel);
+    return normalized === qaRoot || normalized.startsWith(`${qaRoot}/`);
+  };
+  const getEscapedQaFiles = (files) => Array.from(files || [])
+    .filter((file) => file?.path && !isQaOwnedVaultPath(file.path))
+    .map((file) => file.path);
+  const assertQaOwnedFiles = (files, action) => {
+    const escaped = getEscapedQaFiles(files);
+    assert(escaped.length === 0, `Runtime QA attempted ${action} outside ${qaRoot}`, {
+      escaped: escaped.slice(0, 25),
+      escapedCount: escaped.length,
+      allowedRoots: p.settings?.allowedRoots,
+      outputFolder: p.settings?.outputFolder
+    });
+  };
+  const assertQaRuntimeScope = async (label) => {
+    const allowedRoots = Array.isArray(p.settings?.allowedRoots) ? p.settings.allowedRoots.map(normalizeVaultPath) : [];
+    assert(allowedRoots.length === 1 && normalizeVaultPathRootForQa(allowedRoots[0]) === qaRoot, `${label}: runtime QA allowedRoots escaped QA root`, {
+      allowedRoots: p.settings?.allowedRoots
+    });
+    assert(normalizeVaultPath(p.getOutputFolder()) === `${qaRoot}/Compressed`, `${label}: runtime QA output folder escaped QA root`, {
+      outputFolder: p.getOutputFolder()
+    });
+    if (p.imageIndex?.isReady?.()) {
+      assertQaOwnedFiles(p.getAllImageFiles(), `${label} image-index scope`);
+    }
+  };
+  function normalizeVaultPathRootForQa(vaultRel) {
+    return normalizeVaultPath(vaultRel).replace(/^\/+|\/+$/g, "");
+  }
 
   // --- QA settings safety net (must survive a hard-killed run) ---
   // This harness overwrites the user's real data.json. The in-renderer restore in the finally
   // below only runs if execution reaches it; a hard process kill skips it and leaves QA values
   // behind. So: auto-heal data.json if a previous crashed run left QA state in it, then snapshot
   // the clean settings to disk *before* any mutation so recovery is always possible.
-  const qaStateMarker = "QA-LIC-Runtime-";
   const preQaSettingsBackupPath = path.join(p.getPluginDirectory(), "qa-backups", "pre-qa-data-backup.json");
   const settingsLookLikeQaState = (settings) => {
     const outputFolder = String(settings?.outputFolder || "");
@@ -139,6 +190,42 @@
   const originalCacheData = clone(p.cache.cacheData);
   const originalOpenPath = electron.shell.openPath;
   const originalNewFileDelay = p.newFileQueue?.AUTO_COMPRESS_DELAY;
+  const originalCompressFile = p.compressFile;
+  const originalRunCompressionBatch = p.runCompressionBatch;
+  if (typeof originalCompressFile === "function") {
+    p.compressFile = async (file, ...args) => {
+      assertQaOwnedFiles([file], "compressFile");
+      return await originalCompressFile.call(p, file, ...args);
+    };
+    restoreStack.push(async () => {
+      p.compressFile = originalCompressFile;
+    });
+  }
+  if (typeof originalRunCompressionBatch === "function") {
+    p.runCompressionBatch = async (files, ...args) => {
+      assertQaOwnedFiles(files, "runCompressionBatch");
+      return await originalRunCompressionBatch.call(p, files, ...args);
+    };
+    restoreStack.push(async () => {
+      p.runCompressionBatch = originalRunCompressionBatch;
+    });
+  }
+  const originalGetBackupStoragePaths = p.getBackupStoragePaths;
+  if (typeof originalGetBackupStoragePaths === "function") {
+    const qaBackupStorageRoot = absolute(joinVault(qaRoot, "IsolatedBackupStorage"));
+    p.getBackupStoragePaths = () => {
+      const originalPaths = originalGetBackupStoragePaths.call(p);
+      return {
+        ...originalPaths,
+        root: qaBackupStorageRoot,
+        backupsRoot: path.join(qaBackupStorageRoot, "backups"),
+        originalFilesBackups: path.join(qaBackupStorageRoot, "backups", "originals")
+      };
+    };
+    restoreStack.push(async () => {
+      p.getBackupStoragePaths = originalGetBackupStoragePaths;
+    });
+  }
   restoreStack.push(async () => {
     try {
       p.statusBarController?.closeMenu?.();
@@ -158,7 +245,7 @@
     await p.statusBarController?.update?.();
   });
   cleanupStack.push(async () => {
-    await safeRmAbs(absolute(qaRoot));
+    await removeRuntimeQaVaultArtifacts();
   });
 
   function patchMethod(target, name, replacement) {
@@ -428,6 +515,7 @@
   }
 
   async function runCommand(commandId, timeoutMs = 90000) {
+    await assertQaRuntimeScope(`before command ${commandId}`);
     const result = app.commands.executeCommandById(`${pluginId}:${commandId}`);
     if (result && typeof result.then === "function") {
       await result;
@@ -436,7 +524,7 @@
   }
 
   async function setupIsolatedState() {
-    await safeRmAbs(absolute(qaRoot));
+    await removeRuntimeQaVaultArtifacts();
     await ensureFolder(qaRoot);
     p.statusBarController?.closeMenu?.();
     p.closeManagedModals?.();
@@ -450,8 +538,6 @@
       autoBackgroundCompression: false,
       autoBackgroundThreshold: 10,
       inactivityThresholdMinutes: 1,
-      cacheRetentionMonths: 2,
-      autoCleanupGhostsOnStart: false,
       autoBackupsRetentionEnabled: false,
       autoBackupsRetentionDays: 7,
       autoMoveCompressedEnabled: false,
@@ -460,6 +546,7 @@
     await p.saveSettings();
     await p.cache.clearCache();
     await p.rebuildImageIndex("runtime-qa-start");
+    await assertQaRuntimeScope("setupIsolatedState");
     await p.statusBarController.update();
     if (p.newFileQueue) {
       p.newFileQueue.AUTO_COMPRESS_DELAY = 25;
@@ -477,14 +564,13 @@
       autoBackgroundCompression: false,
       autoBackgroundThreshold: 10,
       inactivityThresholdMinutes: 1,
-      cacheRetentionMonths: 2,
-      autoCleanupGhostsOnStart: false,
       autoBackupsRetentionEnabled: false,
       autoBackupsRetentionDays: 7,
       autoMoveCompressedEnabled: false,
       autoMoveCompressedThreshold: 1
     };
     await p.saveSettings();
+    await assertQaRuntimeScope("restoreQaDefaults");
   }
 
   try {
@@ -535,10 +621,10 @@
       const dropdowns = Array.from(root.querySelectorAll("select"));
       report.metrics.settingsLabels = labels;
       assert(labels.length >= 24, "Settings labels count is too low", { count: labels.length, labels });
-      assert(buttons.length >= 9, "Settings buttons count is too low", { count: buttons.length, texts: buttons.map((button) => button.textContent.trim()) });
+      assert(buttons.length >= 8, "Settings buttons count is too low", { count: buttons.length, texts: buttons.map((button) => button.textContent.trim()) });
       assert(textInputs.length >= 2, "Expected PNG and output-folder text inputs", { count: textInputs.length });
-      assert(rangeInputs.length >= 6, "Expected all remaining settings sliders", { count: rangeInputs.length });
-      assert(toggles.length >= 5, "Expected all settings toggles", { count: toggles.length });
+      assert(rangeInputs.length >= 5, "Expected all remaining settings sliders", { count: rangeInputs.length });
+      assert(toggles.length >= 4, "Expected all settings toggles", { count: toggles.length });
       assert(dropdowns.length >= 0, "Dropdown query failed");
       const savingsTarget = root.querySelector(".tiny-local-savings-tooltip-target");
       if (savingsTarget) {
@@ -562,6 +648,22 @@
         dropdownCount: dropdowns.length,
         keyboardTooltip: !!savingsTarget
       };
+    });
+
+    await check("localization: selected language reaches commands and settings", async () => {
+      const expectedLocale = p.constructor.currentLang;
+      const expected = {
+        en: { command: "Compress all images in note", setting: "PNG quality (min-max)" },
+        ru: { command: "Сжать все изображения в заметке", setting: "Качество PNG (мин-макс)" },
+        uk: { command: "Стиснути всі зображення в нотатці", setting: "Якість PNG (мін-макс)" }
+      }[expectedLocale];
+      assert(expected, "Plugin selected an unsupported built-in language", { expectedLocale });
+      const command = app.commands.commands[`${pluginId}:compress-images-in-note`];
+      const root = await openSettings();
+      const labels = Array.from(root.querySelectorAll(".setting-item-name")).map((el) => el.textContent.trim());
+      assert(command?.name?.endsWith(expected.command), "Registered command is not localized", { command: command?.name, expected });
+      assert(labels.includes(expected.setting), "Settings DOM is not localized", { expected: expected.setting, labels });
+      return { locale: expectedLocale, command: command.name, setting: expected.setting };
     });
 
     await check("accessibility: theme variables, motion overrides, and popout ownership", async () => {
@@ -646,86 +748,92 @@
     });
 
     await check("settings: text inputs and sliders update runtime settings", async () => {
-      const root = await openSettings();
-      const textInputs = Array.from(root.querySelectorAll("input[type='text']"));
-      const rangeInputs = Array.from(root.querySelectorAll("input[type='range']"));
-      assert(textInputs.length >= 2 && rangeInputs.length >= 6, "Settings controls missing");
+      try {
+        const root = await openSettings();
+        const textInputs = Array.from(root.querySelectorAll("input[type='text']"));
+        const rangeInputs = Array.from(root.querySelectorAll("input[type='range']"));
+        assert(textInputs.length >= 2 && rangeInputs.length >= 5, "Settings controls missing");
 
-      dispatchInput(textInputs[0], "42-58");
-      assert(p.settings.pngQuality.min === 42 && p.settings.pngQuality.max === 58, "PNG quality text input did not update settings", p.settings.pngQuality);
-      const oldOutput = p.settings.outputFolder;
-      dispatchInput(textInputs[1], "../bad-output");
-      await sleep(100);
-      assert(p.settings.outputFolder === oldOutput, "Invalid output folder was accepted", { oldOutput, current: p.settings.outputFolder });
-      dispatchInput(textInputs[1], `${qaRoot}/Compressed`);
-      assert(p.settings.outputFolder === `${qaRoot}/Compressed`, "Output folder text input did not update settings", p.settings.outputFolder);
+        dispatchInput(textInputs[0], "42-58");
+        assert(p.settings.pngQuality.min === 42 && p.settings.pngQuality.max === 58, "PNG quality text input did not update settings", p.settings.pngQuality);
+        const oldOutput = p.settings.outputFolder;
+        dispatchInput(textInputs[1], "../bad-output");
+        await sleep(100);
+        assert(p.settings.outputFolder === oldOutput, "Invalid output folder was accepted", { oldOutput, current: p.settings.outputFolder });
+        dispatchInput(textInputs[1], `${qaRoot}/Compressed`);
+        assert(p.settings.outputFolder === `${qaRoot}/Compressed`, "Output folder text input did not update settings", p.settings.outputFolder);
 
-      const sliderAssertions = [
-        [0, 55, () => p.settings.jpegQuality === 55, "jpegQuality"],
-        [1, 20, () => p.settings.autoBackgroundThreshold === 20 && p.backgroundCompressionService.AUTO_BACKGROUND_THRESHOLD === 20, "autoBackgroundThreshold"],
-        [2, 3, () => p.settings.inactivityThresholdMinutes === 3 && p.backgroundCompressionService.USER_INACTIVITY_THRESHOLD === 180000, "inactivityThresholdMinutes"],
-        [3, 9, () => p.settings.autoBackupsRetentionDays === 9, "autoBackupsRetentionDays"],
-        [4, 2, () => p.settings.autoMoveCompressedThreshold === 2, "autoMoveCompressedThreshold"],
-        [5, 4, () => p.settings.cacheRetentionMonths === 4, "cacheRetentionMonths"]
-      ];
-      for (const [index, value, predicate, key] of sliderAssertions) {
-        dispatchInput(rangeInputs[index], value);
-        await sleep(80);
-        assert(predicate(), `Slider did not update ${key}`, { key, value, current: p.settings[key] });
+        const sliderAssertions = [
+          [0, 55, () => p.settings.jpegQuality === 55, "jpegQuality"],
+          [1, 20, () => p.settings.autoBackgroundThreshold === 20 && p.backgroundCompressionService.AUTO_BACKGROUND_THRESHOLD === 20, "autoBackgroundThreshold"],
+          [2, 3, () => p.settings.inactivityThresholdMinutes === 3 && p.backgroundCompressionService.USER_INACTIVITY_THRESHOLD === 180000, "inactivityThresholdMinutes"],
+          [3, 9, () => p.settings.autoBackupsRetentionDays === 9, "autoBackupsRetentionDays"],
+          [4, 2, () => p.settings.autoMoveCompressedThreshold === 2, "autoMoveCompressedThreshold"]
+        ];
+        for (const [index, value, predicate, key] of sliderAssertions) {
+          dispatchInput(rangeInputs[index], value);
+          await sleep(80);
+          assert(predicate(), `Slider did not update ${key}`, { key, value, current: p.settings[key] });
+        }
+
+        await sleep(800);
+        return {
+          pngQuality: clone(p.settings.pngQuality),
+          outputFolder: p.settings.outputFolder,
+          slidersTested: sliderAssertions.length
+        };
+      } finally {
+        await restoreQaDefaults();
       }
-
-      await sleep(800);
-      await restoreQaDefaults();
-      return {
-        pngQuality: p.settings.pngQuality,
-        outputFolder: p.settings.outputFolder,
-        slidersTested: sliderAssertions.length
-      };
     });
 
     await check("settings: toggles update runtime settings", async () => {
       await restoreQaDefaults();
-      const root = await openSettings();
-      const freshToggles = Array.from(root.querySelectorAll(".checkbox-container"));
-      assert(freshToggles.length >= 5, "Settings toggles missing", { count: freshToggles.length });
-      await setToggle(freshToggles[0], true);
-      assert(p.settings.autoCompressNewFiles === true, "autoCompressNewFiles toggle did not update");
-      await setToggle(freshToggles[1], true);
-      assert(p.settings.autoBackgroundCompression === true, "background toggle did not update");
-      await setToggle(freshToggles[2], true);
-      assert(p.settings.autoBackupsRetentionEnabled === true, "retention toggle did not update");
-      await setToggle(freshToggles[3], true);
-      assert(p.settings.autoMoveCompressedEnabled === true, "auto-move toggle did not update");
-      await setToggle(freshToggles[4], true);
-      assert(p.settings.autoCleanupGhostsOnStart === true, "ghost cleanup toggle did not update");
-      await sleep(650);
-      await restoreQaDefaults();
-      return {
-        togglesTested: 5
-      };
+      try {
+        const root = await openSettings();
+        const freshToggles = Array.from(root.querySelectorAll(".checkbox-container"));
+        assert(freshToggles.length >= 4, "Settings toggles missing", { count: freshToggles.length });
+        await setToggle(freshToggles[0], true);
+        assert(p.settings.autoCompressNewFiles === true, "autoCompressNewFiles toggle did not update");
+        await setToggle(freshToggles[1], true);
+        assert(p.settings.autoBackgroundCompression === true, "background toggle did not update");
+        await setToggle(freshToggles[2], true);
+        assert(p.settings.autoBackupsRetentionEnabled === true, "retention toggle did not update");
+        await setToggle(freshToggles[3], true);
+        assert(p.settings.autoMoveCompressedEnabled === true, "auto-move toggle did not update");
+        await sleep(650);
+        return {
+          togglesTested: 4
+        };
+      } finally {
+        await restoreQaDefaults();
+      }
     });
 
     await check("settings: allowed roots add modal and clear icon work", async () => {
-      p.settings.allowedRoots = [`${qaRoot}/`];
-      await p.saveSettings();
-      let root = await openSettings();
-      let buttons = Array.from(root.querySelectorAll("button"));
-      const rootPill = root.querySelector(".tiny-local-roots-pill");
-      assert(rootPill?.tagName === "BUTTON" && !!rootPill.getAttribute("aria-label"), "Allowed-root removal pill is not an accessible button");
-      const addButton = buttons.find((button) => !button.classList.contains("tiny-local-roots-pill"));
-      assert(!!addButton, "Allowed-roots Add button missing");
-      clickElement(addButton);
-      await sleep(300);
-      assert(!!document.querySelector(".modal-container .modal"), "Allowed-roots modal did not open");
-      await closeTopModal();
-      root = await openSettings();
-      const clearIcon = root.querySelector(".tiny-local-roots-clear");
-      assert(!!clearIcon, "Allowed-roots clear icon missing");
-      clickElement(clearIcon);
-      await sleep(400);
-      assert(Array.isArray(p.settings.allowedRoots) && p.settings.allowedRoots.length === 0, "Allowed roots were not cleared", p.settings.allowedRoots);
-      await restoreQaDefaults();
-      return { modalOpened: true, clearWorked: true };
+      try {
+        p.settings.allowedRoots = [`${qaRoot}/`];
+        await p.saveSettings();
+        let root = await openSettings();
+        let buttons = Array.from(root.querySelectorAll("button"));
+        const rootPill = root.querySelector(".tiny-local-roots-pill");
+        assert(rootPill?.tagName === "BUTTON" && !!rootPill.getAttribute("aria-label"), "Allowed-root removal pill is not an accessible button");
+        const addButton = buttons.find((button) => !button.classList.contains("tiny-local-roots-pill"));
+        assert(!!addButton, "Allowed-roots Add button missing");
+        clickElement(addButton);
+        await sleep(300);
+        assert(!!document.querySelector(".modal-container .modal"), "Allowed-roots modal did not open");
+        await closeTopModal();
+        root = await openSettings();
+        const clearIcon = root.querySelector(".tiny-local-roots-clear");
+        assert(!!clearIcon, "Allowed-roots clear icon missing");
+        clickElement(clearIcon);
+        await sleep(400);
+        assert(Array.isArray(p.settings.allowedRoots) && p.settings.allowedRoots.length === 0, "Allowed roots were not cleared", p.settings.allowedRoots);
+        return { modalOpened: true, clearWorked: true };
+      } finally {
+        await restoreQaDefaults();
+      }
     });
 
     await check("settings: cache restore dropdown is populated and dispatches restore", async () => {
@@ -774,7 +882,6 @@
         clearCache: 0,
         rebuildIndex: 0,
         statusUpdate: 0,
-        clearGhosts: 0,
         move: 0,
         clearBackups: 0,
         openPath: [],
@@ -785,7 +892,6 @@
         clearCache: p.cache.clearCache,
         rebuildImageIndex: p.rebuildImageIndex,
         statusUpdate: p.statusBarController.update,
-        cleanupGhostEntries: p.cleanupGhostEntries,
         moveCompressedToFiles: p.moveService.moveCompressedToFiles,
         clearOriginalFilesBackups: p.clearOriginalFilesBackups,
         showCacheBackupsList: p.showCacheBackupsList,
@@ -795,7 +901,6 @@
       p.cache.clearCache = async () => { calls.clearCache++; };
       p.rebuildImageIndex = async () => { calls.rebuildIndex++; };
       p.statusBarController.update = async () => { calls.statusUpdate++; };
-      p.cleanupGhostEntries = async () => { calls.clearGhosts++; return 1; };
       p.moveService.moveCompressedToFiles = async () => { calls.move++; };
       p.clearOriginalFilesBackups = async () => { calls.clearBackups++; };
       p.showCacheBackupsList = async () => { calls.showBackupsList++; };
@@ -807,16 +912,15 @@
         const root = await openSettings();
         const buttons = Array.from(root.querySelectorAll("button"))
           .filter((button) => !button.classList.contains("tiny-local-roots-pill"));
-        assert(buttons.length >= 9, "Expected at least 9 settings buttons", { count: buttons.length, texts: buttons.map((button) => button.textContent.trim()) });
+        assert(buttons.length >= 8, "Expected at least 8 settings buttons", { count: buttons.length, texts: buttons.map((button) => button.textContent.trim()) });
         const buttonIndexes = {
           refreshUncompressed: 1,
           clearCache: 2,
           refreshCache: 3,
-          clearGhosts: 4,
-          moveCompressed: 5,
-          clearImageBackups: 6,
-          openImageBackups: 7,
-          openCacheBackups: 8
+          moveCompressed: 4,
+          clearImageBackups: 5,
+          openImageBackups: 6,
+          openCacheBackups: 7
         };
         for (const index of Object.values(buttonIndexes)) {
           assert(buttons[index], `Missing button index ${index}`, { count: buttons.length });
@@ -825,7 +929,6 @@
         }
         assert(calls.refresh === 2, "Refresh buttons did not dispatch forceRefreshCache twice", calls);
         assert(calls.clearCache === 1, "Clear cache button did not dispatch", calls);
-        assert(calls.clearGhosts === 1, "Clear ghosts button did not dispatch", calls);
         assert(calls.move === 1, "Move button did not dispatch", calls);
         assert(calls.clearBackups === 1, "Clear image backups button did not dispatch", calls);
         assert(calls.openPath.length === 1, "Open image backups button did not open path", calls);
@@ -835,7 +938,6 @@
         p.cache.clearCache = originals.clearCache;
         p.rebuildImageIndex = originals.rebuildImageIndex;
         p.statusBarController.update = originals.statusUpdate;
-        p.cleanupGhostEntries = originals.cleanupGhostEntries;
         p.moveService.moveCompressedToFiles = originals.moveCompressedToFiles;
         p.clearOriginalFilesBackups = originals.clearOriginalFilesBackups;
         p.showCacheBackupsList = originals.showCacheBackupsList;
@@ -848,7 +950,7 @@
       return calls;
     });
 
-    await check("cache: clear, ghost cleanup, stale prune, backup, and restore work", async () => {
+    await check("cache: clear, compaction, backup, and restore work", async () => {
       await p.cache.clearCache();
       assert(p.cache.getCacheStats().total === 0, "clearCache did not empty cache", p.cache.getCacheStats());
       const tiny = await createSmallJpeg(`${qaRoot}/Cache/tiny-too-small.jpg`);
@@ -856,44 +958,48 @@
       await waitForCompressionIdle();
       let fresh = await p.cache.getFreshEntryForFile(tiny);
       assert(fresh?.entry?.state === "skipped" && fresh.entry.skipReason === "too_small", "Too-small image was not cached as skipped", fresh?.entry);
+      const legacySource = await createSmallJpeg(`${qaRoot}/Cache/legacy-source.jpg`);
 
-      const ghostMtime = Date.now();
-      const ghostKey = p.cache.buildCacheKey(`${qaRoot}/Cache/missing.jpg`, "ghost-md5", ghostMtime);
-      p.cache.cacheData.entries[ghostKey] = {
+      const missingMtime = Date.now();
+      const missingModernKey = p.cache.buildCacheKey(`${qaRoot}/Cache/missing.jpg`, "missing-modern", missingMtime);
+      const missingLegacyKey = `legacy:${qaRoot}/Cache/missing-legacy.jpg`;
+      const existingLegacyKey = `legacy:${legacySource.path}`;
+      const staleKey = p.cache.buildCacheKey(tiny.path, "stale-modern", Math.max(1, tiny.stat.mtime - 1));
+      p.cache.cacheData.entries[missingModernKey] = {
         path: `${qaRoot}/Cache/missing.jpg`,
-        md5: "ghost-md5",
-        mtime: ghostMtime,
-        timestamp: ghostMtime,
-        lastAccessMs: ghostMtime,
-        state: "processed",
+        md5: "missing-modern",
+        mtime: missingMtime,
+        timestamp: missingMtime,
+        state: "skipped",
         originalSize: 100,
-        sourceMtime: ghostMtime,
+        sourceMtime: missingMtime,
         sourceSize: 100
       };
-      await p.cache.saveCache({ mergeDiskEntries: false, authoritative: true });
-      const ghostCount = await p.getGhostEntriesCount();
-      const removedGhosts = await p.cleanupGhostEntries();
-      assert(ghostCount >= 1 && removedGhosts >= 1, "Ghost cleanup did not remove ghost entry", { ghostCount, removedGhosts });
-
-      const stale = await createSmallJpeg(`${qaRoot}/Cache/stale-source.jpg`);
-      const staleMtime = Date.now() - 90 * 24 * 60 * 60 * 1000;
-      const staleKey = p.cache.buildCacheKey(stale.path, "stale-md5", staleMtime);
-      p.cache.cacheData.entries[staleKey] = {
-        path: stale.path,
-        md5: "stale-md5",
-        mtime: staleMtime,
-        timestamp: staleMtime,
-        lastAccessMs: staleMtime,
+      p.cache.cacheData.entries[missingLegacyKey] = {
+        path: `${qaRoot}/Cache/missing-legacy.jpg`,
         state: "processed",
-        originalSize: stale.stat.size,
-        sourceMtime: staleMtime,
-        sourceSize: stale.stat.size,
-        stateUpdatedAt: staleMtime,
-        processedMtime: staleMtime
+        timestamp: 1
+      };
+      p.cache.cacheData.entries[existingLegacyKey] = {
+        path: legacySource.path,
+        state: "processed",
+        originalSize: legacySource.stat.size,
+        timestamp: 1
+      };
+      p.cache.cacheData.entries[staleKey] = {
+        path: tiny.path,
+        md5: "stale-modern",
+        state: "skipped",
+        sourceMtime: Math.max(1, tiny.stat.mtime - 1),
+        sourceSize: tiny.stat.size + 1,
+        timestamp: 1
       };
       await p.cache.saveCache({ mergeDiskEntries: false, authoritative: true });
-      const pruned = await p.cache.pruneStaleCacheEntries(1, Date.now());
-      assert(pruned >= 1, "Stale cache entry was not pruned", { pruned });
+      const compacted = await p.cache.compactCache();
+      assert(compacted.missingFilesRemoved === 1 && compacted.supersededRemoved === 1, "Cache compaction returned wrong result", compacted);
+      assert(!p.cache.cacheData.entries[missingModernKey] && !p.cache.cacheData.entries[staleKey], "Cache compaction kept removable modern entries", compacted);
+      assert(!!p.cache.cacheData.entries[missingLegacyKey] && !!p.cache.cacheData.entries[fresh.cacheKey], "Cache compaction removed legacy or current entries", compacted);
+      assert(!!p.cache.cacheData.entries[existingLegacyKey] && await p.cache.getFreshEntryForFile(legacySource) === null, "Existing legacy cache entry was deleted or still treated as processed");
 
       const markerMtime = Date.now();
       const markerKey = p.cache.buildCacheKey(`${qaRoot}/Cache/backup-marker.jpg`, "backup-marker", markerMtime);
@@ -919,7 +1025,7 @@
       assert(restored === true, "restoreFromBackup returned false", { targetBackup });
       assert(!!p.cache.cacheData.entries[markerKey], "Cache backup did not restore marker entry", { targetBackup });
       assert(p.cache.isValidBackupFileName("../bad.json") === false, "Invalid backup filename was accepted");
-      return { ghostCount, removedGhosts, pruned, backupCount: backups.length, targetBackup };
+      return { compacted, backupCount: backups.length, targetBackup };
     });
 
     await check("compression: direct JPG, JPEG, and PNG produce smaller outputs and pending cache entries", async () => {
@@ -1097,15 +1203,17 @@
     });
 
     await check("compression: new-file auto compression queue drains and compresses", async () => {
-      p.settings.autoCompressNewFiles = true;
-      await p.saveSettings();
-      const file = await createImage(`${qaRoot}/Auto/auto-new-file.jpg`, "jpg", 11);
-      await p.handleNewFile(file);
-      await sleep(100);
-      await p.drainNewFileCompressionBatch();
-      const result = await assertCompressed(file, "auto new file");
-      await restoreQaDefaults();
-      return result;
+      try {
+        p.settings.autoCompressNewFiles = true;
+        await p.saveSettings();
+        const file = await createImage(`${qaRoot}/Auto/auto-new-file.jpg`, "jpg", 11);
+        await p.handleNewFile(file);
+        await sleep(100);
+        await p.drainNewFileCompressionBatch();
+        return await assertCompressed(file, "auto new file");
+      } finally {
+        await restoreQaDefaults();
+      }
     });
 
     await check("validation: unsupported and too-small files are rejected safely", async () => {
@@ -1129,6 +1237,9 @@
       const aria = p.statusBarItem?.getAttribute?.("aria-label") || "";
       assert(statusText.includes("/"), "Status bar text does not contain counts", { statusText, aria });
       assert(aria.includes(statusText.trim()), "Status bar aria-label does not include status text", { statusText, aria });
+      assert(!p.statusBarItem?.getAttribute?.("title"), "Status bar item has a native title tooltip that can overlap Obsidian's tooltip", {
+        title: p.statusBarItem?.getAttribute?.("title")
+      });
       assert(p.statusBarItem?.getAttribute?.("role") === "button", "Status bar item is missing role=button");
       assert(p.statusBarItem?.getAttribute?.("tabindex") === "0", "Status bar item is missing tabindex=0");
       assert(p.statusBarItem?.getAttribute?.("aria-haspopup") === "menu", "Status bar item is missing aria-haspopup=menu");
@@ -1328,22 +1439,25 @@
     });
 
     await check("move: auto-move threshold moves fresh compressed output automatically", async () => {
-      p.settings.autoMoveCompressedEnabled = true;
-      p.settings.autoMoveCompressedThreshold = 1;
-      await p.saveSettings();
-      const file = await createImage(`${qaRoot}/AutoMove/auto-move.jpg`, "jpg", 13);
-      const originalBefore = (await statRel(file.path)).size;
-      await p.compressFile(file);
-      await waitForCompressionIdle(120000);
-      const originalAfter = (await statRel(file.path)).size;
-      assert(originalAfter < originalBefore, "Auto-move did not replace original with smaller compressed file", { originalBefore, originalAfter });
-      assert(!(await existsRel(outputRelFor(file.path))), "Auto-move left compressed output behind", { output: outputRelFor(file.path) });
-      const movedCacheEntry = getStoredCacheEntryWithState(file.path, "moved");
-      assert(!!movedCacheEntry, "Auto-move did not mark cache entry moved", {
-        entries: p.cache.getEntriesForPath(file.path)
-      });
-      await restoreQaDefaults();
-      return { originalBefore, originalAfter };
+      try {
+        p.settings.autoMoveCompressedEnabled = true;
+        p.settings.autoMoveCompressedThreshold = 1;
+        await p.saveSettings();
+        const file = await createImage(`${qaRoot}/AutoMove/auto-move.jpg`, "jpg", 13);
+        const originalBefore = (await statRel(file.path)).size;
+        await p.compressFile(file);
+        await waitForCompressionIdle(120000);
+        const originalAfter = (await statRel(file.path)).size;
+        assert(originalAfter < originalBefore, "Auto-move did not replace original with smaller compressed file", { originalBefore, originalAfter });
+        assert(!(await existsRel(outputRelFor(file.path))), "Auto-move left compressed output behind", { output: outputRelFor(file.path) });
+        const movedCacheEntry = getStoredCacheEntryWithState(file.path, "moved");
+        assert(!!movedCacheEntry, "Auto-move did not mark cache entry moved", {
+          entries: p.cache.getEntriesForPath(file.path)
+        });
+        return { originalBefore, originalAfter };
+      } finally {
+        await restoreQaDefaults();
+      }
     });
 
     await check("backups: clear original-files backups is safe when redirected to isolated storage", async () => {

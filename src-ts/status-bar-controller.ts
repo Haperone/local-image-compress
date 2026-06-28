@@ -76,7 +76,7 @@ export class StatusBarController {
       const accessibleStatusText = `${getPluginName(this.plugin)}: ${statusText}`;
       this.plugin.statusBarItem.setText(statusText);
       this.plugin.statusBarItem.setAttribute?.("aria-label", accessibleStatusText);
-      this.plugin.statusBarItem.setAttribute?.("title", accessibleStatusText);
+      this.plugin.statusBarItem.removeAttribute?.("title");
       this.plugin.statusBarItem.show();
       this.plugin.statusBarItem.removeClass("tiny-local-compressing");
       this.plugin.statusBarItem.removeClass("tiny-local-status-attention");

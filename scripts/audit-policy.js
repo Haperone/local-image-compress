@@ -51,7 +51,7 @@ const combinedSource = files.map((file) => file.source).join("\n");
 const packageJson = JSON.parse(fs.readFileSync(path.join(sourceRoot, "package.json"), "utf8"));
 const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "manifest.json"), "utf8"));
 const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
-const readmeRu = fs.readFileSync(path.join(repoRoot, "README.ru.md"), "utf8");
+const readmeRu = fs.readFileSync(path.join(repoRoot, "assets", "README.ru.md"), "utf8");
 const releaseAuditPath = path.join(repoRoot, "OBSIDIAN_RELEASE_AUDIT.md");
 assert(!isDevLayout || fs.existsSync(releaseAuditPath), "DEV policy audit requires OBSIDIAN_RELEASE_AUDIT.md");
 const releaseAudit = fs.existsSync(releaseAuditPath) ? fs.readFileSync(releaseAuditPath, "utf8") : null;
@@ -114,13 +114,13 @@ for (const token of [
 for (const token of [
   "Сеть",
   "Телеметрия и реклама",
-  "Аккаунты и платежи",
-  "Файлы vault",
+  "Учётные записи и платежи",
+  "Файлы хранилища",
   "Локальное состояние",
   "Внешние файлы",
   "Другие плагины"
 ]) {
-  assert(readmeRu.includes(token), `README.ru.md is missing policy disclosure: ${token}`);
+  assert(readmeRu.includes(token), `assets/README.ru.md is missing policy disclosure: ${token}`);
 }
 
 const expectedFsBoundaryFiles = [
