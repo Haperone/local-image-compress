@@ -1,7 +1,7 @@
 {
   "id": "local-image-compress",
   "name": "Local Image Compress",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "minAppVersion": "1.4.0",
   "description": "Local PNG/JPEG compression without cloud APIs.",
   "author": "Haperone",

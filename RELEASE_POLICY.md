@@ -41,9 +41,10 @@ GitHub release assets are exactly:
 - `main.js`
 - `styles.css`
 
-The release body is generated from the `Unreleased` section of `CHANGELOG.md`.
-Promotion builds that section from the DEV Conventional Commit subjects, so
-release notes do not depend on reconstructing changes from memory.
+The release body is generated from the promoted PROD commit body. Promotion
+creates `.git/PROMOTION_COMMIT_MESSAGE.txt` from DEV commit subjects, lets the
+body be reviewed before commit, and the GitHub workflow turns that committed
+body into `release-notes.md`.
 
 `versions.json` remains tracked in the repository for compatibility metadata,
 but it is not a GitHub Release asset.
