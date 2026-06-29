@@ -1,6 +1,6 @@
 {
   "name": "obsidian-local-image-compress",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "Desktop local PNG/JPEG compression for Obsidian using bundled WASM codecs, no cloud.",
   "type": "commonjs",

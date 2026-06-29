@@ -7,11 +7,18 @@ const { resolveRepositoryLayout } = require("./repository-layout");
 
 const { repositoryRoot } = resolveRepositoryLayout(__dirname);
 const localeNames = [
-  "ar", "de", "es", "fa", "fr", "id", "it", "ja", "ko", "nl",
-  "pl", "pt-br", "pt", "ru", "th", "tr", "uk", "vi", "zh-cn", "zh-tw"
+  "ar", "de", "es", "fa", "fr", "id", "it", "nl", "pl", "pt",
+  "pt-br", "ru", "th", "tr", "uk", "vi", "ja", "ko", "zh-cn", "zh-tw"
 ];
 const localeFiles = localeNames.map((locale) => path.join(repositoryRoot, "assets", `README.${locale}.md`));
 const allReadmes = [path.join(repositoryRoot, "README.md"), ...localeFiles];
+const publicRepositoryUrl = "https://github.com/Haperone/local-image-compress/blob/main";
+const publicRawUrl = "https://raw.githubusercontent.com/Haperone/local-image-compress/main";
+const expectedLanguageTargets = [
+  "README.md",
+  ...localeNames.map((locale) => `assets/README.${locale}.md`)
+].map((target) => `${publicRepositoryUrl}/${target}`);
+const expectedFeatureImage = `${publicRawUrl}/assets/Features.gif`;
 const requiredTokens = [
   "PNG", "JPEG", "WebP", "GIF", "BMP", "HEIC/HEIF", "AVIF",
   "65-80", "85", "Compressed", "10-1000", "1-60", "1-365", "30", "50", "true", "false",
@@ -32,18 +39,12 @@ function slugHeading(heading) {
 for (const filePath of allReadmes) {
   assert(fs.existsSync(filePath), `Missing README: ${path.relative(repositoryRoot, filePath)}`);
   const source = fs.readFileSync(filePath, "utf8");
-  const expectedFeatureImage = filePath === path.join(repositoryRoot, "README.md")
-    ? "![Local Image Compress features](assets/Features.gif)"
-    : "![Local Image Compress features](Features.gif)";
-  assert(source.includes(expectedFeatureImage), `Missing feature GIF in ${path.relative(repositoryRoot, filePath)}`);
-  assert(fs.existsSync(path.resolve(path.dirname(filePath), expectedFeatureImage.match(/\(([^)]+)\)/)[1])), `Broken feature GIF link in ${path.relative(repositoryRoot, filePath)}`);
+  assert(source.includes(`![Local Image Compress features](${expectedFeatureImage})`), `Missing public feature GIF URL in ${path.relative(repositoryRoot, filePath)}`);
   const languageLine = source.split(/\r?\n/).find((line) => line.startsWith("Read in your language:"));
   assert(languageLine, `Missing language selector: ${path.relative(repositoryRoot, filePath)}`);
   const languageTargets = [...languageLine.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)].map((match) => match[1]);
   assert.strictEqual(languageTargets.length, 21, `Language selector must contain 21 links: ${path.relative(repositoryRoot, filePath)}`);
-  for (const target of languageTargets) {
-    assert(fs.existsSync(path.resolve(path.dirname(filePath), target)), `Broken language link in ${path.relative(repositoryRoot, filePath)}: ${target}`);
-  }
+  assert.deepStrictEqual(languageTargets, expectedLanguageTargets, `Language selector must use public PROD GitHub README URLs: ${path.relative(repositoryRoot, filePath)}`);
 
   const headings = new Set([...source.matchAll(/^#{1,6}\s+(.+)$/gm)].map((match) => slugHeading(match[1])));
   for (const anchor of [...source.matchAll(/\]\(#([^)]+)\)/g)].map((match) => match[1])) {
