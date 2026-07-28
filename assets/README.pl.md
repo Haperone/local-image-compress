@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Kompresuj pliki PNG i JPEG bezpośrednio w magazynie Obsidian na swoim komputerze, bez usług chmurowych i API. Zmniejsz miejsce zajmowane przez obrazy o 30–70% bez utraty jakości.
+Kompresuj pliki PNG i JPEG bezpośrednio w magazynie Obsidian na komputerze i na urządzeniach mobilnych, bez usług chmurowych i API. Zmniejsz miejsce zajmowane przez obrazy o 30–70% bez utraty jakości.
+
+Na telefonach i tabletach wtyczka działa z limitami bezpiecznymi dla urządzeń mobilnych: jeden worker kompresji i pliki wejściowe do 25 MB / 50 megapikseli; większe pliki są pomijane z jasnym powodem. Otwieranie folderów kopii zapasowych w menedżerze plików systemu pozostaje dostępne tylko na komputerze.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF i AVIF są celowo pomijane w tej wersji, ponieważ wty
 
 Bardzo małe pliki są zwykle pomijane (`<5KB` dla PNG i `<10KB` dla JPEG).
 
-Wewnętrzne limity bezpieczeństwa są stałe: pliki większe niż `100 MB` są pomijane przed odczytem, a obrazy powyżej `100 milionów` pikseli po sprawdzeniu nagłówka.
+Kontrakt platform jest jawny: desktop przyjmuje dane do `100 MB / 100 MP`; urządzenia mobilne do `25 MB / 50 MP` i używają jednego workera kompresji. Większe dane są pomijane przed pełnym przetwarzaniem.
 
 ### Przechowywanie danych i kopie zapasowe
 - **Główna pamięć podręczna:** przechowywana w folderze wtyczki.
 - **Kopie pamięci podręcznej:** w `Vault/.local-image-compress/backups/cache/`; przechowywanych jest maksymalnie 50 plików.
 - **Kopie obrazów:** w `Vault/.local-image-compress/backups/originals/`; tworzone przed zastąpieniem oryginałów.
+- **Przywracanie pamięci podręcznej (`restore parity`):** kopie pamięci podręcznej można przywracać na desktopie i urządzeniach mobilnych. Tylko otwieranie folderu w systemowym menedżerze plików jest dostępne wyłącznie na desktopie.
+- **Odzyskiwanie migracji (`durable migration journal`):** przed kwarantanną starszych danych wtyczka zapisuje metadane odzyskiwania; podczas uruchamiania uzgadnia przerwane migracje bez cichego usuwania konfliktujących bajtów.
 
 ### Automatyzacja
 - Włączenie „Kompresji w tle” udostępnia dwa suwaki:

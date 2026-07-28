@@ -37,11 +37,41 @@ export default [
     files: sourceFiles,
     languageOptions: {
       parser: tsParser,
+      globals: {
+        __LIC_MOBILE_QA__: "readonly",
+        __LIC_MOBILE_QA_FINGERPRINT__: "readonly"
+      },
       parserOptions: {
         project: "./tsconfig.json",
         tsconfigRootDir: import.meta.dirname,
         sourceType: "module"
       }
+    }
+  },
+  {
+    // The desktop platform port lazy-requires Node/Electron inside functions
+    // so the shared bundle can load on mobile; top-level imports would crash
+    // there. validate-manifest.js confines these requires to this one file,
+    // and none of them execute on mobile code paths.
+    files: [`${sourcePrefix}src-ts/platform/desktop.ts`],
+    languageOptions: {
+      globals: {
+        require: "readonly",
+        process: "readonly",
+        Buffer: "readonly"
+      }
+    },
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+      "import/no-nodejs-modules": "off"
+    }
+  },
+  {
+    // Mobile QA hard-deletes only its marker-verified synthetic session root.
+    // Moving that tree to trash would escape the ownership boundary and retain fixtures.
+    files: [`${sourcePrefix}src-ts/qa/session.ts`],
+    rules: {
+      "obsidianmd/prefer-file-manager-trash-file": "off"
     }
   },
   {

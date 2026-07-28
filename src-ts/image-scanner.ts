@@ -1,6 +1,5 @@
 import * as obsidian from "obsidian";
-import * as path from "path";
-import { getLogTag, getVaultFileByPath, normalizeVaultPath } from "./utils";
+import { getLogTag, getVaultFileByPath, getVaultFolderPath, normalizeVaultPath, resolveVaultDotSegments, vaultFileExtension } from "./utils";
 import type LocalImageCompressPlugin from "./plugin";
 
 type ImageLookup = {
@@ -22,7 +21,7 @@ export class ImageScanner {
   }
 
   isCompressibleImageTarget(imagePath: string | null | undefined) {
-    const extension = path.extname(imagePath || "").slice(1).toLowerCase();
+    const extension = vaultFileExtension(imagePath || "").toLowerCase();
     return ["png", "jpg", "jpeg"].includes(extension);
   }
 
@@ -59,9 +58,69 @@ export class ImageScanner {
   }
 
   stripMarkdownCode(content: string): string {
-    return String(content || "")
-      .replace(/(^|\n)(```|~~~)[^\n]*\n[\s\S]*?\n\2(?=\n|$)/g, "$1")
-      .replace(/`[^`\n]*`/g, "");
+    const lines = String(content || "").split("\n");
+    let fence: { marker: string; length: number } | null = null;
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index] || "";
+      const match = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+      const marker = match?.[2] || "";
+      const suffix = match?.[3] || "";
+      if (fence) {
+        if (marker[0] === fence.marker && marker.length >= fence.length && /^[ \t\r]*$/.test(suffix)) {
+          fence = null;
+        }
+        lines[index] = line.replace(/[^\r]/g, " ");
+        continue;
+      }
+      if (marker && !(marker[0] === "`" && suffix.includes("`"))) {
+        fence = { marker: marker[0] || "", length: marker.length };
+        lines[index] = line.replace(/[^\r]/g, " ");
+      }
+    }
+
+    const withoutFences = lines.join("\n");
+    const runs: Array<{ start: number; length: number; nextSame: number }> = [];
+    for (let index = 0; index < withoutFences.length;) {
+      if (withoutFences[index] !== "`") {
+        index++;
+        continue;
+      }
+      const start = index;
+      while (withoutFences[index] === "`") {
+        index++;
+      }
+      runs.push({ start, length: index - start, nextSame: -1 });
+    }
+    const nextRunByLength = new Map<number, number>();
+    for (let index = runs.length - 1; index >= 0; index--) {
+      const run = runs[index];
+      if (!run) {
+        continue;
+      }
+      run.nextSame = nextRunByLength.get(run.length) ?? -1;
+      nextRunByLength.set(run.length, index);
+    }
+
+    let cursor = 0;
+    let stripped = "";
+    for (let runIndex = 0; runIndex < runs.length;) {
+      const openingRun = runs[runIndex];
+      if (!openingRun || openingRun.nextSame === -1) {
+        runIndex++;
+        continue;
+      }
+      const closingRun = runs[openingRun.nextSame];
+      if (!closingRun) {
+        runIndex++;
+        continue;
+      }
+      stripped += withoutFences.slice(cursor, openingRun.start);
+      const codeEnd = closingRun.start + closingRun.length;
+      stripped += withoutFences.slice(openingRun.start, codeEnd).replace(/[^\r\n]/g, " ");
+      cursor = codeEnd;
+      runIndex = openingRun.nextSame + 1;
+    }
+    return stripped + withoutFences.slice(cursor);
   }
 
   getWikiTargetBeforeAlias(rawTarget: string): string {
@@ -111,8 +170,8 @@ export class ImageScanner {
       return null;
     }
     const normalizedNotePath = String(notePath || "").replace(/\\/g, "/");
-    const noteDir = normalizedNotePath.includes("/") ? path.posix.dirname(normalizedNotePath) : "";
-    const resolved = path.posix.normalize(noteDir ? `${noteDir}/${normalizedTarget}` : normalizedTarget).replace(/^\/+/, "");
+    const noteDir = getVaultFolderPath(normalizedNotePath);
+    const resolved = resolveVaultDotSegments(noteDir ? `${noteDir}/${normalizedTarget}` : normalizedTarget);
     if (!resolved || resolved === "." || resolved === ".." || resolved.startsWith("../")) {
       return null;
     }

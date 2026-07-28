@@ -1,7 +1,5 @@
 import { t } from "./i18n";
-import { getErrorCode, getLogTag, getVaultBasePath, toVaultRelativePath } from "./utils";
-import * as fs from "fs";
-import * as path from "path";
+import { getLogTag, isSafeVaultRelativePath, normalizeVaultPath, normalizeVaultPathRoot } from "./utils";
 import { ConcurrencyLimiter } from "./concurrency-limiter";
 import type LocalImageCompressPlugin from "./plugin";
 import type { SavingsSnapshot } from "./types";
@@ -328,12 +326,17 @@ export class SavingsCalculator {
 
   async getCompressedFileSize(compressedFilePath: string): Promise<number | null> {
     try {
-      const stats = await fs.promises.stat(compressedFilePath);
-      return stats.size;
-    } catch (error) {
-      if (getErrorCode(error) === "ENOENT") {
+      const normalizedPath = normalizeVaultPath(compressedFilePath);
+      if (!isSafeVaultRelativePath(normalizedPath)) {
+        return null;
+      }
+      const vaultRelativePath = normalizeVaultPathRoot(normalizedPath);
+      const stat = await this.plugin.getPlatformPorts().fs.stat(vaultRelativePath);
+      if (!stat || stat.isDirectory) {
         return 0;
       }
+      return stat.size;
+    } catch (error) {
       console.warn(getLogTag(this.plugin), `Cannot read compressed file size: ${compressedFilePath}`, error);
       return null;
     }
@@ -348,8 +351,11 @@ export class SavingsCalculator {
   }
 
   getCompressedFilePath(originalPathOrVaultRelative: string) {
-    const basePath = getVaultBasePath(this.plugin.app);
-    const vaultRelativePath = toVaultRelativePath(originalPathOrVaultRelative, basePath);
-    return path.join(basePath, this.plugin.getOutputFolder(), vaultRelativePath);
+    const normalizedPath = normalizeVaultPath(originalPathOrVaultRelative);
+    if (!isSafeVaultRelativePath(normalizedPath)) {
+      return null;
+    }
+    const vaultRelativePath = normalizeVaultPathRoot(normalizedPath);
+    return normalizeVaultPathRoot(`${this.plugin.getOutputFolder()}/${vaultRelativePath}`);
   }
 }

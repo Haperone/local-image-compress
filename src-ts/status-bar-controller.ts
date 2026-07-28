@@ -61,7 +61,7 @@ export class StatusBarController {
   }
 
   async update(): Promise<void> {
-    if (!this.plugin.statusBarItem) {
+    if (this.plugin.isUnloading || !this.plugin.statusBarItem) {
       return;
     }
     const { uncompressedImages: uncompressedCount, totalImages: totalCount } = await this.plugin.getImageCompressionCounts();
@@ -105,6 +105,10 @@ export class StatusBarController {
       this.plugin.getImageCompressionCounts(),
       this.plugin.moveService.getCompressedFilesCount()
     ]);
+    if (this.plugin.isUnloading) {
+      this.setStatusMenuExpanded(false);
+      return;
+    }
     const menu = this.createMenu(event, uncompressedCount, totalCount, movableCompressedCount, activeDocument);
     if (!menu) {
       this.setStatusMenuExpanded(false);

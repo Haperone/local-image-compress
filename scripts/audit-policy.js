@@ -62,6 +62,9 @@ const mainBundle = mainBundleExists ? fs.readFileSync(mainBundlePath, "utf8") : 
 const cacheSource = fs.readFileSync(path.join(tsRoot, "cache.ts"), "utf8");
 const i18nSource = fs.readFileSync(path.join(tsRoot, "i18n.ts"), "utf8");
 const utilsSource = fs.readFileSync(path.join(tsRoot, "utils.ts"), "utf8");
+const platformDesktopSource = fs.readFileSync(path.join(tsRoot, "platform", "desktop.ts"), "utf8");
+const platformMobileSource = fs.readFileSync(path.join(tsRoot, "platform", "mobile.ts"), "utf8");
+const mobileQaSessionSource = fs.readFileSync(path.join(tsRoot, "qa", "session.ts"), "utf8");
 const pluginSource = fs.readFileSync(path.join(tsRoot, "plugin.ts"), "utf8");
 const compressionWorkerSource = fs.readFileSync(path.join(tsRoot, "compression-worker.ts"), "utf8");
 const workerSlotSource = fs.readFileSync(path.join(tsRoot, "worker-slot.ts"), "utf8");
@@ -78,13 +81,26 @@ const forbiddenSourcePatterns = [
   [/\beval\s*\(|new\s+Function\b|set(?:Timeout|Interval)\s*\(\s*["']/, "string-to-code execution"],
   [/setAttribute\s*\(\s*["']on/i, "string event handler"],
   [/\brequire\s*\(\s*["']child_process["']\s*\)/, "child_process"],
-  [/\b(?:localStorage|sessionStorage)\b/, "web storage"],
   [/\bprocess\.cwd\s*\(/, "ambient working-directory fallback"],
   [/\b(?:api[_-]?key|client[_-]?secret|private[_-]?key|access[_-]?token|refresh[_-]?token|BEGIN (?:RSA|OPENSSH|EC) PRIVATE KEY)\b/i, "secret material"]
 ];
 for (const [pattern, label] of forbiddenSourcePatterns) {
   assert(!pattern.test(combinedSource), `Policy audit found ${label} in application TypeScript`);
 }
+const webStorageFiles = matchingFiles(files, /\b(?:localStorage|sessionStorage)\b/);
+assert(
+  JSON.stringify(webStorageFiles) === JSON.stringify(["src-ts/platform/desktop.ts", "src-ts/platform/mobile.ts", "src-ts/qa/session.ts"])
+    && countMatches(platformDesktopSource, /window\.localStorage\b/g) === 3
+    && countMatches(platformMobileSource, /window\.localStorage\b/g) === 3
+    && countMatches(mobileQaSessionSource, /ownerWindow\.localStorage\b/g) === 3
+    && !/\bsessionStorage\b/.test(platformDesktopSource)
+    && !/\bsessionStorage\b/.test(platformMobileSource)
+    && !/\bsessionStorage\b/.test(mobileQaSessionSource)
+    && platformDesktopSource.includes("local-image-compress:desktop-device-owner-v1")
+    && platformMobileSource.includes("local-image-compress:device-owner-v1")
+    && mobileQaSessionSource.includes("local-image-compress.mobile-qa-device-owner.v1"),
+  `Web storage is restricted to reviewed recovery and mobile QA device-owner operations; found ${webStorageFiles.join(", ")}`
+);
 
 const dependencyNames = Object.keys(packageJson.dependencies || {});
 assert(dependencyNames.length === 0, `Runtime npm dependencies must stay bundled and explicit; found ${dependencyNames.join(", ")}`);
@@ -96,7 +112,10 @@ for (const [name, version] of Object.entries({
   assert(packageJson.devDependencies?.[name] === version, `${name} must stay pinned to ${version}`);
 }
 
-assert(manifest.isDesktopOnly === true, "Node/Electron plugin must remain desktop-only");
+// Mobile support ships through src-ts/platform ports; Node/Electron access is
+// confined to the lazily-required desktop port, so the manifest is no longer
+// desktop-only. validate-manifest.js enforces that confinement.
+assert(manifest.isDesktopOnly === false, "isDesktopOnly must stay false now that the platform port migration shipped");
 assert(/^https:\/\/buymeacoffee\.com\//.test(manifest.fundingUrl || ""), "fundingUrl must remain an optional support link");
 assert(!combinedSource.includes(manifest.fundingUrl), "Runtime source must not contact or gate on fundingUrl");
 
@@ -124,23 +143,16 @@ for (const token of [
 }
 
 const expectedFsBoundaryFiles = [
-  "src-ts/cache.ts",
-  "src-ts/i18n.ts",
-  "src-ts/move-service.ts",
-  "src-ts/plugin.ts",
-  "src-ts/savings-calculator.ts",
-  "src-ts/services/cache-backups-view.ts",
-  "src-ts/services/migration-runner.ts",
-  "src-ts/settings-tab.ts",
-  "src-ts/utils.ts"
+  "src-ts/platform/desktop.ts"
 ];
-const fsBoundaryFiles = matchingFiles(files, /import\s+\*\s+as\s+fs\w*\s+from\s+["']fs["']/);
+const fsBoundaryFiles = matchingFiles(files, /(?:import\s+\*\s+as\s+fs\w*\s+from\s+["']fs["']|require\(\s*["']fs["']\s*\))/);
 assert(JSON.stringify(fsBoundaryFiles) === JSON.stringify(expectedFsBoundaryFiles), `Raw fs boundary inventory changed: ${fsBoundaryFiles.join(", ")}`);
-const electronBoundaryFiles = matchingFiles(files, /from\s+["']electron["']/);
-assert(JSON.stringify(electronBoundaryFiles) === JSON.stringify(["src-ts/utils.ts"]), `Electron boundary inventory changed: ${electronBoundaryFiles.join(", ")}`);
+const electronBoundaryFiles = matchingFiles(files, /(?:from\s+["']electron["']|require\(\s*["']electron["']\s*\))/);
+assert(JSON.stringify(electronBoundaryFiles) === JSON.stringify(["src-ts/platform/desktop.ts"]), `Electron boundary inventory changed: ${electronBoundaryFiles.join(", ")}`);
 
-assert(!/getVaultBasePathFromAdapter\([^)]*process\.cwd/.test(utilsSource), "Vault base-path helper still defaults to process.cwd()");
-assert(utilsSource.includes("refusing filesystem access outside the vault"), "Vault base-path helper must fail closed");
+assert(!/getVaultBasePathFromAdapter\([^)]*process\.cwd/.test(platformDesktopSource), "Vault base-path helper still defaults to process.cwd()");
+assert(platformDesktopSource.includes("refusing filesystem access outside the vault"), "Vault base-path helper must fail closed");
+assert(!utilsSource.includes("getBasePath("), "utils must stay free of desktop base-path access");
 assert(cacheSource.includes("isSafeVaultRelativePath(vaultRelativePath)") && !cacheSource.includes("return rawPath;"), "Cache raw filesystem resolution must reject outside-vault paths");
 assert(
   i18nSource.includes("if (!pluginDir)") && i18nSource.includes("return {};"),
@@ -156,7 +168,7 @@ const expectedFullVaultScans = [
   "src-ts/move-service.ts",
   "src-ts/move-service.ts",
   "src-ts/plugin.ts",
-  "src-ts/plugin.ts"
+  "src-ts/services/batch-compression-service.ts"
 ];
 const fullVaultScans = [];
 for (const file of files) {

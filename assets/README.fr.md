@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Compressez les fichiers PNG et JPEG directement dans votre coffre Obsidian sur votre ordinateur, sans service cloud ni API. Réduisez de 30 à 70 % l’espace occupé par les images sans sacrifier la qualité.
+Compressez les fichiers PNG et JPEG directement dans votre coffre Obsidian, sur ordinateur et sur mobile, sans service cloud ni API. Réduisez de 30 à 70 % l’espace occupé par les images sans sacrifier la qualité.
+
+Sur téléphones et tablettes, le plugin fonctionne avec des limites adaptées au mobile : un seul worker de compression et des fichiers d’entrée jusqu’à 25 Mo / 50 mégapixels ; les fichiers plus volumineux sont ignorés avec une raison claire. L’ouverture des dossiers de sauvegarde dans le gestionnaire de fichiers du système reste réservée à l’ordinateur.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF et AVIF sont volontairement ignorés dans cette versio
 
 Les très petits fichiers sont généralement ignorés (`<5KB` pour PNG et `<10KB` pour JPEG).
 
-Les limites de sécurité sont fixes : les fichiers de plus de `100 MB` sont ignorés avant lecture et les images de plus de `100 millions` de pixels après validation de leur en-tête.
+Le contrat par plateforme est explicite : le bureau accepte des entrées jusqu’à `100 MB / 100 MP` ; le mobile accepte jusqu’à `25 MB / 50 MP` avec un seul worker de compression. Les entrées plus grandes sont ignorées avant le traitement complet.
 
 ### Stockage des données et sauvegardes
 - **Cache principal :** stocké dans le dossier du plugin.
 - **Sauvegardes du cache :** stockées dans `Vault/.local-image-compress/backups/cache/` ; jusqu’à 50 fichiers sont conservés.
 - **Sauvegardes des images :** stockées dans `Vault/.local-image-compress/backups/originals/` ; créées avant le remplacement des originaux.
+- **Restauration du cache (`restore parity`) :** les sauvegardes du cache peuvent être restaurées sur bureau et mobile. Seule l’ouverture du dossier dans le gestionnaire de fichiers système est réservée au bureau.
+- **Récupération de migration (`durable migration journal`) :** avant de mettre les anciennes données en quarantaine, le plugin écrit des métadonnées de récupération ; au démarrage, il réconcilie les migrations interrompues sans supprimer silencieusement les octets en conflit.
 
 ### Automatisation
 - « Compression en arrière-plan » rend disponibles deux curseurs :

@@ -1,6 +1,4 @@
-import * as path from "path";
-import type * as obsidian from "obsidian";
-import { getVaultBasePath } from "./utils";
+import type { FsPort } from "./platform/ports";
 
 export const BACKUP_STORAGE_FOLDER = ".local-image-compress";
 
@@ -11,13 +9,13 @@ export interface BackupStoragePaths {
   originalFilesBackups: string;
 }
 
-export function getBackupStoragePaths(app: obsidian.App): BackupStoragePaths {
-  const root = path.resolve(getVaultBasePath(app), BACKUP_STORAGE_FOLDER);
-  const backupsRoot = path.join(root, "backups");
+export function getBackupStoragePaths(fsPort: FsPort): BackupStoragePaths {
+  const root = BACKUP_STORAGE_FOLDER;
+  const backupsRoot = fsPort.joinPath(root, "backups");
   return {
     root,
     backupsRoot,
-    cacheBackups: path.join(backupsRoot, "cache"),
-    originalFilesBackups: path.join(backupsRoot, "originals")
+    cacheBackups: fsPort.joinPath(backupsRoot, "cache"),
+    originalFilesBackups: fsPort.joinPath(backupsRoot, "originals")
   };
 }

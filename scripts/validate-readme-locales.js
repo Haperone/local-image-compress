@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const { resolveRepositoryLayout } = require("./repository-layout");
 
-const { repositoryRoot } = resolveRepositoryLayout(__dirname);
+const { repositoryRoot, sourceRoot } = resolveRepositoryLayout(__dirname);
 const localeNames = [
   "ar", "de", "es", "fa", "fr", "id", "it", "nl", "pl", "pt",
   "pt-br", "ru", "th", "tr", "uk", "vi", "ja", "ko", "zh-cn", "zh-tw"
@@ -25,6 +25,22 @@ const requiredTokens = [
   "Vault/.local-image-compress/backups/cache/",
   "Vault/.local-image-compress/backups/originals/",
   "obsidian-paste-image-rename", "app.plugins", "main.js", "GPL-3.0-or-later", "THIRD_PARTY_NOTICES.md"
+];
+const settingsSource = fs.readFileSync(path.join(sourceRoot, "src-ts", "settings.ts"), "utf8");
+function readIntegerConstant(name) {
+  const match = settingsSource.match(new RegExp(`export const ${name} = (\\d+);`));
+  assert(match, `Missing integer settings constant: ${name}`);
+  return Number(match[1]);
+}
+const desktopMaxInputMb = readIntegerConstant("INTERNAL_MAX_INPUT_SIZE_MB");
+const desktopMaxPixelsMp = readIntegerConstant("INTERNAL_MAX_IMAGE_PIXELS_MILLIONS");
+const mobileMaxInputMb = readIntegerConstant("MOBILE_MAX_INPUT_SIZE_MB");
+const mobileMaxPixelsMp = readIntegerConstant("MOBILE_MAX_IMAGE_PIXELS_MILLIONS");
+const requiredPlatformContracts = [
+  `${desktopMaxInputMb} MB / ${desktopMaxPixelsMp} MP`,
+  `${mobileMaxInputMb} MB / ${mobileMaxPixelsMp} MP`,
+  "`restore parity`",
+  "`durable migration journal`"
 ];
 
 function slugHeading(heading) {
@@ -63,7 +79,9 @@ for (const filePath of allReadmes) {
   for (const token of requiredTokens) {
     assert(source.includes(token), `${relativePath} is missing canonical token: ${token}`);
   }
-  assert(source.includes("100 MB") || source.includes("100 МБ"), `${relativePath} is missing the 100 MB safety limit`);
+  for (const contract of requiredPlatformContracts) {
+    assert(source.includes(contract), `${relativePath} is missing platform contract: ${contract}`);
+  }
 }
 
 process.stdout.write(`README locale validation passed: ${localeFiles.length} locales, ${allReadmes.length * 21} language links.\n`);

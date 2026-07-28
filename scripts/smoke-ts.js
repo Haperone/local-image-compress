@@ -7,6 +7,8 @@ const crypto = require("crypto");
 const Module = require("module");
 const assert = require("node:assert/strict");
 const { resolveRepositoryLayout } = require("./repository-layout");
+const { runEsbuildCli } = require("./run-esbuild-cli");
+const { runSourceContractChecks } = require("./smoke/source-contracts");
 
 const { isDevLayout, repositoryRoot, sourceRoot: root } = resolveRepositoryLayout();
 const artifact = path.join(root, "dist-ts", "main.js");
@@ -203,948 +205,49 @@ if (!fs.existsSync(artifact)) {
   throw new Error(`Missing TypeScript artifact: ${path.relative(root, artifact)}`);
 }
 
-const source = fs.readFileSync(artifact, "utf8");
-const runRuntimeQaWrapperSource = fs.readFileSync(path.join(root, "scripts", "run-runtime-qa.js"), "utf8");
-const devVaultSource = isDevLayout ? fs.readFileSync(path.join(repositoryRoot, "scripts", "dev-vault.mjs"), "utf8") : "";
-
-const requiredArtifactTokens = [
-  "require(\"obsidian\")",
-  "require(\"fs\")",
-  "require(\"path\")",
-  "require(\"crypto\")"
-];
-
-for (const token of requiredArtifactTokens) {
-  assert(source.includes(token), `TypeScript artifact is missing expected bundler token: ${token}`);
-}
-
-assert(
-  !source.includes("this.getCompressedFiles(compressedFolderPath)"),
-  "TypeScript artifact still calls missing getCompressedFiles() in moveCompressedToFiles()"
-);
-
-assert(
-  source.includes("await this.getCompressedFilesAsync(compressedFolderPath)"),
-  "TypeScript artifact does not use getCompressedFilesAsync() in moveCompressedToFiles()"
-);
-
-assert(
-  source.includes("findOriginalFileForCompressed"),
-  "TypeScript artifact is missing relative-path original lookup for compressed files"
-);
-
-assert(
-  !source.includes("replace(/\\//g"),
-  "TypeScript artifact still normalizes plugin paths with Windows backslashes"
-);
-
-assert(
-  !source.includes("spawnSync(") && !source.includes("spawn("),
-  "TypeScript artifact still spawns native compressor binaries"
-);
-
-assert(
-  runRuntimeQaWrapperSource.includes("OBSIDIAN_CLI_TIMEOUT_MS")
-    && /spawnSync\(cliPath, cliArgs,[\s\S]*timeout: timeoutMs/.test(runRuntimeQaWrapperSource),
-  "Runtime QA wrapper does not bound Obsidian CLI calls with a timeout"
-);
-assert(
-  runRuntimeQaWrapperSource.includes("cleanupRuntimeQaVaultArtifacts")
-    && runRuntimeQaWrapperSource.includes("QA_ARTIFACT_PARENTS")
-    && runRuntimeQaWrapperSource.includes("removePathInsideVault")
-    && runRuntimeQaWrapperSource.includes("cleanupRuntimeQaVaultArtifacts();"),
-  "Runtime QA wrapper does not clean marker-owned Vault artifacts after hard timeout"
-);
-
-if (isDevLayout) {
-  assert(
-    devVaultSource.includes("OBSIDIAN_CLI_TIMEOUT_MS")
-      && /spawnSync\(cliPath, cliArgs,[\s\S]*timeout: timeoutMs/.test(devVaultSource),
-    "DEV vault helper does not bound Obsidian CLI calls with a timeout"
-  );
-}
-
-assert(
-  !source.includes(".innerHTML"),
-  "TypeScript artifact still writes localized content through innerHTML"
-);
-
-assert(
-  !source.includes(".outerHTML") && !source.includes("insertAdjacentHTML("),
-  "TypeScript artifact still writes raw HTML into the DOM"
-);
-
-assert(
-  !source.includes("setupMenuEventListeners("),
-  "TypeScript artifact still contains unused status menu listener helper"
-);
-
-assert(
-  !source.includes("isFileAlreadyCompressed("),
-  "TypeScript artifact still contains path-only isFileAlreadyCompressed()"
-);
-
-assert(
-  !source.includes("readSync("),
-  "TypeScript artifact still performs dead binary header reads before compression"
-);
-
-assert(
-  !source.includes("execSync("),
-  "TypeScript artifact still resolves binaries through shell execSync"
-);
-
-const compressorSource = fs.readFileSync(path.join(sourceTsRoot, "compressor.ts"), "utf8");
-const workerSlotSource = fs.readFileSync(path.join(sourceTsRoot, "worker-slot.ts"), "utf8");
-const workerPoolSource = fs.readFileSync(path.join(sourceTsRoot, "worker-pool.ts"), "utf8");
-const compressionWorkerSource = fs.readFileSync(path.join(sourceTsRoot, "compression-worker.ts"), "utf8");
-const imageScannerSource = fs.readFileSync(path.join(sourceTsRoot, "image-scanner.ts"), "utf8");
-const imageIndexSource = fs.readFileSync(path.join(sourceTsRoot, "image-index.ts"), "utf8");
-const progressModalSource = fs.readFileSync(path.join(sourceTsRoot, "progress-modal.ts"), "utf8");
-const backupStorageSource = fs.readFileSync(path.join(sourceTsRoot, "backup-storage.ts"), "utf8");
-const cacheSource = fs.readFileSync(path.join(sourceTsRoot, "cache.ts"), "utf8");
-const cacheFileNamesSource = fs.readFileSync(path.join(sourceTsRoot, "cache-file-names.ts"), "utf8");
-const typesSource = fs.readFileSync(path.join(sourceTsRoot, "types.ts"), "utf8");
-const cacheEntryTypeSource = typesSource.slice(typesSource.indexOf("export interface CacheEntry"), typesSource.indexOf("export interface FreshCacheEntry"));
-const wasmModulesSource = fs.readFileSync(path.join(sourceTsRoot, "wasm-modules.d.ts"), "utf8");
-const settingsTabSource = fs.readFileSync(path.join(sourceTsRoot, "settings-tab.ts"), "utf8");
-const pluginSource = fs.readFileSync(path.join(sourceTsRoot, "plugin.ts"), "utf8");
-const setupStatusBarSource = pluginSource.slice(pluginSource.indexOf("\n  setupStatusBar()"), pluginSource.indexOf("\n  getMonotonicTime()"));
-const settingsSource = fs.readFileSync(path.join(sourceTsRoot, "settings.ts"), "utf8");
-const utilsSource = fs.readFileSync(path.join(sourceTsRoot, "utils.ts"), "utf8");
-const moveServiceSource = fs.readFileSync(path.join(sourceTsRoot, "move-service.ts"), "utf8");
-const i18nSource = fs.readFileSync(path.join(sourceTsRoot, "i18n.ts"), "utf8");
-const concurrencyLimiterSource = fs.readFileSync(path.join(sourceTsRoot, "concurrency-limiter.ts"), "utf8");
-const backgroundCompressionServiceSource = fs.readFileSync(path.join(sourceTsRoot, "background-compression-service.ts"), "utf8");
-const statusBarControllerSource = fs.readFileSync(path.join(sourceTsRoot, "status-bar-controller.ts"), "utf8");
-const stylesSource = fs.readFileSync(path.join(repositoryRoot, "styles.css"), "utf8");
-const runtimeQaSource = fs.readFileSync(path.join(root, "scripts", "runtime-qa.js"), "utf8");
-assert(
-  runtimeQaSource.includes("removeRuntimeQaVaultArtifacts")
-    && runtimeQaSource.includes("staleQaArtifactParents")
-    && runtimeQaSource.includes("entry.name.startsWith(qaStateMarker)")
-    && runtimeQaSource.includes("IsolatedBackupStorage")
-    && runtimeQaSource.includes("originalFilesBackups: path.join(qaBackupStorageRoot")
-    && runtimeQaSource.includes("Runtime QA attempted ${action} outside ${qaRoot}")
-    && runtimeQaSource.includes("originalRunCompressionBatch")
-    && runtimeQaSource.includes("assertQaRuntimeScope(`before command ${commandId}`)")
-    && (runtimeQaSource.match(/finally \{\n        await restoreQaDefaults\(\);/g) || []).length >= 5,
-  "Runtime QA no longer cleans QA-owned Vault artifacts, isolates backups, or fails closed outside its QA root"
-);
-const pluginGuardSource = fs.readFileSync(path.join(sourceTsRoot, "plugin-guard-service.ts"), "utf8");
-const savingsCalculatorSource = fs.readFileSync(path.join(sourceTsRoot, "savings-calculator.ts"), "utf8");
-const commandRegistrySource = fs.readFileSync(path.join(sourceTsRoot, "services", "command-registry.ts"), "utf8");
-const eventRouterSource = fs.readFileSync(path.join(sourceTsRoot, "services", "event-router.ts"), "utf8");
-const migrationRunnerSource = fs.readFileSync(path.join(sourceTsRoot, "services", "migration-runner.ts"), "utf8");
-const folderSelectorModalSource = fs.readFileSync(path.join(sourceTsRoot, "services", "folder-selector-modal.ts"), "utf8");
-const newFileQueueSource = fs.readFileSync(path.join(sourceTsRoot, "services", "new-file-queue.ts"), "utf8");
-const cacheBackupsViewSource = fs.readFileSync(path.join(sourceTsRoot, "services", "cache-backups-view.ts"), "utf8");
-const localesIndexSource = fs.readFileSync(path.join(sourceTsRoot, "locales", "index.ts"), "utf8");
-const englishLocale = JSON.parse(fs.readFileSync(path.join(sourceTsRoot, "locales", "en.json"), "utf8"));
-const i18nCatalogSource = fs.readdirSync(path.join(sourceTsRoot, "locales"))
-  .filter((fileName) => fileName.endsWith(".json"))
-  .sort()
-  .map((fileName) => fs.readFileSync(path.join(sourceTsRoot, "locales", fileName), "utf8"))
-  .join("\n");
-const serviceSources = [
-  "background-compression-service.ts",
-  "image-scanner.ts",
-  "move-service.ts",
-  "plugin-guard-service.ts",
-  "savings-calculator.ts",
-  "settings-tab.ts",
-  "status-bar-controller.ts"
-].map((fileName) => fs.readFileSync(path.join(sourceTsRoot, fileName), "utf8"));
-const readmeSource = fs.readFileSync(path.join(repositoryRoot, "README.md"), "utf8");
-const readmeRuSource = fs.readFileSync(path.join(repositoryRoot, "assets", "README.ru.md"), "utf8");
-const releasePolicySource = fs.readFileSync(path.join(repositoryRoot, "RELEASE_POLICY.md"), "utf8");
-const releaseReadinessPath = path.join(repositoryRoot, "RELEASE_READINESS.md");
-const obsidianReleaseAuditPath = path.join(repositoryRoot, "OBSIDIAN_RELEASE_AUDIT.md");
-const obsidianBoundaryAuditPath = path.join(repositoryRoot, "OBSIDIAN_API_BOUNDARIES.md");
-if (isDevLayout) {
-  for (const internalAuditPath of [releaseReadinessPath, obsidianReleaseAuditPath, obsidianBoundaryAuditPath]) {
-    assert(fs.existsSync(internalAuditPath), `DEV smoke requires ${path.basename(internalAuditPath)}`);
-  }
-}
-const releaseReadinessSource = fs.existsSync(releaseReadinessPath) ? fs.readFileSync(releaseReadinessPath, "utf8") : null;
-const obsidianReleaseAuditSource = fs.existsSync(obsidianReleaseAuditPath) ? fs.readFileSync(obsidianReleaseAuditPath, "utf8") : null;
-const obsidianBoundaryAuditSource = fs.existsSync(obsidianBoundaryAuditPath) ? fs.readFileSync(obsidianBoundaryAuditPath, "utf8") : null;
-const packageSource = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-const rootPackageSource = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "package.json"), "utf8"));
-const manifestSource = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "manifest.json"), "utf8"));
-const versionsSource = JSON.parse(fs.readFileSync(path.join(repositoryRoot, "versions.json"), "utf8"));
-const tsconfigSource = JSON.parse(fs.readFileSync(path.join(root, "tsconfig.json"), "utf8"));
-const releaseWorkflowSource = fs.readFileSync(path.join(repositoryRoot, ".github", "workflows", "release.yml"), "utf8");
-const licenseSource = fs.readFileSync(path.join(repositoryRoot, "LICENSE"), "utf8");
-const gitignoreSource = fs.readFileSync(path.join(repositoryRoot, ".gitignore"), "utf8");
-const bugResearchPath = path.join(repositoryRoot, "BUG_RESEARCH_FINDINGS.txt");
-const validateManifestSource = fs.readFileSync(path.join(root, "scripts", "validate-manifest.js"), "utf8");
-const buildRootSource = fs.readFileSync(path.join(root, "scripts", "build-root.js"), "utf8");
-const buildTsSource = fs.readFileSync(path.join(root, "scripts", "build-ts.js"), "utf8");
-const prepareReleaseSource = fs.readFileSync(path.join(root, "scripts", "prepare-release.js"), "utf8");
-const prepareReleaseNotesSource = fs.readFileSync(path.join(root, "scripts", "prepare-release-notes.js"), "utf8");
-const verifyReleaseSource = fs.readFileSync(path.join(root, "scripts", "verify-release.js"), "utf8");
-const classWideGatesSource = fs.readFileSync(path.join(root, "scripts", "class-wide-gates.js"), "utf8");
-const auditPolicySource = fs.readFileSync(path.join(root, "scripts", "audit-policy.js"), "utf8");
-const lintObsidianSource = fs.readFileSync(path.join(root, "scripts", "lint-obsidian.js"), "utf8");
-const eslintConfigSource = fs.readFileSync(path.join(root, "eslint.config.mjs"), "utf8");
-const eslintObsidianConfigSource = fs.readFileSync(path.join(root, "eslint.obsidian.config.mjs"), "utf8");
-const validateLicenseSource = fs.readFileSync(path.join(root, "scripts", "validate-license.js"), "utf8");
-const combinedTsSource = [
-  backupStorageSource,
-  backgroundCompressionServiceSource,
-  commandRegistrySource,
-  eventRouterSource,
-  migrationRunnerSource,
-  folderSelectorModalSource,
-  newFileQueueSource,
-  cacheBackupsViewSource,
-  cacheFileNamesSource,
-  cacheSource,
-  compressionWorkerSource,
-  imageIndexSource,
-  compressorSource,
-  concurrencyLimiterSource,
-  i18nSource,
-  localesIndexSource,
-  imageScannerSource,
-  moveServiceSource,
-  pluginGuardSource,
-  pluginSource,
-  progressModalSource,
-  savingsCalculatorSource,
-  settingsSource,
-  settingsTabSource,
-  statusBarControllerSource,
-  typesSource,
-  utilsSource,
-  wasmModulesSource,
-  workerPoolSource,
-  workerSlotSource
-].join("\n");
-assert(!/(?::\s*any\b|\bas\s+any\b|\bis\s+any\b|\bany\s*\[\]|<[^>\n]*\bany\b[^>\n]*>)/.test(combinedTsSource), "src-ts reintroduced explicit any; use domain types or unknown with narrowing");
-assert(!combinedTsSource.includes("app.setting") && !combinedTsSource.includes("this.app.setting"), "Runtime source reintroduced private app.setting access");
-assert(!utilsSource.includes("adapter?.basePath") && !utilsSource.includes("adapter?.path?.absolute") && utilsSource.includes("getVaultBasePathFromAdapter(adapter: unknown"), "Vault base-path helper still reads undocumented adapter fields");
-assert((combinedTsSource.match(/\.vault\.get(?:Files|AllLoadedFiles)\(\)/g) || []).length === 8, "Full-vault iteration count changed; classify each new or removed scan in OBSIDIAN_API_BOUNDARIES.md");
-if (obsidianBoundaryAuditSource) {
-  assert(obsidianBoundaryAuditSource.includes("Intentional Vault Iteration") && obsidianBoundaryAuditSource.includes("`DeferredViews` is not applicable") && obsidianBoundaryAuditSource.includes("Plugin registry enable/disable"), "Obsidian API boundary audit is missing lifecycle/private/full-scan classification");
-}
-assert(!compressorSource.includes("openSync(") && !compressorSource.includes("readSync("), "Compressor still performs dead binary header reads before compression");
-assert(
-  !combinedTsSource.includes("slice(input.byteOffset, input.byteOffset + input.byteLength) as ArrayBuffer")
-    && !combinedTsSource.includes("slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer")
-    && (combinedTsSource.match(/const output = new ArrayBuffer\([^)]*\.byteLength\);/g) || []).length >= 3,
-  "Transfer helpers must copy partial views into owned ArrayBuffers without unsafe assertions"
-);
-const requiredSemanticSourceTokens = [
-  "compress-images-in-note",
-  "compress-images-in-folder",
-  "compress-all-images",
-  "move-compressed-to-files",
-  "tinyLocal-cache.json",
-  "Compressed",
-  "pngquant_quality_failed",
-  "tiny-local-status-attention",
-  "getStatsSnapshot",
-  "sourceMtime",
-  "processedMtime",
-  "pending_move",
-  "outputMtime",
-  "outputSize",
-  "ImageIndex",
-  "scheduleStatusBarUpdate",
-  "ConcurrencyLimiter",
-  "compressed_not_smaller",
-  "writeCacheFileAtomic",
-  "tooltip.savings.estimated",
-  "newFileCompressionTimers",
-  "isAllowedByRoots",
-  "seenDirectories",
-  "signature",
-  "brokenCacheBackupPath",
-  "cache.corruptSaved",
-  "preloadExternalLanguages",
-  "Image is too large to compress safely",
-  "tinyLocal-cache.broken-",
-  "cleanupOldBrokenCacheCopies",
-  "Failed to resolve directory:",
-  "Broken cache recovery failed:",
-  "getFileMd5ByPath",
-  "Cannot mark moved file without cache entry or md5:",
-  "runCompressionBatch",
-  "PluginGuardService",
-  "MoveService",
-  "StatusBarController",
-  "ImageScanner",
-  "SavingsCalculator",
-  "BackgroundCompressionService",
-  "normalizeOutputFolder",
-  "compressionSettingsKey",
-  "extractMarkdownImageTargets",
-  "closeMenu",
-  "pluginsToDisableDuringCompression",
-  "validation.pathNotAllowed",
-  "compress.error.fileAccess",
-  "too_large",
-  "writeBinary",
-  "maxInputBytes"
-];
-for (const token of requiredSemanticSourceTokens) {
-  assert(combinedTsSource.includes(token), `TypeScript sources are missing expected semantic token: ${token}`);
-}
-assert(!compressorSource.includes("[key: string]: any"), "Compressor still has a class index signature");
-assert(!compressorSource.includes("child_process"), "Compressor still imports child_process");
-assert(!compressorSource.includes("spawn(") && !compressorSource.includes("spawnSync("), "Compressor still spawns native binaries");
-assert(!compressorSource.includes("getPathCandidates") && !compressorSource.includes("resolveCommandFromPath"), "Compressor still contains native binary path resolution");
-assert(!compressorSource.includes("withWasmTimeout") && !compressorSource.includes("Promise.race"), "Compressor still advertises a fake cancellable WASM timeout");
-assert(!compressorSource.includes("@jsquash/jpeg/decode.js") && !compressorSource.includes("@jsquash/png/decode.js"), "Compressor still imports codec wrappers on the main thread");
-assert(compressorSource.includes("WorkerPool") || compressorSource.includes("workerPool"), "Compressor is missing worker pool integration");
-assert(/destroy\(\)\s*\{\s*this\.workerPool\.destroy\(/.test(compressorSource), "Compressor destroy is no longer a synchronous worker-pool teardown");
-assert(!compressorSource.includes("this.worker?.postMessage"), "Compressor still posts directly to a worker");
-assert(!compressorSource.includes("worker.postMessage"), "Compressor still owns worker message dispatch");
-assert(!compressorSource.includes("_pluginDir"), "Compressor still accepts the unused _pluginDir constructor parameter");
-assert(workerSlotSource.includes("postMessage") && workerSlotSource.includes("terminate"), "WorkerSlot is missing worker lifecycle operations");
-assert(workerSlotSource.includes("needsRecreate"), "WorkerSlot is missing the lazy worker recreate flag");
-assert(workerSlotSource.includes("WASM worker timed out after"), "WorkerSlot is missing real worker timeout handling");
-assert(workerSlotSource.includes("WASM worker init timed out after"), "WorkerSlot is missing init timeout handling");
-assert(workerSlotSource.includes("this.failActiveWorkerState(error, true)"), "WorkerSlot init timeout does not mark the worker for lazy retry");
-assert(workerSlotSource.includes("Worker crashed:"), "WorkerSlot is missing worker.onerror crash handling");
-assert(workerSlotSource.includes("new Blob([this.workerSource]") && workerSlotSource.includes("URL.createObjectURL(blob)") && workerSlotSource.includes("URL.revokeObjectURL"), "WorkerSlot is missing the Blob worker CSP-sensitive creation/revoke path");
-assert(workerSlotSource.includes("Unhandled worker message") && workerSlotSource.includes("expecting"), "WorkerSlot is missing unhandled worker message diagnostics");
-assert(workerSlotSource.includes("normalizeCompressionBuffer") && workerSlotSource.includes("ArrayBuffer.isView") && workerSlotSource.includes("empty or detached"), "WorkerSlot does not validate transferable compression buffers");
-assert(/setWorkerTimeout\(\(\) => \{\s*if \(this\.destroyed\)/.test(workerSlotSource), "WorkerSlot timeout callbacks do not guard against firing after destroy");
-assert(workerPoolSource.includes("class WorkerPool") && workerPoolSource.includes("waiters"), "WorkerPool is missing dispatcher queue logic");
-assert(workerPoolSource.includes("staggeredInitQueue"), "WorkerPool is missing staggered initialization");
-assert(workerPoolSource.includes("MAX_WAITERS") && workerPoolSource.includes("Worker pool waiters queue full"), "WorkerPool is missing a bounded waiter queue");
-assert(compressorSource.includes("adapter.writeBinary"), "Compressor no longer writes through vault.adapter.writeBinary()");
-assert(compressorSource.includes("compress.error.notSmaller") && !compressorSource.includes(">= ${originalSize}"), "Compressor not-smaller error still exposes exact byte sizes");
-const failActiveWorkerStateSource = workerSlotSource.match(/failActiveWorkerState\([\s\S]*?\n  private terminateWorker\(\)/)?.[0] || "";
-assert(failActiveWorkerStateSource && !failActiveWorkerStateSource.includes("initializeWasmModules("), "failActiveWorkerState should mark lazy recreate instead of eagerly initializing a worker");
-assert(compressionWorkerSource.includes("image?.free?.()"), "Compression worker does not free ImagequantImage wrappers");
-assert(compressionWorkerSource.includes("validateImagequantBindings") && compressionWorkerSource.includes("validateImagequantExports") && compressionWorkerSource.includes("Invalid imagequant WASM module"), "Compression worker does not validate imagequant bindings/WASM exports before __wbg_set_wasm");
-assert(!compressionWorkerSource.includes("as unknown as (module: WebAssembly.Module"), "Compression worker still double-casts jsquash init functions");
-assert(compressionWorkerSource.includes("isWorkerInitMessage") && compressionWorkerSource.includes("isWorkerCompressMessage") && compressionWorkerSource.includes("MessageEvent<unknown>"), "Compression worker does not validate worker message shape before dispatch");
-assert(compressionWorkerSource.includes("Unknown or malformed message type") && compressionWorkerSource.includes("invalid_init_message"), "Compression worker does not report malformed protocol messages");
-const initializeCodecsSource = compressionWorkerSource.match(/async function initializeCodecs[\s\S]*?\n}\n\nfunction validateImagequantRuntimeSmoke/)?.[0] || "";
-assert(initializeCodecsSource && !initializeCodecsSource.includes("smokeQuantizer"), "Compression worker still runs the Imagequant smoke quantizer during init");
-assert(compressionWorkerSource.includes("let imagequantSmokeValidated = false") && compressionWorkerSource.includes("function validateImagequantRuntimeSmoke") && compressionWorkerSource.includes("validateImagequantRuntimeSmoke();"), "Compression worker does not defer Imagequant smoke validation to first PNG compression");
-assert(compressionWorkerSource.includes("initStage") && compressionWorkerSource.includes("WASM init failed at stage") && compressionWorkerSource.includes("initialized = false"), "Compression worker does not report/reset partial WASM init failures");
-assert(compressionWorkerSource.includes("quality_failed"), "Compression worker does not classify PNG quality failures");
-assert(compressionWorkerSource.includes("PngQualityFailureError") && compressionWorkerSource.includes("isImagequantQualityError") && !compressorSource.includes("quality_too_low") && !compressorSource.includes("minimum quality"), "PNG quality failure classification is still coupled to imagequant message text in Compressor");
-assert(compressionWorkerSource.includes("safeMin") && compressionWorkerSource.includes("Math.max(safeMin"), "Compression worker does not clamp PNG quality defensively");
-assert(compressorSource.includes("validateEncodedOutput"), "Compressor does not validate worker output before writing");
-assert(compressionWorkerSource.includes("validateEncodedOutput"), "Compression worker does not validate encoded output before posting success");
-assert(fs.readFileSync(path.join(sourceTsRoot, "encoded-output-validator.ts"), "utf8").includes("validatePngStructure"), "Encoded output validator is missing deep PNG validation");
-assert(settingsSource.includes("normalizeSettings"), "Settings source is missing deep normalization");
-assert(!combinedTsSource.includes("disablePasteImageRenameDuringCompression") && !combinedTsSource.includes("auto.pasteRenameGuard.name"), "Paste Image Rename guard opt-out setting returned to TypeScript sources");
-const removedTechnicalSettingKeys = [
-  "pngquantPath",
-  "mozjpegPath",
-  "pluginGuardTimeoutMs",
-  "workerPoolSize",
-  "compressionTimeoutSeconds",
-  "wasmInitTimeoutSeconds",
-  "maxInputSizeMB",
-  "maxImagePixelsMillions"
-];
-for (const technicalKey of removedTechnicalSettingKeys) {
-  assert(!settingsTabSource.includes(technicalKey), `Settings tab still references removed technical setting: ${technicalKey}`);
-  assert(!readmeSource.includes(technicalKey) && !readmeRuSource.includes(technicalKey), `README still documents removed technical setting key: ${technicalKey}`);
-}
-assert(settingsSource.includes("INTERNAL_PLUGIN_GUARD_TIMEOUT_MS = 8_000"), "Settings source is missing internal plugin guard timeout");
-assert(settingsSource.includes("INTERNAL_COMPRESSION_TIMEOUT_SECONDS = 120"), "Settings source is missing internal compression timeout");
-assert(settingsSource.includes("INTERNAL_WASM_INIT_TIMEOUT_SECONDS = 60"), "Settings source is missing internal WASM init timeout");
-assert(settingsSource.includes("INTERNAL_MAX_INPUT_SIZE_MB = 100"), "Settings source is missing internal input size limit");
-assert(settingsSource.includes("INTERNAL_MAX_IMAGE_PIXELS_MILLIONS = 100"), "Settings source is missing internal image pixel limit");
-assert(settingsSource.includes("function getInternalWorkerPoolSize") && settingsSource.includes("INTERNAL_MAX_WORKER_POOL_SIZE = 4"), "Settings source is missing adaptive internal worker pool sizing");
-assert(!settingsTabSource.includes("auto.pasteRenameGuard.timeout") && !settingsTabSource.includes("settings.workerPoolSize") && !settingsTabSource.includes("settings.compressionTimeout") && !settingsTabSource.includes("settings.wasmInitTimeout") && !settingsTabSource.includes("settings.maxInputSize") && !settingsTabSource.includes("settings.maxImagePixels"), "Technical settings returned to the settings UI");
-assert(!utilsSource.includes("|| /^[a-zA-Z]:/.test(normalizedPath)") && !settingsSource.includes("const outputFolder = typeof source.outputFolder"), "Low-severity utility/settings cleanup regressions are present");
-assert(settingsSource.includes("inactivityThresholdMinutes") && settingsTabSource.includes("auto.bg.inactivity"), "Settings are missing configurable inactivity threshold support");
-assert(settingsSource.includes('"cacheRetentionMonths"') && settingsSource.includes('"autoCleanupGhostsOnStart"'), "Settings normalization does not silently drop removed cache-maintenance fields");
-assert(!settingsTabSource.includes("cacheRetentionMonths") && !settingsTabSource.includes("autoCleanupGhostsOnStart"), "Removed cache-maintenance controls remain in settings UI");
-assert(compressorSource.includes("applySettings(settings") && pluginSource.includes("this.compressor?.applySettings?.(this.settings)"), "Compressor runtime limits are not applied from normalized settings");
-assert(compressorSource.includes("app: App | null") && !compressorSource.includes("app: any | null"), "Compressor app reference is still typed as any");
-assert(!settingsSource.includes("integer || 4"), "Worker pool sizing still contains a dead integer fallback");
-assert(cacheSource.includes("flushPendingCacheSaveSync"), "Cache is missing synchronous unload flush");
-assert(cacheSource.includes("syncFlushToken"), "Cache sync flush does not guard against late async write commits");
-assert(cacheSource.includes("acquireCacheWriteLock") && cacheSource.includes("mergeDiskCacheEntries") && cacheSource.includes("pendingSaveMergeDiskEntries"), "Cache writes are missing multi-instance lock/merge coordination");
-assert(!/buildCacheKey\([^\n;]*Date\.now\(\)/.test(runtimeQaSource), "Runtime QA builds synthetic cache keys with an inline Date.now() mtime");
-// BR-H2 regression guard: coalesced saves must OR their merge intents (an additive write can never be
-// downgraded to a disk-clobbering merge:false by a concurrent deletion sharing its debounce window),
-// and clearCache must stay authoritative (force no-merge) so a trailing additive save cannot resurrect
-// the entries it just cleared.
-assert(
-  cacheSource.includes("this.pendingSaveMergeDiskEntries || mergeDiskEntries") &&
-  !cacheSource.includes("this.pendingSaveMergeDiskEntries && mergeDiskEntries") &&
-  cacheSource.includes("pendingSaveAuthoritative") &&
-  cacheSource.includes("mergeDiskEntries: false, authoritative: true"),
-  "Cache save coalescing no longer ORs merge intents, or clearCache lost its authoritative no-merge flag (BR-H2)"
-);
-assert(cacheSource.includes("getCachePathEntries()") && !cacheSource.includes("Object.entries(this.cacheData.entries) as CachePathEntries"), "Cache still bypasses runtime entry validation with CachePathEntries casts");
-assert(cacheSource.includes("selectEntryForMove(entries: CachePathEntries, outputPath: string | null = null)") && moveServiceSource.includes("compressedRelativePath"), "Move cache selection is not tied to the compressed output path");
-assert(cacheSource.includes("resolveSourceMtime") && !cacheSource.includes("legacyParts.mtime || Date.now()") && !cacheSource.includes("mtime: unknown = Date.now()"), "Cache key creation still synthesizes Date.now() for missing source mtimes");
-assert(cacheSource.includes("isSettingsSensitiveSkipReason") && cacheSource.includes("return !this.isSettingsSensitiveSkipReason(entry.skipReason)"), "Legacy settings-sensitive skipped entries still auto-match after settings changes");
-assert(cacheSource.includes("getCacheBackupPath") && cacheSource.includes("getCacheBackupCleanupDirs") && !cacheSource.includes("slice(0, 19)") && !cacheSource.includes("@__PURE__"), "Cache backup naming/cleanup still uses truncated timestamps, duplicate cleanup plumbing, or obscure purity markers");
-assert(cacheSource.includes("retainedFilesStatBatchSize") && !cacheSource.includes(".slice(0, 1000)"), "Cache retained-file cleanup still silently ignores retained files beyond the first 1000");
-assert(!cacheSource.includes("crypto.randomBytes(4)"), "Cache backups still use a 32-bit random suffix");
-assert(cacheSource.includes("realpath(backupFile)") && cacheSource.includes("validateBackupPathForRestore"), "Cache restore does not validate real backup paths before copying");
-assert(cacheSource.includes("clonePlainRecord"), "Cache normalization does not deep-clone unknown top-level fields");
-assert(typesSource.includes('"processed" | "pending_move"') && !cacheEntryTypeSource.includes("skipped?: boolean") && !cacheEntryTypeSource.includes("moved?: boolean") && !cacheEntryTypeSource.includes("movedAt?: number"), "CacheEntry type still exposes overlapping state booleans");
-assert(typesSource.includes("skipReason?: string") && !typesSource.includes("reason?: string") && cacheSource.includes("normalizeCacheEntrySkipReason") && !cacheSource.includes("entry.reason"), "CacheEntry skip reason naming is not consolidated around skipReason");
-assert(cacheSource.includes("normalizeCacheEntryState") && cacheSource.includes("stripLegacyCacheStateFields") && cacheSource.includes("stateUpdatedAt"), "Cache does not normalize legacy moved/skipped fields into canonical state");
-assert(!cacheSource.includes("skipped: true") && !cacheSource.includes("moved: true") && !cacheSource.includes("movedAt: now"), "Cache mutation paths still write legacy moved/skipped state fields");
-assert(!/entry\.(?:moved|skipped)\b/.test(cacheSource), "Cache matching still branches on legacy moved/skipped booleans");
-assert(!utilsSource.includes("escapeHtml"), "Unused escapeHtml helper should stay removed; add a real DOM use before reintroducing it");
-assert(utilsSource.includes("stripWindowsLongPathPrefix") && utilsSource.includes("isUncFilesystemPath") && utilsSource.includes("path.win32"), "Path helpers do not explicitly handle Windows UNC/long-path prefixes");
-assert(utilsSource.includes("MAX_SANITIZED_PATH_LENGTH") && utilsSource.includes("getSensitivePathReplacement") && !utilsSource.includes("pathLikeExtensions") && !utilsSource.includes("[^\"'<>]*?"), "sanitizeErrorForUser still uses the old narrow/backtracking path regex sanitizer");
-assert(!/catch\s*\([^)]*\)\s*\{\s*\}/.test(cacheSource), "Cache still contains empty catch blocks");
-assert(!settingsTabSource.includes("ensureWasmReady?.()"), "Settings tab still initializes WASM workers while rendering status");
-assert(!settingsTabSource.includes("requestWindowAnimationFrame(async"), "Settings tab still passes async callbacks directly to requestAnimationFrame");
-assert(settingsTabSource.includes("this.containerEl?.win || this.getActiveWindow()"), "Settings animation frames are not scheduled on the owning settings window");
-assert(settingsTabSource.includes("return ownerWindow.setTimeout(callback, delay)") && settingsTabSource.includes("ownerWindow.clearTimeout(timer as number)") && !settingsTabSource.includes("return window.setTimeout(callback, delay)"), "Settings timers are not created and cleared through their owning window");
-assert(progressModalSource.includes("this.contentEl?.win || this.getActiveWindow()"), "Progress modal animation frames are not scheduled on the owning modal window");
-assert(pluginSource.includes("this.statusBarItem?.win || this.getActiveWindow()"), "Status-bar animation frames are not scheduled on the owning status-bar window");
-assert(pluginSource.includes("modalFocusTimers: Map<Window, Set<number>>") && pluginSource.includes("for (const [ownerWindow, timers] of this.modalFocusTimers)"), "Modal focus timers are not tracked independently per owning window");
-assert(pluginSource.includes("ownerWindow: Window = window") && statusBarControllerSource.includes("}, 0, activeWindow)") && folderSelectorModalSource.includes("}, 0, ownerWindow)"), "UI timer callers do not pass their owning window to the plugin timer API");
-assert(!workerPoolSource.includes("getActiveWindowForApp") && workerPoolSource.includes("return window.setTimeout(callback, delay)") && workerPoolSource.includes("window.clearTimeout(timer as number)"), "WorkerPool timers still re-resolve a mutable active window");
-assert(!workerSlotSource.includes("getActiveWindowForApp") && workerSlotSource.includes('if (typeof window !== "undefined")'), "WorkerSlot timers still re-resolve a mutable active window");
-assert(!settingsTabSource.includes("this.rerenderPreservingScroll =") && !settingsTabSource.includes("rerenderPreservingScroll: () => void"), "Settings tab still stores rerenderPreservingScroll as a constructor field");
-assert(!settingsTabSource.includes("instanceof HTMLElement") && settingsTabSource.includes("typeof focusable?.focus === \"function\""), "Settings tab focus restore still only handles HTMLElement");
-assert(settingsTabSource.includes("if (!containerEl)") && settingsTabSource.includes("displayWithoutScrollRestore"), "Settings tab rerender fallback does not guard missing container/fallback display collisions");
-assert(settingsTabSource.includes("debouncedSaveSettings"), "Settings tab quality controls are missing debounced settings saves");
-assert(!/add(?:Slider|Text)\([\s\S]{0,700}await this\.plugin\.saveSettings\(\)/.test(settingsTabSource), "Settings tab slider/text controls still save settings on every change event");
-assert(settingsTabSource.includes("flushPendingSaveSettings") && settingsTabSource.includes("_renderRootsCleanups"), "Settings tab does not flush debounced saves or clean allowed-root pill listeners");
-assert(settingsTabSource.includes("class AllowedRootsFolderSuggestModal extends obsidian.FuzzySuggestModal<string>") && !settingsTabSource.includes("new (class extends obsidian.FuzzySuggestModal"), "Allowed-roots picker still uses an anonymous FuzzySuggestModal subclass");
-assert(settingsTabSource.includes("normalizeAllowedRootSelection") && settingsTabSource.includes("paths.allowedRoots.cannotAddRoot") && i18nCatalogSource.includes("paths.allowedRoots.cannotAddRoot"), "Allowed-roots picker does not handle root selection explicitly");
-assert(settingsTabSource.includes("tiny-local-warning-block") && stylesSource.includes(".tiny-local-warning-block") && settingsTabSource.includes("tiny-local-roots-pill") && stylesSource.includes(".tiny-local-roots-pill") && !settingsTabSource.includes("warn.style.") && !settingsTabSource.includes("pill.style."), "Settings tab static warning/root-pill styles still live inline");
-assert(settingsTabSource.includes('list.createEl("button", { text: root, cls: "badge tiny-local-roots-pill"') && settingsTabSource.includes('pill.setAttribute("aria-label"'), "Allowed-root removal pills are not keyboard-accessible buttons");
-assert(!settingsTabSource.includes("debouncedWorkerPoolRestartNotice") && !settingsTabSource.includes("settings.workerPoolSize.restartNote"), "Settings tab still contains worker-pool restart UI for removed technical settings");
-assert(settingsTabSource.includes("runButtonTask") && settingsTabSource.includes("common.refreshing") && settingsTabSource.includes("common.clearing") && i18nCatalogSource.includes("common.refreshing") && i18nCatalogSource.includes("common.clearing"), "Settings async stats buttons are missing loading/disabled state");
-assert(
-  settingsTabSource.includes('`${t(this.plugin.app, "stats.uncompressed.ready")}: ${stats.uncompressedImages}`')
-    && settingsTabSource.includes('`${t(this.plugin.app, "move.ready")}: ${stats.compressedFilesCount}`')
-    && !settingsTabSource.includes('`${stats.uncompressedImages} ${t(this.plugin.app, "stats.uncompressed.ready")}`'),
-  "Settings count labels must precede values so translations do not require numeric plural forms"
-);
-assert(
-  savingsCalculatorSource.includes('` (${t(this.plugin.app, "tooltip.savings.estimated")}: ${savings.estimatedFiles})`')
-    && !savingsCalculatorSource.includes('`${savings.estimatedFiles} ${t(this.plugin.app, "tooltip.savings.estimated")}`'),
-  "Estimated-file labels must precede values so translations do not require numeric plural forms"
-);
-assert(!settingsTabSource.includes("stats.ghosts") && !i18nCatalogSource.includes("stats.ghosts") && !i18nCatalogSource.includes("stats.cache.retention"), "Removed ghost/retention strings remain in runtime UI locales");
-assert(settingsTabSource.includes("applySubsettingVisibility") && (settingsTabSource.match(/\.settingEl\.toggle\(/g) || []).length === 1, "Settings conditional rows still duplicate raw settingEl.toggle calls");
-assert(settingsTabSource.includes("registerDomEvent(container, 'mouseenter'") && !settingsTabSource.includes("container.addEventListener('mouseenter'"), "Savings tooltip listeners are not registered through the plugin lifecycle");
-assert(settingsTabSource.includes("tooltipRoot") && !settingsTabSource.includes("activeDocument.body.appendChild") && !settingsTabSource.includes("activeDocument.body.removeChild"), "Savings tooltip DOM operations lack a body guard");
-assert(settingsTabSource.includes("showSettingsOperationError") && settingsTabSource.includes("Move compressed files action failed") && settingsTabSource.includes("Cache restore action failed") && i18nCatalogSource.includes("notice.operationFailed"), "Settings async actions are missing shared error feedback");
-assert(settingsTabSource.includes("getSavingsBarWidths") && settingsTabSource.includes("Number.isFinite(savings.savedSize)") && settingsTabSource.includes("Number.isFinite(savings.originalSize)"), "Savings bar widths are missing finite-number guards");
-assert(stylesSource.includes(".tiny-local-savings-tooltip-wrapper") && stylesSource.includes(".tiny-local-savings-tooltip-target") && !settingsTabSource.includes("tooltip.style.position") && !settingsTabSource.includes("tooltip.style.zIndex") && !settingsTabSource.includes("tooltip.style.pointerEvents") && !settingsTabSource.includes("container.style.cursor"), "Savings tooltip static styles still live inline");
-// Obsidian plugin guidelines compliance (2026-05-31): GL1 heading wording, GL2 setHeading not raw h3, GL3 tooltip position via CSS custom properties
-assert(!/"section\.paths":\s*"[^"]*[Ss]ettings/.test(i18nCatalogSource) && !/"section\.paths":\s*"Настройки/.test(i18nCatalogSource), "section.paths heading still contains a redundant 'settings' word (Obsidian guideline #7)");
-assert(!pluginSource.includes('createEl("h3"') && !pluginSource.includes("createEl('h3'"), "Backups modal still renders a raw h3 heading instead of Setting().setHeading() (Obsidian guideline #8)");
-assert(settingsTabSource.includes("tooltip.setCssProps({") && settingsTabSource.includes('"--local-image-compress-savings-tooltip-left"') && settingsTabSource.includes('"--local-image-compress-savings-tooltip-top"') && !settingsTabSource.includes("tooltip.style.left") && !settingsTabSource.includes("tooltip.style.top") && stylesSource.includes("--local-image-compress-savings-tooltip-left") && stylesSource.includes("--local-image-compress-savings-tooltip-top"), "Savings tooltip position is not driven by CSS custom properties (Obsidian guideline #23)");
-assert(i18nSource.includes("preloadExternalLanguages") && pluginSource.includes("await preloadExternalLanguages") && !i18nSource.includes("fs.existsSync") && !i18nSource.includes("fs.statSync") && !i18nSource.includes("fs.readFileSync"), "i18n still performs sync filesystem reads in the t() hot path");
-assert(i18nSource.includes("export const I18N = BUILTIN_I18N") && localesIndexSource.includes("export const BUILTIN_I18N") && (localesIndexSource.match(/\.json";/g) || []).length === 21, "README UI locales are not statically bundled into main.js");
-assert(i18nSource.includes('"zh-hans": "zh-cn"') && i18nSource.includes('"zh-hant": "zh-tw"') && i18nSource.includes("replace(/_/g, \"-\")"), "Regional Obsidian language aliases are incomplete");
-assert(i18nSource.includes("getLanguage as getObsidianLanguage") && i18nSource.includes('requireApiVersion("1.8.7")') && !i18nSource.includes("app?.getLanguage"), "i18n must detect the locale through Obsidian's guarded module-level getLanguage API");
-assert(!i18nSource.includes("process.cwd()") && i18nSource.includes("if (!pluginDir)") && i18nSource.includes("return {};") && i18nSource.includes("pluginDir ? LOADED_LANGS"), "i18n external-language resolution does not fail closed when the vault plugin directory is unavailable");
-assert(i18nSource.includes("TranslationParams") && i18nSource.includes("interpolateTranslation") && !/t\([^\n]+\)\.replace\(/.test(combinedTsSource), "Translated placeholders still rely on caller-side string replacement");
-assert(i18nSource.includes("WARNED_LANG_LOAD_ERRORS") && i18nSource.includes("console.warn") && i18nCatalogSource.includes("i18n.externalLoadFailed"), "External language parse/load failures are still silent");
-assert(i18nSource.includes('be: "ru"') && i18nSource.includes('by: "ru"') && i18nSource.includes('ua: "uk"') && i18nSource.includes("[missing translation key]") && i18nSource.includes("`[${key}]`"), "i18n locale/missing-key fallback semantics are incomplete");
-assert(compressionWorkerSource.includes("getCachedWasmModule") && !compressionWorkerSource.includes("new WebAssembly.Module(message.wasm.jpeg"), "Compression worker still recompiles JPEG WASM modules for every init");
-assert(compressionWorkerSource.includes("getImagequantBindingModule") && !compressionWorkerSource.includes("as any"), "Compression worker still bypasses imagequant binding validation with any casts");
-assert(imageIndexSource.includes("pendingRebuildMutations") && imageIndexSource.includes("const nextRecords = new Map") && imageIndexSource.includes("this.records = nextRecords") && !imageIndexSource.includes("this.records.clear()"), "ImageIndex rebuild still mutates the live records map instead of atomically swapping");
-assert(imageIndexSource.includes("refreshProcessedStatesForRecords") && imageIndexSource.includes("await this.options.yieldToUi();"), "ImageIndex rebuild/refresh does not use an isolated processed-state pass with a UI yield");
-assert(settingsTabSource.includes("parseInt(minPart, 10)") && settingsTabSource.includes("parseInt(maxPart, 10)"), "Settings tab integer parsing still omits radix");
-assert(compressorSource.includes("getSavingsPercentage") && savingsCalculatorSource.includes("getSavingsPercentage") && savingsCalculatorSource.includes("getDisplaySavingsPercentage"), "Savings percentage formatting is missing finite/bounds guards");
-assert(savingsCalculatorSource.includes("!Number.isFinite(bytes) || bytes <= 0") && savingsCalculatorSource.includes("Math.min(sizes.length - 1"), "File-size formatting still allows NaN/Infinity unit indexes");
-assert(cacheSource.includes("getCacheLoadErrorKind") && cacheSource.includes("logCacheLoadFailure") && cacheSource.includes("Cache load failed (") && cacheSource.includes("resolveSourceSize") && !cacheSource.includes("file?.stat ? file.stat.size : originalSize"), "Cache load/source-size error handling still lacks classification or has nested ternary fallback");
-assert(utilsSource.includes("AppWithActiveWorkspaceDom") && utilsSource.includes("getActiveWindowForApp") && eventRouterSource.includes("VaultWithOptionalConfigChange") && !pluginSource.includes("this.app.workspace as any") && !eventRouterSource.includes("this.plugin.app.vault as any"), "Plugin still uses untyped workspace/vault event casts for runtime APIs");
-assert(compressorSource.indexOf("await this.ensureWasmReady()") < compressorSource.indexOf("await this.readBinaryWithTimeout"), "Compressor reads image bytes before WASM readiness");
-assert(compressorSource.includes("readBinaryWithTimeout") && compressorSource.includes("File read timed out after"), "Compressor does not bound vault.readBinary with a timeout");
-assert(compressorSource.includes("const filePath = pathOverride || file?.path") && !compressorSource.includes("pathOverride || file.path || \"\""), "Compressor still falls through an empty path to extension parsing");
-assert(compressorSource.includes("isJpegEncodingFailure") && compressionWorkerSource.includes("jpeg_encode_failed") && pluginSource.includes("mozjpeg_failed"), "JPEG worker encode failures are not classified and tracked distinctly");
-assert(!pluginSource.includes("setupThemeAdaptation") && !pluginSource.includes("getCurrentPngquantVersion") && !pluginSource.includes("getCurrentMozjpegVersion"), "Plugin still contains dead theme/version compatibility shims");
-assert(
-  migrationRunnerSource.includes("moveOrCopyMigrationItem")
-    && migrationRunnerSource.includes("mergeMigrationItem")
-    && migrationRunnerSource.includes("verifyMigrationItem")
-    && migrationRunnerSource.includes("fs.constants.COPYFILE_EXCL")
-    && migrationRunnerSource.includes("sourceStat.isSymbolicLink()")
-    && migrationRunnerSource.includes("fs.promises.rm(src, { recursive: true, force: true })")
-    && migrationRunnerSource.includes("readdir(src, { withFileTypes: true })")
-    && migrationRunnerSource.includes("migrationErrors"),
-  "Backup migration does not merge safely, verify copy fallback data, use Dirent recursion, and report partial failures"
-);
-assert(
-  backupStorageSource.includes('BACKUP_STORAGE_FOLDER = ".local-image-compress"')
-    && backupStorageSource.includes('path.join(backupsRoot, "cache")')
-    && backupStorageSource.includes('path.join(backupsRoot, "originals")'),
-  "Backup storage paths are not centralized under the vault-level .local-image-compress folder"
-);
-assert(cacheSource.includes("CACHE_BACKUP_MAX_COUNT = 50"), "Cache backups are not capped at 50 files");
-assert(!pluginSource.includes("autoBackgroundThreshold || 50") && pluginSource.includes("autoBackgroundThreshold ?? 50"), "Runtime settings still use || instead of ?? for autoBackgroundThreshold");
-assert(moveServiceSource.includes("fs.promises.open(leftPath") && !moveServiceSource.includes("fs.readFileSync(leftPath)"), "MoveService does not stream same-content comparisons");
-assert(moveServiceSource.includes("prepassLimiter") && moveServiceSource.includes("getIOConcurrency"), "MoveService backup prepass is not concurrency-limited for disk I/O");
-assert(moveServiceSource.includes("originalSha256") && moveServiceSource.includes("streamHashSha256"), "MoveService backup verification does not hash source content");
-// T1 / H1 regression guard: the 3-phase SHA-256 content verification must stay intact
-// so a future refactor cannot silently drop anti-tampering protection without failing here.
-// (Phase 1 = prepass hash, asserted above via originalSha256/streamHashSha256.)
-assert(
-  moveServiceSource.includes("currentOriginalSha256") &&
-  moveServiceSource.includes("!== task.originalSha256") &&
-  moveServiceSource.includes("move.skip.originalContentChangedDuringBackup"),
-  "MoveService verify phase no longer re-hashes the ORIGINAL to reject same-size content substitution (H1 phase 2)"
-);
-assert(
-  moveServiceSource.includes("currentCompressedSha256") &&
-  moveServiceSource.includes("!== task.compressedSha256") &&
-  moveServiceSource.includes("move.skip.compressedContentChangedDuringBackup"),
-  "MoveService verify phase no longer re-hashes the COMPRESSED file to reject same-size content substitution (H1 phase 2)"
-);
-assert(
-  moveServiceSource.includes("streamHashSha256(task.backupFilePath)") &&
-  moveServiceSource.includes("streamHashSha256(task.compressedBackupPath)") &&
-  moveServiceSource.includes("move.skip.contentChangedDuringCopy") &&
-  /cleanupBackupTaskFiles\(task\)[\s\S]{0,400}contentChangedDuringCopy/.test(moveServiceSource),
-  "MoveService post-copy phase no longer re-hashes the written backup and cleans up on mismatch (H1 phase 3)"
-);
-// BR-H1 regression guard: the destructive overwrite (moveSingleFile) must re-verify CONTENT, not
-// just byte length, before renaming over the user's original — re-hash the staged temp bytes and
-// compare to the backup-verified compressedSha256, positioned before the rename.
-assert(
-  moveServiceSource.includes("streamHashSha256(tempOriginalPath)") &&
-  moveServiceSource.includes("!== compressedFile.compressedSha256") &&
-  moveServiceSource.indexOf("streamHashSha256(tempOriginalPath)") < moveServiceSource.indexOf("rename(tempOriginalPath, originalPath)"),
-  "MoveService overwrite no longer re-hashes the staged compressed bytes before the destructive rename (BR-H1)"
-);
-assert(!moveServiceSource.includes("crypto.randomBytes(4)"), "MoveService backup paths still use a 32-bit random suffix");
-assert(moveServiceSource.includes("randomHexSuffix(16)"), "MoveService backup/temp paths do not request 128-bit random suffixes explicitly");
-assert(moveServiceSource.includes("normalizeVaultPathForComparison(await fs.promises.realpath(dirPath))"), "MoveService compressed scan does not normalize realpath loop detection keys");
-assert(concurrencyLimiterSource.includes("RangeError") && concurrencyLimiterSource.includes("isValidLimit"), "ConcurrencyLimiter does not reject invalid limits at construction time");
-assert(!concurrencyLimiterSource.includes("getActiveCount()") && !concurrencyLimiterSource.includes("getQueueDepth()"), "ConcurrencyLimiter still exposes dead diagnostic active/queue getters");
-assert(concurrencyLimiterSource.includes("Promise.resolve()") && concurrencyLimiterSource.includes("releaseNext()"), "ConcurrencyLimiter does not isolate queued waiter release failures");
-assert(backgroundCompressionServiceSource.includes("getReadyUncompressedCount") && !backgroundCompressionServiceSource.includes('workspace as any).on("file-open"') && !backgroundCompressionServiceSource.includes('workspace as any).on("layout-change"'), "Background compression still uses stale snapshots or workspace layout events as user activity");
-assert(backgroundCompressionServiceSource.includes("lastUserActivityPerfTime") && backgroundCompressionServiceSource.includes("getMonotonicTime()") && !backgroundCompressionServiceSource.includes("Date.now() - this.plugin.backgroundCompressionService.lastUserActivity"), "Background inactivity still uses wall-clock deltas instead of monotonic time");
-assert(backgroundCompressionServiceSource.includes("BACKGROUND_FILTER_CONCURRENCY") && backgroundCompressionServiceSource.includes("filterUnprocessedFiles") && backgroundCompressionServiceSource.includes("hasReadyIndex") && backgroundCompressionServiceSource.includes(": this.plugin.getAllImageFiles()") && !backgroundCompressionServiceSource.includes("for (const file of filteredFiles)"), "Background compression still filters processed files sequentially or routes not-ready fallback through getImageFiles()");
-assert(pluginSource.includes("PLUGIN_ASYNC_FILTER_CONCURRENCY") && pluginSource.includes("filterUnprocessedImageFiles") && pluginSource.includes("new ConcurrencyLimiter(concurrency)") && pluginSource.includes("filterUnprocessedImageFiles(this.getAllImageFiles())") && pluginSource.includes("filterUnprocessedImageFiles(targetFiles)") && pluginSource.includes("filterUnprocessedImageFiles(imageFiles)).length") && !pluginSource.includes("for (const file of imageFiles)") && !pluginSource.includes("for (const file of targetFiles)") && !pluginSource.includes("let uncompressedImages = 0"), "Plugin still has sequential async image filtering instead of the shared bounded helper");
-assert(pluginSource.includes("Re-normalize before save because UI/event mutations") && pluginSource.includes("sort((left, right) => left.localeCompare(right))"), "Settings save/index config does not document re-normalization or canonicalize allowedRoots order");
-assert(pluginSource.includes("isImageFile(file: unknown): file is obsidian.TFile") && !pluginSource.includes("return this.SUPPORTED_IMAGE_EXTENSIONS.includes(file.extension.toLowerCase())"), "Plugin image-file check is not null-safe or typed as a TFile predicate");
-assert(pluginSource.includes("intentionally uses || instead of ??") && pluginSource.includes("Returns every supported image file") && pluginSource.includes("Returns only uncompressed image files"), "Plugin output-folder fallback or image-file method naming intent is undocumented");
-assert(pluginSource.includes("progress.error\")} (${fileLabel})") && pluginSource.includes('reason === "too_large"') && cacheSource.includes('skipReason === "too_large"'), "Compression errors or too_large skip settings keys are missing class-wide guards");
-assert(pluginSource.includes('new Set(["/", ...folders.map') && !pluginSource.includes('folderPaths.unshift("/")'), "Folder selector still filters root and re-adds it with unshift");
-assert(pluginSource.includes("notice.compressionDeferredDueToMove") && i18nCatalogSource.includes("notice.compressionDeferredDueToMove"), "Move-in-progress compression deferral Notice is missing specific i18n coverage");
-assert(pluginSource.includes("Snapshot defensively because UI/event mutations") && pluginSource.includes("const indexUpdatePromise = isOutputPath"), "Batch settings snapshot or modify-event scheduling intent is not guarded");
-assert(pluginSource.includes("PLUGIN_BACKUP_DELETE_CONCURRENCY") && pluginSource.includes("backupDeleteLimiter") && pluginSource.includes("Promise.allSettled(backups.map") && !pluginSource.includes("for (const backup of backups)"), "Original-files backup cleanup still deletes backup directories sequentially");
-assert(pluginSource.includes("readdir(backupDir, { withFileTypes: true })") && !pluginSource.includes("fs3.promises.lstat(backupPath)") && pluginSource.includes("backup.isFile()") && pluginSource.includes("fs3.promises.unlink(backupPath)"), "Original-files backup cleanup still uses lstat per entry or leaves orphan files in backupDir");
-assert(pluginSource.includes("BACKGROUND_COMPRESSION_NOTICE_COOLDOWN_MS") && pluginSource.includes("backgroundCompressionNoticeAt"), "Background compression notices are not rate-limited");
-assert(statusBarControllerSource.includes("status bar item is not visible") && statusBarControllerSource.includes("rect.width === 0"), "Status menu does not guard hidden zero-size status bar targets");
-assert(!statusBarControllerSource.includes("activeDocument.createDiv") && !settingsTabSource.includes("activeDocument.createDiv"), "Document-level createDiv appends to the document root instead of creating a safe body-owned element");
-assert(
-  statusBarControllerSource.includes("openStatusMenuDocument")
-    && statusBarControllerSource.includes("accessibleStatusText")
-    && statusBarControllerSource.includes("const activeDocument = this.plugin.getActiveDocument()")
-    && statusBarControllerSource.includes("const activeWindow = this.plugin.getActiveWindow()")
-    && statusBarControllerSource.includes("createMenu(event, uncompressedCount, totalCount, movableCompressedCount, activeDocument)")
-    && statusBarControllerSource.includes("positionMenu(menu, event, activeWindow)"),
-  "Status bar controller does not keep menu document/window context atomic"
-);
-assert(statusBarControllerSource.includes("this.plugin.isUnloading") && statusBarControllerSource.includes("this.openStatusMenu !== menu"), "Status menu deferred click listener does not guard unload/stale menu state");
-assert(pluginSource.includes("registerDomEvent(this.statusBarItem") && !statusBarControllerSource.includes(".onclick ="), "Status bar click handler is still reassigned from update()");
-assert(pluginSource.includes('setAttribute?.("role", "button")') && pluginSource.includes('setAttribute?.("tabindex", "0")') && pluginSource.includes('setAttribute?.("aria-haspopup", "menu")') && pluginSource.includes('setAttribute?.("aria-expanded", "false")'), "Status bar item is missing keyboard/ARIA button semantics");
-assert(pluginSource.includes('registerDomEvent(this.statusBarItem, "keydown"') && pluginSource.includes('event.key !== "Enter" && event.key !== " "') && pluginSource.includes("keyboard: true"), "Status bar item is missing Enter/Space keyboard activation");
-assert(statusBarControllerSource.includes('setAttribute?.("aria-label", accessibleStatusText)') && statusBarControllerSource.includes('removeAttribute?.("title")') && !statusBarControllerSource.includes('setAttribute?.("title"'), "Status bar item must use one tooltip surface: aria-label without a native title");
-assert(statusBarControllerSource.includes('menu.setAttribute("role", "menu")') && statusBarControllerSource.includes('menu.createEl("button"') && statusBarControllerSource.includes('setAttribute("role", "menuitem")') && !statusBarControllerSource.includes('const menuItem = menu.createEl("div"'), "Status menu actions are not button-backed menuitems");
-assert(statusBarControllerSource.includes("focusFirstMenuItem(menu)") && statusBarControllerSource.includes("restoreStatusMenuFocus") && statusBarControllerSource.includes("requestWindowAnimationFrame") && statusBarControllerSource.includes("e.stopImmediatePropagation()") && statusBarControllerSource.includes('"ArrowDown"') && statusBarControllerSource.includes('"ArrowUp"') && statusBarControllerSource.includes('"Home"') && statusBarControllerSource.includes('"End"'), "Status menu keyboard focus management is missing");
-assert(!statusBarControllerSource.includes("console.debug"), "Status bar controller still logs debug output in production paths");
-assert(statusBarControllerSource.includes("setCssProps({") && statusBarControllerSource.includes("\"--local-image-compress-status-menu-left\"") && statusBarControllerSource.includes("\"--local-image-compress-status-menu-top\"") && statusBarControllerSource.includes("\"--local-image-compress-status-menu-transform\"") && !statusBarControllerSource.includes("menu.style.left") && !statusBarControllerSource.includes("menu.style.top") && !statusBarControllerSource.includes("menu.style.transform"), "Status bar menu positioning still uses direct inline left/top/transform assignments");
-assert(statusBarControllerSource.includes("positionMenu(menu, event, activeWindow)") && statusBarControllerSource.includes("STATUS_MENU_FALLBACK_WIDTH = 360") && statusBarControllerSource.includes("viewportWidth - menuWidth - STATUS_MENU_VIEWPORT_MARGIN"), "Status bar menu does not clamp measured width to the active viewport");
-assert(stylesSource.includes("max-width: min(360px, calc(100vw - 20px))") && stylesSource.includes("background-color: transparent") && stylesSource.includes("box-shadow: none") && stylesSource.includes("text-overflow: ellipsis"), "Status bar menu CSS does not protect against edge overflow and theme button backgrounds");
-const statusMenuTransitionRules = [...stylesSource.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-  .filter((match) => match[1].split(",").some((selector) => selector.trim() === ".tiny-local-status-menu"))
-  .map((match) => match[2])
-  .filter((declarations) => /\btransition(?:-property)?\s*:/.test(declarations));
-assert(
-  statusMenuTransitionRules.every((declarations) => {
-    const transitionValues = [...declarations.matchAll(/\btransition(?:-property)?\s*:\s*([^;]+)/g)]
-      .map((match) => match[1].toLowerCase());
-    return transitionValues.every((value) => !/(^|[\s,])(all|left|top|transform)([\s,]|$)/.test(value));
-  }),
-  "Status bar menu still transitions dynamic position properties"
-);
-assert(stylesSource.includes(".tiny-local-status-menu .tiny-local-status-menu-item:focus-visible") && stylesSource.includes("outline: 2px solid var(--interactive-accent)") && !stylesSource.includes("outline: none"), "Status bar menu focus styling does not expose a visible Obsidian-themed keyboard indicator");
-assert(!stylesSource.includes("--local-image-compress-status-menu-highlight") && !stylesSource.includes("color-mix(in srgb, var(--interactive-accent)") && !stylesSource.includes("box-shadow: inset 3px 0 0 var(--interactive-accent)"), "Status bar menu still uses a custom accent hover/focus treatment");
-assert(stylesSource.includes(".tiny-local-status-trigger:focus-visible") && stylesSource.includes(".tiny-local-savings-tooltip-target:focus-visible"), "Custom status/tooltip focus targets are missing visible focus styles");
-assert(!statusBarControllerSource.includes("\"mouseenter\"") && !statusBarControllerSource.includes("\"mouseleave\"") && !stylesSource.includes("tiny-local-status-menu-item-hover"), "Status bar menu hover still uses JS listeners instead of CSS :hover");
-assert(!/#[0-9A-Fa-f]{3,8}\b|rgba?\(|hsla?\(/.test(stylesSource), "styles.css contains hardcoded color literals");
-const importantAllowlist = new Map();
-const importantDeclarations = [...stylesSource.matchAll(/([^{}]+)\{([^{}]*!important[^{}]*)\}/g)]
-  .map((match) => match[1].trim());
-assert(importantDeclarations.every((selector) => importantAllowlist.has(selector)), `styles.css has unapproved !important selectors: ${importantDeclarations.join(", ")}`);
-assert(!/transition\s*:\s*all\b/i.test(stylesSource), "styles.css contains a broad transition: all rule");
-assert(stylesSource.includes("@media (prefers-reduced-motion: reduce)") && stylesSource.includes(".tiny-local-savings-tooltip") && stylesSource.includes("animation: none"), "Motion surfaces are missing reduced-motion overrides");
-const tinyLocalCssClasses = new Set([...stylesSource.matchAll(/\.([A-Za-z_][\w-]*)/g)]
-  .map((match) => match[1])
-  .filter((className) => className.startsWith("tiny-local-")));
-const tinyLocalClassUsageSource = [
-  pluginSource,
-  folderSelectorModalSource,
-  cacheBackupsViewSource,
-  ...serviceSources,
-  cacheSource,
-  compressorSource,
-  compressionWorkerSource,
-  progressModalSource,
-  settingsTabSource,
-  statusBarControllerSource,
-  moveServiceSource,
-  imageScannerSource,
-  savingsCalculatorSource
-].join("\n");
-const tinyLocalUsedClasses = new Set([...tinyLocalClassUsageSource.matchAll(/tiny-local-[\w-]+/g)].map((match) => match[0]));
-const orphanTinyLocalClasses = [...tinyLocalCssClasses].filter((className) => !tinyLocalUsedClasses.has(className));
-assert(orphanTinyLocalClasses.length === 0, `styles.css contains orphan tiny-local classes: ${orphanTinyLocalClasses.join(", ")}`);
-assert(moveServiceSource.includes("move.warning.externalModification"), "MoveService does not notify on external move modification");
-assert(moveServiceSource.includes("getMoveSkipReasonGroups") && moveServiceSource.includes("tiny-local-move-skip-reasons"), "MoveService does not show grouped skip reasons in move results");
-assert(moveServiceSource.includes("isCompleteBackupTask") && !/backupFilePath!|compressedBackupPath!|originalPath!|byName\.get\(file\.name\)!/.test(moveServiceSource), "MoveService backup flow still uses unsafe non-null assertions");
-assert(moveServiceSource.includes("isCandidateOriginalFile(file: unknown): file is obsidian.TFile") && !moveServiceSource.includes("Map<string, any[]>"), "MoveService original file lookup is missing a shared TFile candidate predicate");
-assert(moveServiceSource.includes("normalizeVaultPath(compressedFile.relativePath") && !/compressedFile\.relativePath[\s\S]{0,100}\.replace\(/.test(moveServiceSource), "MoveService still normalizes compressed relative paths with inline string replacement");
-assert(moveServiceSource.includes("pathsReferToSameFile") && moveServiceSource.includes("move.skip.selfMove"), "MoveService does not guard compressed/original self-moves");
-assert(moveServiceSource.includes("move.skip.noOriginalCandidate") && moveServiceSource.includes("displaySkippedCount"), "MoveService does not account zero-candidate originals or derive skipped totals from reason groups");
-assert(i18nCatalogSource.includes("move.backup.createdCount") && i18nCatalogSource.includes("backups.imagesFolder.deletedCount"), "Backup notices are missing i18n keys");
-assert(i18nSource.includes("normalizeVaultPathForComparison(pluginDir)") && i18nSource.includes("LOADED_LANGS[cacheKey]"), "i18n external-language cache is not scoped by plugin directory");
-assert(!moveServiceSource.includes("Created backup of ${") && !pluginSource.includes("Backups folder not found") && !pluginSource.includes("No backups to delete"), "Backup notices still contain hardcoded English text");
-assert(pluginSource.includes("compressionWorkflowsInFlight") && pluginSource.includes("waitForCompressionIdle") && moveServiceSource.includes("await this.plugin.waitForCompressionIdle()"), "Move flow does not wait for active compression workflows");
-assert(pluginSource.includes("indexRefreshTimers: Map<string, TimerHandle>") && pluginSource.includes("clearIndexRefreshTimer") && pluginSource.includes("file:${normalizedPath}"), "Image index refresh scheduling is not deduped by path");
-assert(pluginSource.includes("waitForCompressionIdle(maxWaitMs = 60_000)") && pluginSource.includes("waitForCompressionIdle giving up after") && !pluginSource.includes("queueMicrotask(() => resolve(undefined))"), "Compression idle wait can still spin forever or fall back to a microtask-only tick");
-assert(newFileQueueSource.includes("NEW_FILE_PENDING_MAX") && newFileQueueSource.includes("auto.queueFull"), "Plugin does not cap the new-file auto-compress queue");
-assert(pluginSource.includes("background.starting") && pluginSource.includes("background.finished"), "Background compression does not notify users about larger batches");
-assert(pluginSource.includes('rebuildImageIndex("startup")') && pluginSource.includes("await this.cache.compactCache()"), "Startup indexing is not followed by full cache compaction");
-assert(cacheSource.includes("compactCache") && cacheSource.includes("compactPath") && cacheSource.includes("compactDeletedPath"), "Cache is missing full or point compaction operations");
-assert(cacheSource.includes("filter(([, entry]) => !this.isLegacyEntry(entry))") && !cacheSource.includes("if (this.isLegacyEntry(entry))"), "Legacy cache entries can still become fresh processing/statistics candidates");
-assert(cacheSource.includes("resolvePendingMoveEntry") && moveServiceSource.includes("move.skip.externalModification"), "Move flow does not reject conflicting pending cache identity");
-assert(moveServiceSource.includes("originalSha256BeforeMove") && moveServiceSource.includes("currentOriginalSha256"), "Move flow does not revalidate the backup-verified original before replacement");
-assert(!pluginSource.includes("GHOST_CLEANUP_COMPRESSED_THRESHOLD") && !pluginSource.includes("STALE_CACHE_PRUNE_COMPRESSED_THRESHOLD") && !cacheSource.includes("pruneStaleCacheEntries") && !cacheSource.includes("cleanupGhostEntries"), "Legacy threshold/retention cache cleanup remains active");
-assert(cacheSource.includes("scheduleLastAccessSave") && cacheSource.includes("lastAccessSaveIntervalMs"), "Cache lastAccessMs touches are not persisted through a bounded save path");
-assert(cacheSource.includes("!this.hasNonNegativeSize(entry.outputSize)") && cacheSource.includes("!this.hasFiniteNumber(entry.outputMtime)"), "pending_move output matching still accepts entries without output size/mtime identity");
-assert(cacheSource.includes("Cannot mark moved file without processed mtime/size"), "Moved cache entries still allow missing processed identity");
-assert(cacheSource.includes("lastInvalidMtimeFallback") && cacheSource.includes("nextInvalidMtimeFallback"), "Cache invalid mtime fallback is not monotonic");
-assert(pluginSource.includes("applyRuntimeSettings") && pluginSource.includes("backgroundCompressionService?.applySettings") && backgroundCompressionServiceSource.includes("USER_INACTIVITY_THRESHOLD"), "Plugin does not apply normalized runtime inactivity settings");
-assert(folderSelectorModalSource.includes("extends obsidian.Modal") && folderSelectorModalSource.includes("override onOpen()") && folderSelectorModalSource.includes("override onClose()"), "Folder selector is not implemented as an Obsidian Modal lifecycle component");
-assert(!folderSelectorModalSource.includes("activeDocument.body.appendChild") && !folderSelectorModalSource.includes("activeDocument.body.removeChild") && !folderSelectorModalSource.includes("modal-container"), "Folder selector still owns a manual body overlay");
-assert(folderSelectorModalSource.includes("plugin.trackManagedModal(modal)") && folderSelectorModalSource.includes("this.plugin.untrackManagedModal(this)") && folderSelectorModalSource.includes("resolveIfPending(null)"), "Folder selector is not tracked or does not resolve pending promises on close");
-assert(folderSelectorModalSource.includes("folderSelect.selectLabel") && folderSelectorModalSource.includes('contentEl.setAttribute("aria-labelledby"'), "Folder selector modal is missing accessible title/select labels");
-assert(folderSelectorModalSource.includes("tiny-local-folder-select-control") && stylesSource.includes(".tiny-local-folder-select-control") && !folderSelectorModalSource.includes("select.style.width"), "Folder selector select still uses inline styles instead of CSS class");
-assert(!pluginSource.includes("folders.root") && !pluginSource.includes("common.select") && !pluginSource.includes("common.cancel"), "Folder selector still contains dead i18n fallback keys");
-assert(pluginSource.includes("managedModals") && pluginSource.includes("closeManagedModals"), "Plugin does not close managed modals on unload");
-assert(progressModalSource.includes("this.plugin.untrackManagedModal(this)") && moveServiceSource.includes("this.plugin.trackManagedModal(modal)") && settingsTabSource.includes("this.plugin.trackManagedModal(new AllowedRootsFolderSuggestModal"), "Plugin-owned progress/settings modals are not tracked through unload cleanup");
-assert(cacheBackupsViewSource.includes("openButton.removeEventListener") && moveServiceSource.includes("closeButton.removeEventListener"), "Modal click listeners are not explicitly cleaned up on close");
-assert(
-  pluginSource.includes("captureModalFocusTarget()")
-    && pluginSource.includes("restoreModalFocus(")
-    && pluginSource.includes("modalFocusTimers")
-    && folderSelectorModalSource.includes("restoreModalFocus(this.returnFocusTo)")
-    && progressModalSource.includes("restoreModalFocus(this.returnFocusTo)")
-    && moveServiceSource.match(/restoreModalFocus\(this\.returnFocusTo\)/g)?.length === 2
-    && cacheBackupsViewSource.includes("restoreModalFocus(this.returnFocusTo)")
-    && settingsTabSource.includes("restoreModalFocus(this.returnFocusTo)"),
-  "Custom modal classes do not consistently capture and restore trigger focus"
-);
-assert(
-  statusBarControllerSource.includes("this.closeMenu(true)") && moveServiceSource.includes("scheduleElementFocus(closeButton)") && cacheBackupsViewSource.includes("scheduleElementFocus(openButton)"),
-  "Keyboard menu actions or custom modal controls are missing deterministic focus entry"
-);
-assert(folderSelectorModalSource.includes("contentEl.removeEventListener") && folderSelectorModalSource.includes("listenerCleanups"), "Folder selector listeners are not explicitly cleaned up on close");
-assert(pluginSource.includes("isInitialized") && pluginSource.includes("handleInitializationFailure") && pluginSource.includes("cleanupRuntimeState"), "Plugin startup does not fence partial initialization failures");
-assert(pluginSource.includes("scheduleStartupImageIndexRebuild()") && pluginSource.includes("queueStartupImageIndexRebuild()") && pluginSource.includes("runStartupImageIndexRebuild()"), "Startup image index rebuild is not owned by a named background helper");
-assert(pluginSource.includes("override onload(): void") && pluginSource.includes("startInitializationAfterLayoutReady") && pluginSource.includes("this.app.workspace.onLayoutReady") && pluginSource.indexOf("await this.initializePlugin()") > pluginSource.indexOf("async loadPlugin()"), "Plugin initialization is not deferred behind the layout-ready boundary");
-assert(pluginSource.includes("if (this.isUnloading || !this.isInitialized)") && pluginSource.indexOf("if (this.isUnloading || !this.isInitialized)") < pluginSource.indexOf("this.imageScanner.invalidateImageLookupCache()"), "Vault create handling is not fenced until layout-ready initialization completes");
-assert(!pluginSource.includes("await this.setupStatusBar()") && pluginSource.indexOf("this.setupStatusBar();") < pluginSource.indexOf("this.setupEventListeners()"), "Status bar setup is still awaited or ordered after event registration");
-assert(!setupStatusBarSource.includes('rebuildImageIndex("startup")') && !setupStatusBarSource.includes("await this.statusBarController.update()"), "setupStatusBar() still blocks on startup image indexing");
-assert(pluginSource.includes('const key = "startup-image-index"') && pluginSource.includes("await this.runStartupImageIndexRebuild()") && pluginSource.includes("Startup image-index rebuild failed"), "Startup image index rebuild is missing timer ownership or error handling");
-assert(pluginSource.indexOf("this.isInitialized = true;") < pluginSource.indexOf("this.scheduleStartupImageIndexRebuild();"), "Startup image index rebuild is scheduled before base plugin initialization is complete");
-assert(i18nCatalogSource.includes("init.failed"), "Initialization failure notice is missing i18n coverage");
-assert(pluginGuardSource.includes("guard.disabled") && pluginGuardSource.includes("guard.restored") && pluginGuardSource.includes("new obsidian.Notice"), "Plugin guard does not notify on disable/restore");
-assert(pluginGuardSource.includes("releaseAllGuards") && pluginSource.includes("releaseAllGuards"), "Plugin guard does not restore guarded plugins during unload");
-assert(pluginGuardSource.includes("observedEnabledAfterGuardDisable") && pluginGuardSource.includes("shouldRestoreGuardedPlugin") && pluginGuardSource.includes("startGuardStateMonitor"), "Plugin guard restore does not respect user/external toggles during guard");
-assert(pluginGuardSource.includes("scheduleEnableRetry") && pluginGuardSource.includes("allowEnableRetry") && pluginGuardSource.includes("disabledByGuard"), "Plugin guard does not handle enable timeouts or idempotent disable ownership");
-assert(pluginGuardSource.includes("releaseGuardsInParallel") && pluginGuardSource.includes("Promise.allSettled") && !/for\s*\(\s*const id of acquired\.reverse\(\)\s*\)\s*\{\s*await this\.release\(id\)/.test(pluginGuardSource), "Plugin guard withDisabled() still releases acquired guards sequentially");
-assert(pluginGuardSource.includes("operationTimedOut") && !pluginGuardSource.includes("operationCompleted.then((completed)"), "Plugin guard late-disable restore still uses an orphan operationCompleted continuation");
-assert(imageScannerSource.includes("stripMarkdownCode") && imageScannerSource.includes("getWikiTargetBeforeAlias") && imageScannerSource.includes("\\\\([() |])"), "Image scanner does not handle escaped wiki pipes/code blocks");
-assert(imageScannerSource.includes("imageLookupCache") && pluginSource.includes("invalidateImageLookupCache"), "Image scanner lookup cache is missing invalidation hooks");
-assert(!cacheSource.includes("Math.random") && !compressorSource.includes("Math.random") && !moveServiceSource.includes("Math.random"), "Temp file naming still uses Math.random");
-assert(savingsCalculatorSource.includes("Promise.all(fetchTasks.map"), "Savings calculator does not parallelize compressed size fetches within a batch");
-assert(savingsCalculatorSource.includes("getInterruptedSavingsResult") && savingsCalculatorSource.includes("this.plugin.isUnloading"), "Savings calculator does not stop safely after unload during UI yields");
-assert(moveServiceSource.includes("skipForUnload") && moveServiceSource.includes("move.skip.unloading"), "Move service does not stop safely when plugin unloads before backup/move file operations");
-assert(pluginSource.includes("if (this.isUnloading)") && pluginSource.includes("!this.isUnloading && shouldAutoMove"), "Direct compression flows do not stop safely around unload boundaries");
-assert(savingsCalculatorSource.includes("MAX_ESTIMATED_COMPRESSION_RATIO = 30") && !savingsCalculatorSource.includes("currentSize * 10"), "Savings calculator still uses the old 10x estimation cap");
-assert(!savingsCalculatorSource.includes("WEBP_SMALL") && !savingsCalculatorSource.includes('case "webp"'), "Savings calculator still has WebP-specific ratios despite WebP not being supported");
-assert(savingsCalculatorSource.includes("typedSavings.totalFiles > 0 || typedSavings.processedFiles > 0 || typedSavings.estimatedFiles > 0"), "Savings validation still requires processed files instead of accepting all-skipped activity");
-assert(!pluginSource.includes("savings.processedFiles > 0 && savings.savedSize > 0"), "Plugin still treats zero-savings activity as invalid savings data");
-assert(cacheSource.includes("getEntriesForPathFromMap") && cacheSource.includes("normalizeVaultPathForComparison(this.normalizeVaultPath(filePath))"), "Cache path index lookup is missing comparison-normalized getEntriesForPathFromMap()");
-assert(cacheSource.includes("if (!filePath)") && cacheSource.includes("continue;") && cacheSource.includes("const pathKey = normalizeVaultPathForComparison(filePath)"), "Cache path index does not skip malformed empty-path entries");
-assert(!cacheSource.includes(".filter(([cacheKey, entry]) => vaultPathsEqual(this.getEntryPath(cacheKey, entry)"), "Cache getEntriesForPath still scans all entries directly");
-assert(savingsCalculatorSource.includes("const entriesByPath = this.plugin.cache.getEntriesByPathMap()") && savingsCalculatorSource.includes("getFreshEntryForFileFromEntries"), "Savings calculator still does per-file cache path scans");
-assert(!savingsCalculatorSource.includes("const cacheKeys = Object.keys(entries)") && !savingsCalculatorSource.includes("for (const cacheKey of cacheKeys)"), "Savings getCachedOriginalSize still scans every cache key");
-assert(savingsCalculatorSource.includes("SAVINGS_STATS_IO_CONCURRENCY = 8") && savingsCalculatorSource.includes("cacheLookupLimiter.run") && savingsCalculatorSource.includes("compressedSizeLimiter.run"), "Savings calculator does not limit async cache/stat fan-out within batches");
-assert(!progressModalSource.includes("[key: string]: any"), "ProgressModal still has a class index signature");
-assert(progressModalSource.includes("requestCancel") && progressModalSource.includes("setAbortController") && progressModalSource.includes("setCancelled"), "ProgressModal is missing user cancellation support");
-assert(progressModalSource.includes("removeEventListener") && progressModalSource.includes("clearModalTimeout"), "ProgressModal does not clean cancel listeners/timers on close");
-assert(progressModalSource.includes("animationHandle") && progressModalSource.includes("cancelModalAnimationFrame") && progressModalSource.includes("this.statusElement = null") && progressModalSource.includes("this.progressElement = null"), "ProgressModal does not clean pending animation frames or stale element refs on close");
-assert(progressModalSource.includes("pendingProgressUpdate") && progressModalSource.includes("if (this.animationHandle)") && progressModalSource.includes("return;"), "ProgressModal does not coalesce pending progress updates into one animation frame");
-assert(progressModalSource.includes("isClosed") && progressModalSource.includes("Math.min(100") && progressModalSource.includes("Math.max(0"), "ProgressModal does not guard late updates or clamp progress");
-assert(progressModalSource.includes('setAttribute("role", "progressbar")') && progressModalSource.includes('setAttribute("aria-live", "polite")') && progressModalSource.includes('setAttribute("aria-valuenow"') && progressModalSource.includes("focusTimer"), "ProgressModal is missing progress/live-region semantics or deterministic initial focus");
-assert(moveServiceSource.includes('setAttribute("role", "progressbar")') && moveServiceSource.includes('setAttribute("aria-valuetext"') && moveServiceSource.includes('setAttribute("aria-live", "polite")'), "Move progress modal is missing accessible progress semantics");
-assert(pluginSource.includes("signal: abortController.signal") && pluginSource.includes("cancelled_batch_aborted") && pluginSource.includes("cancelled: isCancelled()"), "Batch compression does not propagate ProgressModal cancellation");
-assert(pluginSource.includes("Batch compression failed unexpectedly") && pluginSource.includes("progressModal.setError(errorMessage)"), "processBatchCompression does not surface unexpected batch failures in the modal");
-assert(i18nCatalogSource.includes("progress.cancelling") && i18nCatalogSource.includes("progress.cancelled") && i18nCatalogSource.includes("common.cancel"), "Progress cancellation i18n keys are missing");
-assert(!pluginSource.includes("app.setting") && pluginSource.includes("settingsTab?.refreshStatsIfVisible()") && settingsTabSource.includes("refreshStatsIfVisible()") && settingsTabSource.includes("this._isVisible = true"), "Settings indicator refresh still depends on private app.setting state instead of plugin-owned visibility");
-assert(settingsTabSource.includes("requestRerenderAfterCurrentRender()") && settingsTabSource.includes("refreshStatsIfVisible()") && !pluginSource.includes("settingsTab._isRendering") && !pluginSource.includes("settingsTab._pendingRerender"), "Settings indicator refresh still mutates SettingsTab render internals directly");
-assert(settingsTabSource.includes('setAttribute("tabindex", "0")') && settingsTabSource.includes('setAttribute("role", "group")') && settingsTabSource.includes("'focus', onFocus") && settingsTabSource.includes('"Escape"') && settingsTabSource.includes("container.doc || ownerWindow.document"), "Savings tooltip is not keyboard-accessible or popout-owned");
-assert(!i18nCatalogSource.includes('"Command Palette →"') && !i18nCatalogSource.includes('"Space Savings Details"') && !i18nCatalogSource.includes('"Original Size:"'), "English built-in locale contains title-case UI copy");
-assert(pluginSource.includes("new ProgressModal(this, t(this.app, \"common.refreshCache\")") && i18nCatalogSource.includes("status.indexing"), "forceRefreshCache does not show progress for cache/index refresh");
-assert(pluginSource.includes('setText(t(this.app, "status.loading"))') && pluginSource.includes('setText(t(this.app, "status.indexing"))') && !pluginSource.includes('setText("…")') && i18nCatalogSource.includes("status.loading"), "Status bar startup still uses a magic loading string or lacks indexing feedback");
-assert(pluginSource.includes("async showCacheBackupsList()") && settingsTabSource.includes("showCacheBackupsList") && !settingsTabSource.includes("openBackupsFolder"), "Cache backup list method is still named or called as opening a folder");
-assert(cacheBackupsViewSource.includes("backupInfoLimiter = new ConcurrencyLimiter(8)") && cacheBackupsViewSource.includes("toLocaleString(locale)") && !cacheBackupsViewSource.includes("toLocaleString(locale === 'en'"), "Cache backup list stat/locale formatting is not bounded or explicit");
-assert(savingsCalculatorSource.includes("Promise<number | null>") && savingsCalculatorSource.includes('getErrorCode(error) === "ENOENT"') && savingsCalculatorSource.includes(".catch(() => null)"), "Compressed size lookup does not distinguish missing files from stat errors");
-assert(!cacheSource.includes("[key: string]: any"), "Cache still has a class index signature");
-assert(!cacheSource.includes("async isCached(") && !cacheSource.includes("getCacheFile()") && !pluginSource.includes("getUncompressedImagesCount("), "Public dead methods returned after the dead-code pass");
-assert(cacheSource.includes("saveCacheDelayMs"), "Cache is missing debounced save scheduling");
-assert(cacheSource.includes("activeWritePromise"), "Cache is missing serialized write tracking");
-assert(cacheSource.includes("cancelPendingSave"), "Cache is missing pending save cancellation");
-assert(cacheSource.includes("renameCacheFileWithRetry") && cacheSource.includes("isRetriableCacheRenameError") && cacheSource.includes('code === "EPERM"'), "Cache atomic rename does not retry transient Windows EPERM/EACCES/EBUSY failures");
-assert(!settingsTabSource.includes("[key: string]: any"), "SettingsTab still has a class index signature");
-assert(!pluginSource.includes("[key: string]: any"), "Plugin source still has class index signatures");
-assert(!pluginSource.includes("child_process"), "Plugin still opens folders through child_process");
-assert(!pluginSource.includes("exec(cmd"), "Plugin still opens folders through exec(cmd)");
-assert((combinedTsSource.match(/from\s+(["'])electron\1/g) || []).length === 1 && utilsSource.includes("openFilesystemPath") && cacheBackupsViewSource.includes("openFilesystemPath(backupDir)") && settingsTabSource.includes("openFilesystemPath(dir)"), "Folder opening should go through one shared electron.shell.openPath helper");
-assert(!utilsSource.includes("fallback = process.cwd()") && utilsSource.includes("refusing filesystem access outside the vault"), "Vault base-path resolution still fails open outside the vault");
-assert(cacheSource.includes("isSafeVaultRelativePath(vaultRelativePath)") && !cacheSource.includes("return rawPath;"), "Cache output metadata can still resolve arbitrary absolute paths");
-assert(!serviceSources.some((serviceSource) => serviceSource.includes("plugin: any")), "A service or settings tab still accepts plugin:any");
-for (const removedWrapper of [
-  "async getImagesInNote(",
-  "async calculateSpaceSavings(",
-  "async collectImageStats(",
-  "validateSavingsData(",
-  "formatTooltipData(",
-  "async getCompressedFilesCount(",
-  "async moveCompressedToFiles(",
-  "async moveSingleFile(",
-  "async showStatusBarMenu(",
-  "async updateStatusBar("
-]) {
-  assert(!pluginSource.includes(removedWrapper), `Plugin still contains service wrapper: ${removedWrapper}`);
-}
-assert(!settingsSource.includes("pngquantPath?:") && !settingsSource.includes("mozjpegPath?:"), "Settings interface still exposes deprecated native-binary paths");
-assert(settingsSource.includes('"pngquantPath"') && settingsSource.includes('"mozjpegPath"'), "Settings normalization no longer strips deprecated native-binary paths");
-for (const staleBinaryLocaleKey of [
-  "warning.binariesMissing",
-  "compress.error.pngquantMissing",
-  "compress.error.mozjpegMissing",
-  "compress.error.pngquantLaunch",
-  "compress.error.mozjpegLaunch",
-  "compress.error.pngquantExit",
-  "compress.error.mozjpegExit",
-  "paths.pngquant.name",
-  "paths.pngquant.desc",
-  "paths.mozjpeg.name",
-  "paths.mozjpeg.desc",
-  "binaries.available"
-]) {
-  assert(!i18nCatalogSource.includes(`"${staleBinaryLocaleKey}"`), `Obsolete native-binary locale key returned: ${staleBinaryLocaleKey}`);
-}
-assert(compressorSource.includes('"compress.error.pngQuality"') && !compressorSource.includes('"compress.error.pngquantExit"'), "PNG quality failure still uses native pngquant wording");
-assert(!settingsSource.includes("workerPoolSize") && !settingsSource.includes("pluginGuardTimeoutMs"), "Settings source still exposes technical runtime settings");
-assert(!readmeSource.includes("Compression worker pool size") && !readmeSource.includes("Plugin guard timeout"), "README.md still documents technical runtime settings as configurable");
-assert(!readmeRuSource.includes("Размер пула воркеров сжатия") && !readmeRuSource.includes("Таймаут защиты плагина"), "README.ru.md still documents technical runtime settings as configurable");
-assert(readmeSource.includes("WebP, GIF, BMP") && readmeSource.includes("Internal safety limits are fixed") && readmeSource.includes("100 million"), "README.md is missing supported-format limitations or internal safety-limit documentation");
-assert(readmeRuSource.includes("WebP, GIF, BMP") && readmeRuSource.includes("Внутренние лимиты безопасности фиксированы") && readmeRuSource.includes("100 млн"), "README.ru.md is missing supported-format limitations or internal safety-limit documentation");
-assert(readmeSource.includes("| PNG quality (min-max) | Quality range for lossy PNG quantization | 1-100") && !readmeSource.includes("PNG quality (min-max) | Quality range for lossy PNG quantization | 0-100"), "README.md PNG quality range is out of sync with settings clamp");
-assert(readmeRuSource.includes("| Качество PNG (мин-макс) | Диапазон качества квантования PNG с потерями | 1-100") && !readmeRuSource.includes("Качество PNG (мин-макс) | Диапазон качества квантования PNG с потерями | 0-100"), "README.ru.md PNG quality range is out of sync with settings clamp");
-for (const token of [
-  "Inactivity threshold",
-  "Auto backup retention",
-  "Auto-move compressed files",
-  "Auto-move threshold",
-  "conservative estimates with capped ratios",
-  "does not attempt to restore it"
-]) {
-  assert(readmeSource.includes(token), `README.md is missing settings/savings/guard documentation token: ${token}`);
-}
-assert(!readmeSource.includes("Disable Paste Image Rename during compression") && !readmeSource.includes("with the setting off"), "README.md still documents a Paste Image Rename opt-out setting");
-for (const token of [
-  "Порог неактивности",
-  "Автохранение резервных копий",
-  "Автоперемещение сжатых файлов",
-  "Порог автоперемещения",
-  "консервативную оценку с ограниченными коэффициентами",
-  "не пытается восстановить его"
-]) {
-  assert(readmeRuSource.includes(token), `README.ru.md is missing settings/savings/guard documentation token: ${token}`);
-}
-assert(!readmeRuSource.includes("Отключать Paste Image Rename при сжатии") && !readmeRuSource.includes("если выключить"), "README.ru.md still documents a Paste Image Rename opt-out setting");
-assert(manifestSource.minAppVersion === "1.4.0", "manifest.json minAppVersion must match the activeWindow/activeDocument/getBasePath API minimum");
-assert(versionsSource[manifestSource.version] === manifestSource.minAppVersion, "versions.json current version must match manifest minAppVersion");
-assert(manifestSource.authorUrl === "https://github.com/haperone", "manifest.json authorUrl must point to the author profile");
-assert(packageSource.scripts["build:root"] === "node scripts/build-root.js", "package.json is missing build:root");
-assert(packageSource.scripts.build === "npm run build:root", "package.json build must delegate to the TypeScript root build");
-assert(!packageSource.scripts["build:baseline"] && !packageSource.scripts["test:baseline"] && !packageSource.scripts.verify && !packageSource.scripts.extract, "byte-exact baseline recovery scripts must stay decommissioned");
-assert(packageSource.scripts["test:release"] === "npm test && npm run build:root && npm run audit:policy:bundle && npm run verify:release && npm run verify:root-ts", "package.json test:release must build and verify deterministic release output");
-assert(packageSource.scripts["validate:license"] === "node scripts/validate-license.js", "package.json is missing validate:license");
-assert(packageSource.scripts["validate:readmes"] === "node scripts/validate-readme-locales.js" && packageSource.scripts.test.includes("npm run validate:readmes"), "package.json must keep localized README validation blocking in npm test");
-assert(packageSource.scripts["qa:i18n"] === "node scripts/validate-i18n.js" && packageSource.scripts.test.includes("npm run qa:i18n"), "package.json must keep interface localization QA blocking in npm test");
-assert(packageSource.scripts["audit:policy"] === "node scripts/audit-policy.js" && packageSource.scripts.test.includes("npm run audit:policy"), "package.json must keep the policy audit blocking in npm test");
-assert(packageSource.scripts["audit:policy:bundle"] === "node scripts/audit-policy.js --require-bundle" && packageSource.scripts["test:release"].includes("npm run audit:policy:bundle"), "Release tests must run the policy audit against the built production bundle");
-assert(packageSource.scripts["lint:eslint"] === "eslint src-ts/" && packageSource.scripts.test.includes("npm run lint:eslint"), "package.json must keep lint:eslint executable and wired into npm test");
-assert(packageSource.scripts["lint:obsidian"] === "node scripts/lint-obsidian.js" && packageSource.scripts.test.includes("npm run lint:obsidian"), "package.json must keep the Obsidian scanner executable and blocking in npm test");
-assert(eslintConfigSource.includes("\"@typescript-eslint/no-unnecessary-type-assertion\": \"error\""), "Standard ESLint must reject unnecessary type assertions");
-assert(eslintObsidianConfigSource.includes("recommendedWithLocalesEn") && eslintObsidianConfigSource.includes("src-ts/locales/en.json") && eslintObsidianConfigSource.includes('language: "json/json"') && eslintObsidianConfigSource.includes("sourcePrefix"), "Obsidian scanner config must cover the current recommended rules and layout-aware English locale source");
-assert(lintObsidianSource.includes("warningCount === 0") && lintObsidianSource.includes("errorCount === 0"), "Obsidian scanner wrapper must reject both errors and warnings");
-assert(packageSource.devDependencies["@jsquash/jpeg"], "package.json is missing @jsquash/jpeg");
-assert(packageSource.devDependencies["@jsquash/png"], "package.json is missing @jsquash/png");
-assert(packageSource.devDependencies["@types/node"] === "25.7.0", "@types/node must be pinned exactly for repeatable type checks");
-assert(packageSource.devDependencies.obsidian === "1.13.0", "obsidian API types must stay pinned to the reviewed 1.13.0 baseline");
-assert(packageSource.devDependencies["eslint-plugin-obsidianmd"] === "0.3.0", "eslint-plugin-obsidianmd must stay pinned to the reviewed 0.3.0 scanner baseline");
-assert(packageSource.devDependencies["@eslint/json"] === "0.14.0", "@eslint/json must stay pinned for English locale linting");
-assert(packageSource.devDependencies.eslint && packageSource.devDependencies["@typescript-eslint/parser"] && packageSource.devDependencies["@typescript-eslint/eslint-plugin"], "ESLint devDependencies are required for lint:eslint");
-assertExactPackageSeries(packageSource.devDependencies.imagequant, /^0\.1\.\d+$/, "imagequant must stay on the 0.1.x series while pngquant_quality_failed depends on its error contract");
-assertExactPackageSeries(packageSource.devDependencies.typescript, /^6\.0\.\d+$/, "typescript must stay on the reviewed 6.0.x series");
-assert(packageSource.devDependencies.esbuild === "0.28.1", "esbuild must stay exact-pinned to the reviewed patched version 0.28.1");
-assert(tsconfigSource.compilerOptions.strict === true, "tsconfig strict mode must stay enabled");
-assert(Array.isArray(tsconfigSource.compilerOptions.types) && tsconfigSource.compilerOptions.types.includes("node") && tsconfigSource.compilerOptions.types.includes("obsidian"), "tsconfig must include node and obsidian ambient types");
-for (const strictFlag of [
-  "noUncheckedIndexedAccess",
-  "noPropertyAccessFromIndexSignature",
-  "noFallthroughCasesInSwitch",
-  "noImplicitOverride",
-  "exactOptionalPropertyTypes",
-  "useUnknownInCatchVariables",
-  "forceConsistentCasingInFileNames"
-]) {
-  assert(tsconfigSource.compilerOptions[strictFlag] === true, `tsconfig ${strictFlag} must stay enabled`);
-}
-assert(releaseWorkflowSource.includes("pull_request:"), "Release workflow does not validate pull requests");
-assert(releaseWorkflowSource.includes("npm run test:release"), "Release workflow does not run the root release test entrypoint");
-assert(packageSource.scripts["test:release"].includes("npm run build:root") && packageSource.scripts["test:release"].includes("npm run verify:release") && packageSource.scripts["test:release"].includes("npm run verify:root-ts"), "Source release test does not build and verify deterministic root bundle output");
-assert(!releaseWorkflowSource.includes("|| true"), "Release workflow still silently ignores missing release artifacts");
-assert(rootPackageSource.license === "GPL-3.0-or-later", "Root package.json license must match bundled GPL codec obligations");
-if (isDevLayout) {
-  assert(rootPackageSource.scripts.build === "npm --prefix source-recovery run build:root", "Root package.json build must delegate to the real source-recovery build");
-  assert(rootPackageSource.scripts["qa:i18n"] === "npm --prefix source-recovery run qa:i18n", "Root package.json must expose the fast interface localization QA");
-  assert(rootPackageSource.scripts.test === "npm run dev:test && npm run prod:test && npm --prefix source-recovery test" && rootPackageSource.scripts["test:release"] === "npm run dev:test && npm run prod:test && npm --prefix source-recovery run test:release", "Root package.json test scripts must run DEV deployment tests, promotion tests, and delegate to source-recovery");
-} else {
-  assert(rootPackageSource.scripts.build === "npm run build:root", "Standalone package.json build must use the local source build");
-  assert(rootPackageSource.scripts.test.includes("npm run test:ts") && rootPackageSource.scripts["test:release"].includes("npm run verify:release"), "Standalone package.json test scripts must run local source and release verification");
-}
-assert(Array.isArray(rootPackageSource.files) && JSON.stringify(rootPackageSource.files) === JSON.stringify(["manifest.json", "main.js", "styles.css"]), "Root package.json files allowlist must contain only Obsidian install artifacts");
-assert(!releaseWorkflowSource.includes("build/package.json") && !releaseWorkflowSource.includes("build/README.md") && releaseWorkflowSource.includes("npm run test:release"), "Release workflow still ships dev package metadata or bypasses root test:release");
-assert(releaseWorkflowSource.includes('"*.*.*"') && releaseWorkflowSource.includes("^[0-9]+\\.[0-9]+\\.[0-9]+$") && !releaseWorkflowSource.includes('"v*"') && !releaseWorkflowSource.includes("GITHUB_REF_NAME#v"), "Release workflow does not combine a dotted tag trigger with exact numeric SemVer validation");
-assert((releaseWorkflowSource.match(/actions\/checkout@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/actions\/setup-node@v6/g) || []).length === 2 && (releaseWorkflowSource.match(/node-version:\s*"24"/g) || []).length === 2, "Release workflow must use checkout/setup-node v6 and Node 24 in both jobs");
-const releasePrepareCommand = isDevLayout ? "npm --prefix source-recovery run prepare:release" : "npm run prepare:release";
-const releaseNotesCommand = isDevLayout ? "npm --prefix source-recovery run prepare:release-notes" : "npm run prepare:release-notes";
-assert(
-  releaseWorkflowSource.includes(releasePrepareCommand)
-    && prepareReleaseSource.includes('["manifest.json", "main.js", "styles.css"]')
-    && !releaseWorkflowSource.includes("build/versions.json")
-    && !prepareReleaseSource.includes('"versions.json"'),
-  "Release workflow does not use the exact supported Obsidian install-file staging allowlist"
-);
-assert(releaseWorkflowSource.includes(releaseNotesCommand) && releaseWorkflowSource.includes("body_path: release-notes.md") && prepareReleaseNotesSource.includes('gitOutput(["log", "-1", "--format=%B", "HEAD"])') && prepareReleaseNotesSource.includes("Release commit message has no promoted DEV subjects"), "Release workflow must generate its body from the promoted PROD commit body");
-assert(validateManifestSource.includes("forbiddenReleaseEntries") && validateManifestSource.includes("package.json must declare a files allowlist"), "Manifest validation does not guard release packaging against dev artifact leaks");
-assert(validateManifestSource.includes("MIN_API_SURFACE_APP_VERSION") && validateManifestSource.includes("activeWindow/activeDocument/getBasePath"), "Manifest validation does not enforce API-surface minAppVersion");
-assert(validateManifestSource.includes("manifest.json authorUrl must be a valid URL") && validateManifestSource.includes("must not point to localhost"), "Manifest validation does not reject malformed or local authorUrl values");
-assert(validateManifestSource.includes("DESKTOP_ONLY_REQUIRED_REASON") && validateManifestSource.includes("DESKTOP_ONLY_API_PATTERNS") && validateManifestSource.includes("collectDesktopOnlyApiMatches") && manifestSource.isDesktopOnly === true, "Manifest validation does not derive isDesktopOnly from desktop-only API usage");
-assert(buildRootSource.includes("copyFileSync failed with EPERM") && buildRootSource.includes("writeFileSync fallback both failed") && buildRootSource.includes("post-copy SHA mismatch") && buildRootSource.includes("SHA-256"), "build-root.js does not warn on fallback failures or verify root main.js integrity");
-assert(buildRootSource.includes('"--production"') && buildTsSource.includes('process.argv.includes("--production")') && buildTsSource.includes("minify: production"), "Root release build is not production-minified");
-assert(buildTsSource.includes('"--loader:.wasm=binary"') && buildTsSource.includes('".wasm": "binary"'), "build-ts.js must keep WASM binary loader configured for both worker and main bundles");
-assert(rootPackageSource.files.includes("main.js") && !rootPackageSource.files.some((filePath) => filePath.endsWith(".wasm")), "Release package must keep WASM inline in the self-contained main.js bundle");
-assert(verifyReleaseSource.includes("Production build is not deterministic") && verifyReleaseSource.includes("lineCount > 100") && verifyReleaseSource.includes("sourceMappingURL="), "Release verification is missing determinism or minification/source-map guards");
-for (const token of [
-  isDevLayout ? "source-recovery/src-ts" : "src-ts",
-  "Root `main.js` is generated, ignored",
-  "verify:root-ts",
-  "production-minified",
-  "exact numeric SemVer",
-  "manifest.json",
-  "versions.json"
-]) {
-  assert(releasePolicySource.includes(token), `RELEASE_POLICY.md is missing release policy token: ${token}`);
-}
-assert(
-  classWideGatesSource.includes("addEmptyCatchFindings")
-    && classWideGatesSource.includes("addDuplicateCssDeclarationFindings")
-    && classWideGatesSource.includes("duplicate-css-property")
-    && classWideGatesSource.includes("--self-test")
-    && classWideGatesSource.includes("multiline empty catch"),
-  "class-wide-gates.js does not guard multiline empty catches and duplicate CSS properties"
-);
-for (const pattern of [
-  /^node_modules\/$/m,
-  /^main\.js$/m,
-  /^build\/$/m,
-  /^(?:source-recovery\/)?dist-ts\/$/m,
-  /^\.obsidian\/$/m,
-  /^data\.json$/m,
-  /^tinyLocal-cache\.json$/m,
-  /^\*\.map$/m
-]) {
-  assert(pattern.test(gitignoreSource), `.gitignore is missing required generated/local artifact pattern: ${pattern}`);
-}
-assert(gitignoreSource.includes("qa-backups/"), ".gitignore is missing QA output ignores");
-assert(
-  licenseSource.startsWith("GNU GENERAL PUBLIC LICENSE")
-    && licenseSource.includes("END OF TERMS AND CONDITIONS")
-    && licenseSource.includes("How to Apply These Terms to Your New Programs")
-    && !licenseSource.includes("libimagequant"),
-  "LICENSE must remain the canonical recognizable GPL text"
-);
-assert(
-  validateLicenseSource.includes("FB981668C18A279E285FC4D83FBA1E836CC84DD4DAA73C9697D3CFD2D8ACA6E0")
-    && validateLicenseSource.includes("licenses/imagequant.txt")
-    && validateLicenseSource.includes("installedImagequantLicense"),
-  "License validation must pin the canonical GPL text and the exact imagequant license"
-);
-assert(auditPolicySource.includes("Policy audit passed") && auditPolicySource.includes("expectedFullVaultScans") && auditPolicySource.includes("expectedFsBoundaryFiles"), "Policy audit is missing blocking source/filesystem inventory guards");
-if (obsidianReleaseAuditSource) {
-  assert(obsidianReleaseAuditSource.includes("Checked: 2026-06-09") && obsidianReleaseAuditSource.includes("No unresolved violations") && obsidianReleaseAuditSource.includes("Dormant vendor fallbacks"), "OBSIDIAN_RELEASE_AUDIT.md is not the current authoritative policy audit");
-}
-if (releaseReadinessSource) {
-  assert(releaseReadinessSource.includes("Checked: 2026-06-09") && releaseReadinessSource.includes("Exact ID matches: 0") && releaseReadinessSource.includes("Historical tags"), "Release readiness audit is missing dated uniqueness or historical-tag evidence");
-}
-for (const token of ["Network", "Telemetry and ads", "Accounts and payments", "External files", "Other plugins"]) {
-  assert(readmeSource.includes(token), `README.md is missing policy disclosure: ${token}`);
-}
-for (const token of ["Сеть", "Телеметрия и реклама", "Учётные записи и платежи", "Внешние файлы", "Другие плагины"]) {
-  assert(readmeRuSource.includes(token), `README.ru.md is missing policy disclosure: ${token}`);
-}
-assert(!rootPackageSource.dependencies?.["pngquant-bin"], "Root package.json still depends on pngquant-bin");
-assert(!rootPackageSource.dependencies?.mozjpeg, "Root package.json still depends on mozjpeg");
-
-function assertExactPackageSeries(version, pattern, message) {
-  assert(/^\d+\.\d+\.\d+$/.test(version), `${message}; dependency must be exact semver for repeatable builds`);
-  assert(pattern.test(version), message);
-}
-
-assert(
-  !source.includes("this.app.setting.openTabById"),
-  "TypeScript artifact still force-opens the plugin settings tab"
-);
-
-assert(
-  source.includes("require(\"electron\")") || source.includes("require('electron')"),
-  "TypeScript artifact is missing expected electron external require"
-);
-assert(
-  (source.match(/require\((["'])electron\1\)/g) || []).length === 1,
-  "TypeScript artifact should have a single shared electron require site"
-);
+const { englishLocale, bugResearchPath, removedTechnicalSettingKeys } = runSourceContractChecks({
+  root,
+  repositoryRoot,
+  artifact,
+  isDevLayout
+});
 
 const originalLoad = Module._load;
 let cachedObsidianMock = null;
 let mockObsidianLanguage = "en";
+let desktopTrashItem = async (filePath) => await fs.promises.unlink(filePath);
+// Mobile profile: when armed, any Node/Electron module load aborts the test —
+// the bundle must be able to evaluate without them on mobile.
+let mobileNodeModuleBan = false;
+const MOBILE_BANNED_MODULES = new Set([
+  "fs", "path", "os", "crypto", "util", "electron", "child_process",
+  "worker_threads", "stream", "stream/promises", "stream/web", "buffer", "process",
+  "timers", "timers/promises"
+]);
 Module._load = function patchedLoad(request, parent, isMain) {
+  if (mobileNodeModuleBan && (MOBILE_BANNED_MODULES.has(request) || String(request).startsWith("node:"))) {
+    throw new Error(`Mobile profile violation: Node module "${request}" was loaded`);
+  }
   if (request === "obsidian") {
     if (cachedObsidianMock) {
       return cachedObsidianMock;
+    }
+    class Component {
+      constructor() {
+        this.registeredCallbacks = [];
+      }
+      register(callback) {
+        this.registeredCallbacks.push(callback);
+      }
+      registerDomEvent(element, type, callback) {
+        element.addEventListener(type, callback);
+        this.register(() => element.removeEventListener(type, callback));
+      }
+      unload() {
+        for (const callback of this.registeredCallbacks.splice(0).reverse()) {
+          callback();
+        }
+      }
     }
     class Plugin {
       constructor() {
@@ -1158,6 +261,7 @@ Module._load = function patchedLoad(request, parent, isMain) {
         this.registeredCallbacks = [];
         this.settingTabs = [];
         this.statusBarItem = null;
+        this.children = [];
       }
       registerEvent(event) {
         this.events.push(event);
@@ -1168,6 +272,14 @@ Module._load = function patchedLoad(request, parent, isMain) {
       registerDomEvent(element, type, callback) {
         element.addEventListener(type, callback);
         this.register(() => element.removeEventListener(type, callback));
+      }
+      addChild(component) {
+        this.children.push(component);
+        return component;
+      }
+      removeChild(component) {
+        this.children = this.children.filter((child) => child !== component);
+        component.unload?.();
       }
       addCommand(command) {
         this.commands.push(command);
@@ -1197,6 +309,8 @@ Module._load = function patchedLoad(request, parent, isMain) {
       }
     }
     cachedObsidianMock = {
+      apiVersion: "test-app",
+      Component,
       Plugin,
       PluginSettingTab: class {
         constructor(app, plugin) {
@@ -1253,19 +367,126 @@ Module._load = function patchedLoad(request, parent, isMain) {
       TFolder: class {},
       FuzzySuggestModal: class {},
       getLanguage: () => mockObsidianLanguage,
-      requireApiVersion: () => true
+      requireApiVersion: () => true,
+      // Mirrors the real desktop Platform surface so shared code can read it
+      // instead of Node process.platform.
+      Platform: {
+        isDesktopApp: true,
+        isMobile: false,
+        isMobileApp: false,
+        isWin: process.platform === "win32",
+        isMacOS: process.platform === "darwin",
+        isLinux: process.platform === "linux",
+        isIosApp: false,
+        isAndroidApp: false
+      }
     };
     return cachedObsidianMock;
   }
   if (request === "electron") {
     return {
       shell: {
-        openPath: async () => ""
+        openPath: async () => "",
+        trashItem: async (filePath) => await desktopTrashItem(filePath)
       }
     };
   }
   return originalLoad.call(this, request, parent, isMain);
 };
+
+// Compiles one src-ts module to CJS via the esbuild CLI (the JS API service
+// can hit EPERM on this environment) and loads it through the mocked module
+// loader so unit-level helpers become directly testable.
+function compileTsModuleForTest(relativeSourcePath) {
+  const outFile = path.join(os.tmpdir(), `lic-smoke-${process.pid}-${relativeSourcePath.replace(/[\\/]/g, "-")}.cjs`);
+  runEsbuildCli([
+    path.join("src-ts", relativeSourcePath),
+    "--bundle",
+    "--platform=node",
+    "--format=cjs",
+    "--target=es2020",
+    "--external:obsidian",
+    "--external:electron",
+    `--outfile=${outFile}`,
+    "--log-level=silent"
+  ], { cwd: root, stdio: "pipe" });
+  try {
+    const compiledSource = fs.readFileSync(outFile, "utf8");
+    const testModule = new Module(outFile, null);
+    testModule.filename = outFile;
+    testModule.paths = Module._nodeModulePaths(root);
+    testModule._compile(compiledSource, outFile);
+    return testModule.exports;
+  } finally {
+    try {
+      fs.unlinkSync(outFile);
+    } catch (cleanupError) {
+      void cleanupError;
+    }
+  }
+}
+
+function compileTsModuleFileForIsolatedTest(relativeSourcePath) {
+  const outFile = path.join(os.tmpdir(), `lic-smoke-isolated-${process.pid}-${crypto.randomBytes(8).toString("hex")}.cjs`);
+  runEsbuildCli([
+    path.join("src-ts", relativeSourcePath),
+    "--bundle",
+    "--platform=node",
+    "--format=cjs",
+    "--target=es2020",
+    "--external:obsidian",
+    "--external:electron",
+    `--outfile=${outFile}`,
+    "--log-level=silent"
+  ], { cwd: root, stdio: "pipe" });
+  return outFile;
+}
+
+// Path-helper parity: the string-based replacements for Node path.relative /
+// path.isAbsolute must keep win32/posix semantics for vault conversions.
+{
+  const obsidianMock = Module._load("obsidian", null, false);
+  const originalPlatform = { ...obsidianMock.Platform };
+  const loadUtilsWithPlatform = (platformPatch) => {
+    Object.assign(obsidianMock.Platform, originalPlatform, platformPatch);
+    return compileTsModuleForTest("utils.ts");
+  };
+  try {
+    const winUtils = loadUtilsWithPlatform({ isWin: true, isMacOS: false, isIosApp: false });
+    assert.equal(winUtils.toVaultRelativePath("C:\\v\\Images\\a.png", "C:\\v"), "Images/a.png", "win32 relative conversion changed");
+    assert.equal(winUtils.toVaultRelativePath("C:\\V\\IMG\\a.png", "c:\\v"), "IMG/a.png", "win32 case-insensitive base match changed");
+    assert.equal(winUtils.toVaultRelativePath("\\\\srv\\share\\v\\x.png", "\\\\srv\\share\\v"), "x.png", "UNC relative conversion changed");
+    assert.equal(winUtils.toVaultRelativePath("\\\\?\\C:\\v\\a\\b.png", "C:\\v"), "a/b.png", "long-path prefix stripping changed");
+    assert.equal(winUtils.toVaultRelativePath("a/b.png", "C:\\v"), "a/b.png", "relative passthrough changed");
+    assert.equal(winUtils.isSafeVaultRelativePath(winUtils.toVaultRelativePath("D:\\x\\y.png", "C:\\v")), false, "cross-drive paths must stay rejected");
+    assert.equal(winUtils.isSafeVaultRelativePath(winUtils.toVaultRelativePath("C:\\other\\y.png", "C:\\v")), false, "outside-base paths must stay rejected");
+    assert.equal(winUtils.toVaultRelativePath("C:\\v", "C:\\v"), "", "identical base/target must yield empty remainder");
+    for (const [candidate, expected] of [
+      ["C:\\x\\y.png", true],
+      ["\\\\srv\\share", true],
+      ["\\\\?\\C:\\x", true],
+      ["/posix/root", true],
+      ["a/b.png", false],
+      ["", false]
+    ]) {
+      assert.equal(winUtils.isAbsoluteFilesystemPath(candidate), expected, `isAbsoluteFilesystemPath(${JSON.stringify(candidate)}) changed`);
+    }
+    assert.equal(winUtils.vaultPathsEqual("Images/A.png", "images/a.png"), true, "win32 vault path comparison must stay case-insensitive");
+
+    const posixUtils = loadUtilsWithPlatform({ isWin: false, isMacOS: false, isLinux: true, isIosApp: false });
+    assert.equal(posixUtils.toVaultRelativePath("/home/u/v/a/b.png", "/home/u/v"), "a/b.png", "posix relative conversion changed");
+    assert.equal(posixUtils.isSafeVaultRelativePath(posixUtils.toVaultRelativePath("/home/u/V/a.png", "/home/u/v")), false, "posix base matching must stay case-sensitive");
+    assert.equal(posixUtils.vaultPathsEqual("Images/A.png", "images/a.png"), false, "posix vault path comparison must stay case-sensitive");
+
+    const iosUtils = loadUtilsWithPlatform({ isWin: false, isMacOS: false, isIosApp: true });
+    assert.equal(iosUtils.vaultPathsEqual("Images/A.png", "images/a.png"), true, "iOS vault path comparison must be case-insensitive");
+
+    const androidUtils = loadUtilsWithPlatform({ isWin: false, isMacOS: false, isLinux: false, isIosApp: false, isAndroidApp: true });
+    assert.equal(androidUtils.vaultPathsEqual("Images/A.png", "images/a.png"), false, "Android vault path comparison must stay case-sensitive");
+  } finally {
+    Object.assign(obsidianMock.Platform, originalPlatform);
+  }
+}
 
 function createMockElement() {
   const classes = new Set();
@@ -1455,6 +676,51 @@ function createMockFile(filePath, size, mtime = 1) {
   };
 }
 
+function createCompressionSuccess(file, operation, savings = 25, outputPath = null) {
+  const sourcePath = operation?.sourcePath || file?.path || "Images/mock.png";
+  const sourceMtime = operation?.sourceMtime ?? file?.stat?.mtime ?? 1;
+  const sourceSize = file?.stat?.size ?? 100000;
+  return {
+    success: true,
+    savings,
+    artifact: Object.freeze({
+      sourcePath,
+      sourceMtime,
+      sourceSize,
+      sourceMd5: MOCK_MD5,
+      sourceSha256: "a".repeat(64),
+      outputPath: outputPath || `Compressed/${sourcePath}`,
+      outputSize: Math.max(1, sourceSize - savings),
+      outputSha256: "b".repeat(64),
+      compressionSettingsKey: "mock:settings"
+    })
+  };
+}
+
+function seedPendingMoveArtifact(plugin, sourcePath, outputPath, sourceFile, outputFile) {
+  const sourceStats = fs.statSync(sourceFile);
+  const outputStats = fs.statSync(outputFile);
+  const sourceBytes = fs.readFileSync(sourceFile);
+  const outputBytes = fs.readFileSync(outputFile);
+  const sourceMd5 = crypto.createHash("md5").update(sourceBytes).digest("hex");
+  const cacheKey = plugin.cache.buildCacheKey(sourcePath, sourceMd5, sourceStats.mtimeMs);
+  plugin.cache.cacheData.entries[cacheKey] = {
+    path: sourcePath,
+    md5: sourceMd5,
+    mtime: sourceStats.mtimeMs,
+    timestamp: Date.now(),
+    sourceMtime: sourceStats.mtimeMs,
+    sourceSize: sourceStats.size,
+    sourceSha256: crypto.createHash("sha256").update(sourceBytes).digest("hex"),
+    state: "pending_move",
+    outputPath,
+    outputMtime: outputStats.mtimeMs,
+    outputSize: outputStats.size,
+    outputSha256: crypto.createHash("sha256").update(outputBytes).digest("hex")
+  };
+  return cacheKey;
+}
+
 function createMockApp() {
   const files = [
     createMockFile("Images/a.png", 100000),
@@ -1490,6 +756,43 @@ function createMockApp() {
         },
         getBasePath() {
           return this.basePath || this.path?.absolute || root;
+        },
+        // Adapter surface used by peripheral (non-fs) plugin code; resolves through
+        // getBasePath() at call time so tests that re-point basePath stay coherent.
+        _resolve(vaultPath) {
+          return path.join(this.getBasePath(), ...String(vaultPath || "").split("/").filter(Boolean));
+        },
+        async exists(vaultPath) {
+          return fs.existsSync(this._resolve(vaultPath));
+        },
+        async read(vaultPath) {
+          return fs.readFileSync(this._resolve(vaultPath), "utf8");
+        },
+        async stat(vaultPath) {
+          try {
+            const stats = fs.statSync(this._resolve(vaultPath));
+            return { type: stats.isDirectory() ? "folder" : "file", ctime: stats.ctimeMs, mtime: stats.mtimeMs, size: stats.size };
+          } catch {
+            return null;
+          }
+        },
+        async list(vaultPath) {
+          const prefix = String(vaultPath || "").replace(/\/+$/, "");
+          const files = [];
+          const folders = [];
+          for (const entry of fs.readdirSync(this._resolve(vaultPath), { withFileTypes: true })) {
+            (entry.isDirectory() ? folders : files).push(prefix ? `${prefix}/${entry.name}` : entry.name);
+          }
+          return { files, folders };
+        },
+        async mkdir(vaultPath) {
+          fs.mkdirSync(this._resolve(vaultPath), { recursive: true });
+        },
+        async remove(vaultPath) {
+          fs.rmSync(this._resolve(vaultPath), { force: true });
+        },
+        async rmdir(vaultPath, recursive) {
+          fs.rmSync(this._resolve(vaultPath), { recursive: !!recursive, force: true });
         }
       },
       getFiles: () => {
@@ -1528,6 +831,7 @@ function createMockApp() {
         workspaceHandlers[name] = callback;
         return { scope: "workspace", name };
       },
+      iterateAllLeaves() {},
       getActiveFile: () => null
     },
     setting,
@@ -1657,21 +961,16 @@ async function runImagequantHeapStress() {
 
   let memoryAfterWarmup = 0;
   let peakMemoryAfterWarmup = 0;
-  for (let iteration = 0; iteration < totalIterations; iteration++) {
-    const quantizer = new imagequantBindings.Imagequant();
-    let image = null;
-    try {
-      quantizer.set_quality(45, 70);
-      quantizer.set_speed(6);
-      image = new imagequantBindings.ImagequantImage(new Uint8Array(rgba), width, height, 0);
-      const output = quantizer.process(image);
-      assert(output.byteLength > 0, "Imagequant heap stress produced empty output");
-    } finally {
-      try {
-        image?.free?.();
-      } catch (_) {
-      }
-      try {
+	  for (let iteration = 0; iteration < totalIterations; iteration++) {
+	    const quantizer = new imagequantBindings.Imagequant();
+	    try {
+	      quantizer.set_quality(45, 70);
+	      quantizer.set_speed(6);
+	      const image = new imagequantBindings.ImagequantImage(new Uint8Array(rgba), width, height, 0);
+	      const output = quantizer.process(image);
+	      assert(output.byteLength > 0, "Imagequant heap stress produced empty output");
+	    } finally {
+	      try {
         quantizer.free();
       } catch (_) {
       }
@@ -1703,8 +1002,38 @@ function writeVaultBinary(app, basePath, filePath, bytes, mtime = Date.now()) {
   return file;
 }
 
+function prepareVerifiedMoveRecord(record, originalPath = record.originalPath, vaultBasePath = null) {
+  if (!originalPath || !vaultBasePath) {
+    throw new Error(`Move smoke record has no original path: ${record.name}`);
+  }
+  const toNativePath = (filePath) => path.isAbsolute(filePath)
+    ? filePath
+    : path.join(vaultBasePath, ...String(filePath).split("/").filter(Boolean));
+  const toVaultPath = (filePath) => {
+    const relativePath = path.relative(vaultBasePath, filePath).replace(/\\/g, "/");
+    if (!relativePath || relativePath === ".." || relativePath.startsWith("../") || path.isAbsolute(relativePath)) {
+      throw new Error(`Move smoke path is outside the fixture vault: ${filePath}`);
+    }
+    return relativePath;
+  };
+  const originalNativePath = toNativePath(originalPath);
+  const compressedNativePath = toNativePath(record.compressedPath);
+  const backupPath = `${originalNativePath}.verified-backup-${crypto.randomBytes(8).toString("hex")}`;
+  fs.copyFileSync(originalNativePath, backupPath);
+  const originalStats = fs.statSync(originalNativePath);
+  record.originalPath = toVaultPath(originalNativePath);
+  record.originalBackupPath = toVaultPath(backupPath);
+  record.compressedPath = toVaultPath(compressedNativePath);
+  record.originalSizeBeforeMove = originalStats.size;
+  record.originalMtimeMsBeforeMove = originalStats.mtimeMs;
+  record.originalSha256BeforeMove = crypto.createHash("sha256").update(fs.readFileSync(originalNativePath)).digest("hex");
+  record.compressedSha256 = crypto.createHash("sha256").update(fs.readFileSync(compressedNativePath)).digest("hex");
+  return record;
+}
+
 function pointMockVaultAtPath(app, basePath) {
-  const resolveVaultPath = (vaultPath) => path.join(basePath, ...String(vaultPath || "").split("/").filter(Boolean));
+  // Resolve through getBasePath() at call time so later basePath restores stay coherent.
+  const resolveVaultPath = (vaultPath) => path.join(app.vault.adapter.getBasePath(), ...String(vaultPath || "").split("/").filter(Boolean));
   app.vault.adapter.basePath = basePath;
   app.vault.adapter.path.absolute = basePath;
   app.vault.adapter.exists = async (vaultPath) => fs.existsSync(resolveVaultPath(vaultPath));
@@ -1857,10 +1186,12 @@ async function setMockFiles(plugin, files) {
 }
 
 async function setCacheEntries(plugin, entries) {
-  plugin.cache.cacheData.entries = plugin.cache.normalizeCacheData({
+  const normalized = plugin.cache.normalizeCacheData({
     version: "1.0.0",
     entries
-  }).data.entries;
+  }).data;
+  plugin.cache.migrateLegacyProcessedEntries(normalized);
+  plugin.cache.cacheData.entries = normalized.entries;
   if (typeof plugin.rebuildImageIndex === "function") {
     await withRealGlobalTimers(() => plugin.rebuildImageIndex("smoke-cache"));
   }
@@ -1874,6 +1205,14 @@ const originalGlobals = {
   clearTimeout: global.clearTimeout
 };
 let smokeBackupStorageTemp = null;
+const cleanupSmokeBackupStorageTemp = () => {
+  const tempPath = smokeBackupStorageTemp;
+  smokeBackupStorageTemp = null;
+  if (tempPath) {
+    fs.rmSync(tempPath, { recursive: true, force: true });
+  }
+};
+process.once("exit", cleanupSmokeBackupStorageTemp);
 
 withTestTimeout("full TypeScript artifact smoke", (async () => {
 try {
@@ -1888,13 +1227,22 @@ try {
       return createMockElement();
     }
   };
+  const mockLocalStorage = new Map();
+  mockLocalStorage.set("local-image-compress:desktop-device-owner-v1", "d".repeat(32));
   global.window = {
     document: global.document,
     innerWidth: 1200,
     addEventListener() {},
     removeEventListener() {},
     setTimeout: (...args) => global.setTimeout(...args),
-    clearTimeout: (...args) => global.clearTimeout(...args)
+    clearTimeout: (...args) => global.clearTimeout(...args),
+    // Shared code reads window.crypto (Web Crypto) instead of Node crypto.
+    crypto: crypto.webcrypto,
+    localStorage: {
+      getItem: (key) => mockLocalStorage.get(key) ?? null,
+      setItem: (key, value) => mockLocalStorage.set(key, String(value)),
+      removeItem: (key) => mockLocalStorage.delete(key)
+    }
   };
   global.requestAnimationFrame = (callback) => callback();
   global.setTimeout = (callback, delay) => ({ callback, delay });
@@ -1903,6 +1251,20 @@ try {
   const mod = require(artifact);
   const PluginClass = mod && (mod.default || mod);
   assert(typeof PluginClass === "function", "TypeScript artifact does not expose a default plugin class");
+  const loadFreshPluginClass = () => {
+    const artifactPath = require.resolve(artifact);
+    const cachedArtifact = require.cache[artifactPath];
+    delete require.cache[artifactPath];
+    try {
+      const freshModule = require(artifact);
+      return freshModule?.default || freshModule;
+    } finally {
+      delete require.cache[artifactPath];
+      if (cachedArtifact) {
+        require.cache[artifactPath] = cachedArtifact;
+      }
+    }
+  };
   assert(
     typeof PluginClass.prototype.setupThemeAdaptation === "undefined",
     "TypeScript plugin class still exposes dead setupThemeAdaptation()"
@@ -1966,8 +1328,16 @@ try {
   assert(plugin.app._getFilesCalls === 0, "Vault create handling processed startup enumeration before initialization");
   plugin.app._triggerLayoutReady();
   await plugin.initializationPromise;
-  smokeBackupStorageTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-smoke-backup-storage-"));
-  plugin.cache.cacheBackupsDir = path.join(smokeBackupStorageTemp, "cache");
+  assert(!path.isAbsolute(plugin.cache.cacheFile), `Cache constructor stored a native path: ${plugin.cache.cacheFile}`);
+  assert.deepEqual(plugin.getBackupStoragePaths(), {
+    root: ".local-image-compress",
+    backupsRoot: ".local-image-compress/backups",
+    cacheBackups: ".local-image-compress/backups/cache",
+    originalFilesBackups: ".local-image-compress/backups/originals"
+  }, "Shared backup storage paths are not vault-relative");
+  smokeBackupStorageTemp = fs.mkdtempSync(path.join(root, ".local-image-compress-smoke-backup-storage-"));
+  assert(process.listeners("exit").includes(cleanupSmokeBackupStorageTemp), "Smoke backup fixture lacks process-exit cleanup");
+  plugin.cache.cacheBackupsDir = `${path.basename(smokeBackupStorageTemp)}/cache`;
   assert(plugin.app.setting.openTabByIdCalls === 0, "Plugin force-opened its settings tab during onload");
   assert(plugin.isInitialized === true, "Plugin did not finish initialization before startup image indexing");
   assert(plugin.commands.length === 4 && plugin.settingTabs.length === 1, "Plugin did not register commands/settings before startup image indexing completed");
@@ -2006,13 +1376,13 @@ try {
   try {
     plugin.app.vault.adapter.basePath = "C:\\Users\\Tiny\\Vault";
     plugin.app.vault.adapter.path.absolute = "C:\\Users\\Tiny\\Vault";
-    assert(plugin.isAbsoluteFilesystemPath("\\\\server\\share\\Vault\\Images\\unc.png"), "UNC filesystem paths are not recognized as absolute");
-    assert(plugin.isAbsoluteFilesystemPath("\\\\?\\C:\\Users\\Tiny\\Vault\\Images\\long.png"), "Windows long-path drive prefix is not recognized as absolute");
-    assert(plugin.cache.normalizeVaultPath("\\\\?\\C:\\Users\\Tiny\\Vault\\Images\\long.png") === "Images/long.png", "Windows long-path drive prefix was not stripped from cache paths");
+    assert(plugin.cache.normalizeVaultPath("\\\\?\\C:\\Users\\Tiny\\Vault\\Images\\long.png") === "", "Shared cache path normalization accepted a native Windows path");
+    assert(plugin.getPlatformPorts().fs.toVaultRelativePath("\\\\?\\C:\\Users\\Tiny\\Vault\\Images\\long.png") === "Images/long.png", "Explicit desktop path ingress did not strip the Windows long-path drive prefix");
     plugin.app.vault.adapter.basePath = "\\\\server\\share\\Vault";
     plugin.app.vault.adapter.path.absolute = "\\\\server\\share\\Vault";
-    assert(plugin.cache.normalizeVaultPath("\\\\?\\UNC\\server\\share\\Vault\\Images\\unc.png") === "Images/unc.png", "Windows long-path UNC prefix was not stripped from cache paths");
-    assert(!plugin.cache.isAbsolutePath("Images/relative.png"), "Relative vault paths were misclassified as absolute");
+    assert(plugin.cache.normalizeVaultPath("\\\\?\\UNC\\server\\share\\Vault\\Images\\unc.png") === "", "Shared cache path normalization accepted a native UNC path");
+    assert(plugin.getPlatformPorts().fs.toVaultRelativePath("\\\\?\\UNC\\server\\share\\Vault\\Images\\unc.png") === "Images/unc.png", "Explicit desktop path ingress did not strip the Windows long-path UNC prefix");
+    assert(plugin.cache.normalizeVaultPath("Images/relative.png") === "Images/relative.png", "Relative vault path normalization changed its path domain");
   } finally {
     plugin.app.vault.adapter.basePath = originalBasePathForPathSmoke;
     plugin.app.vault.adapter.path.absolute = originalAbsolutePathForPathSmoke;
@@ -2021,9 +1391,10 @@ try {
   const originalGetBasePathForPolicySmoke = plugin.app.vault.adapter.getBasePath;
   try {
     plugin.app.vault.adapter.getBasePath = undefined;
+    assert(plugin.cache.normalizeVaultPath("C:\\Users\\Tiny\\Vault\\Images\\missing-base.png") === "", "Shared cache normalization accepted a native path without an explicit ingress conversion");
     let missingBasePathRejected = false;
     try {
-      plugin.cache.getVaultBasePath();
+      plugin.getPlatformPorts().fs.toVaultRelativePath("C:\\Users\\Tiny\\Vault\\Images\\missing-base.png");
     } catch (error) {
       missingBasePathRejected = String(error?.message || error).includes("refusing filesystem access outside the vault");
     }
@@ -2033,6 +1404,18 @@ try {
   }
 
   const outsideCachePath = path.resolve(root, "..", "outside-cache-output.png");
+  for (const invalidPortPath of [path.join(root, "Images", "absolute-inside-vault.png"), outsideCachePath, "../outside-cache-output.png"]) {
+    await assert.rejects(
+      () => plugin.getPlatformPorts().fs.readText(invalidPortPath),
+      /requires a vault-relative path/,
+      `Desktop FsPort accepted a non-vault-relative path: ${invalidPortPath}`
+    );
+    await assert.rejects(
+      () => plugin.getPlatformPorts().fs.exists(invalidPortPath),
+      /requires a vault-relative path/,
+      `Desktop FsPort.exists hid a non-vault-relative path: ${invalidPortPath}`
+    );
+  }
   assert(plugin.cache.normalizeVaultPath(outsideCachePath) === "", "Outside-vault absolute cache path was normalized into the vault");
   assert(plugin.cache.normalizeVaultPath("../outside-cache-output.png") === "", "Traversal cache path was accepted");
   const originalStatForOutsideCache = fs.promises.stat;
@@ -2048,8 +1431,174 @@ try {
   }
   assert(outsideCacheStatCalls === 0, "Outside-vault cache metadata path reached fs.stat");
 
+  const desktopReplacementRecoveryTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-desktop-replacement-recovery-"));
+  try {
+    plugin.app.vault.adapter.basePath = desktopReplacementRecoveryTemp;
+    plugin.app.vault.adapter.path.absolute = desktopReplacementRecoveryTemp;
+    const recoveryDirectory = path.join(desktopReplacementRecoveryTemp, ".local-image-compress", "recovery");
+    const ownerId = "d".repeat(32);
+    const oldBytes = Buffer.from("complete-old-payload");
+    const newBytes = Buffer.from("complete-new-payload");
+    const advancedTargetBytes = Buffer.from("newer-third-party-payload");
+    const oldSha256 = crypto.createHash("sha256").update(oldBytes).digest("hex");
+    const newSha256 = crypto.createHash("sha256").update(newBytes).digest("hex");
+    const toDesktopReplacementRelative = (filePath) => path.relative(desktopReplacementRecoveryTemp, filePath).replaceAll("\\", "/");
+    const writeDesktopReplacementFixture = (name, transactionId, phase, options = {}) => {
+      const targetPath = path.join(desktopReplacementRecoveryTemp, "Replacement", `${name}.bin`);
+      const stagedPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.tinylocal-1700000000000-${transactionId}.tmp`);
+      const rollbackPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.tinylocal-rollback-1700000000000-${transactionId}.tmp`);
+      const rollbackBytes = options.rollbackBytes || oldBytes;
+      const rollbackReferenced = options.rollbackReferenced !== false;
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+      if (phase === "prepared") {
+        fs.writeFileSync(targetPath, oldBytes);
+        fs.writeFileSync(stagedPath, newBytes);
+      } else if (phase === "detached") {
+        if (options.stagedPresent !== false) {
+          fs.writeFileSync(stagedPath, newBytes);
+        }
+        if (rollbackReferenced) {
+          fs.writeFileSync(rollbackPath, rollbackBytes);
+        }
+      } else {
+        fs.writeFileSync(targetPath, newBytes);
+        if (rollbackReferenced) {
+          fs.writeFileSync(rollbackPath, rollbackBytes);
+        }
+      }
+      const payload = {
+        version: 1,
+        ownerId,
+        transactionId,
+        stagedPath: toDesktopReplacementRelative(stagedPath),
+        targetPath: toDesktopReplacementRelative(targetPath),
+        rollbackPath: rollbackReferenced ? toDesktopReplacementRelative(rollbackPath) : null,
+        stagedSha256: newSha256,
+        expectedTargetSha256: options.expectedTargetAbsent === true ? null : oldSha256,
+        rollbackSha256: phase === "prepared" || !rollbackReferenced ? null : crypto.createHash("sha256").update(rollbackBytes).digest("hex"),
+        phase
+      };
+      const journal = {
+        ...payload,
+        checksum: crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex")
+      };
+      fs.mkdirSync(recoveryDirectory, { recursive: true });
+      const journalPath = path.join(recoveryDirectory, `desktop-replacement-journal-v1-${ownerId}-${transactionId}.json`);
+      fs.writeFileSync(journalPath, JSON.stringify(journal));
+      return { targetPath, stagedPath, rollbackPath, journalPath };
+    };
+    const preparedFixture = writeDesktopReplacementFixture("prepared", "1".repeat(32), "prepared");
+    const detachedFixture = writeDesktopReplacementFixture("detached", "2".repeat(32), "detached");
+    const installedFixture = writeDesktopReplacementFixture("installed", "3".repeat(32), "installed");
+    const capturedConcurrentBytes = Buffer.from("captured-concurrent-payload");
+    const capturedConcurrentFixture = writeDesktopReplacementFixture("captured-concurrent", "4".repeat(32), "detached", {
+      rollbackBytes: capturedConcurrentBytes,
+      stagedPresent: false
+    });
+    const advancedTargetFixture = writeDesktopReplacementFixture("advanced-target", "5".repeat(32), "detached", {
+      stagedPresent: false
+    });
+    fs.writeFileSync(advancedTargetFixture.targetPath, advancedTargetBytes);
+    const restoredExpectedFixture = writeDesktopReplacementFixture("restored-expected", "6".repeat(32), "detached", {
+      stagedPresent: false
+    });
+    fs.writeFileSync(restoredExpectedFixture.targetPath, oldBytes);
+    const concurrentCreateBytes = Buffer.from("concurrent-create-winner");
+    const concurrentCreateFixture = writeDesktopReplacementFixture("concurrent-create", "7".repeat(32), "detached", {
+      expectedTargetAbsent: true,
+      rollbackReferenced: false
+    });
+    fs.writeFileSync(concurrentCreateFixture.targetPath, concurrentCreateBytes);
+    const preparedAfterDetachFixture = writeDesktopReplacementFixture("prepared-after-detach", "b".repeat(32), "prepared");
+    fs.renameSync(preparedAfterDetachFixture.targetPath, preparedAfterDetachFixture.rollbackPath);
+    const foreignStagedBytes = Buffer.from("foreign-staged-payload");
+    const foreignRollbackBytes = Buffer.from("foreign-rollback-payload");
+    const installedForeignSidesFixture = writeDesktopReplacementFixture("installed-foreign-sides", "c".repeat(32), "installed");
+    fs.writeFileSync(installedForeignSidesFixture.stagedPath, foreignStagedBytes);
+    fs.writeFileSync(installedForeignSidesFixture.rollbackPath, foreignRollbackBytes);
+    const desktopRecoveryFs = plugin.getPlatformPorts().fs;
+    const originalDesktopUnlinkForStaleJournal = fs.promises.unlink;
+    let staleJournalCleanupFailures = 0;
+    fs.promises.unlink = async (filePath) => {
+      if (path.basename(String(filePath)).startsWith(`${path.basename(advancedTargetFixture.journalPath)}.delete-`)) {
+        staleJournalCleanupFailures += 1;
+        throw new Error("Injected stale desktop journal cleanup failure");
+      }
+      await originalDesktopUnlinkForStaleJournal(filePath);
+    };
+    try {
+      await desktopRecoveryFs.recoverInterruptedReplacement();
+    } finally {
+      fs.promises.unlink = originalDesktopUnlinkForStaleJournal;
+    }
+    assert(fs.readFileSync(preparedFixture.targetPath).equals(oldBytes), "Prepared desktop replacement recovery did not preserve the complete old payload");
+    assert(fs.readFileSync(detachedFixture.targetPath).equals(oldBytes), "Detached desktop replacement recovery did not restore the complete old payload");
+    assert(fs.readFileSync(installedFixture.targetPath).equals(newBytes), "Installed desktop replacement recovery did not preserve the complete new payload");
+    assert(fs.readFileSync(capturedConcurrentFixture.targetPath).equals(capturedConcurrentBytes), "Desktop recovery did not restore the exact concurrently captured rollback when the target and staged file were absent");
+    assert(!fs.existsSync(preparedFixture.stagedPath) && !fs.existsSync(preparedFixture.journalPath), "Prepared desktop recovery retained consumed transaction metadata");
+    for (const fixture of [detachedFixture, installedFixture]) {
+      assert(!fs.existsSync(fixture.stagedPath) && !fs.existsSync(fixture.journalPath), "Desktop replacement recovery retained consumed staged or journal metadata");
+      assert(fs.existsSync(fixture.rollbackPath) && fs.readFileSync(fixture.rollbackPath).equals(oldBytes), "Desktop replacement recovery did not retain its exact old-revision safety copy");
+    }
+    assert(!fs.existsSync(capturedConcurrentFixture.stagedPath) && !fs.existsSync(capturedConcurrentFixture.journalPath), "Desktop captured-concurrent recovery retained consumed staged or journal metadata");
+    assert(fs.existsSync(capturedConcurrentFixture.rollbackPath) && fs.readFileSync(capturedConcurrentFixture.rollbackPath).equals(capturedConcurrentBytes), "Desktop captured-concurrent recovery did not retain its exact rollback safety copy");
+    assert(fs.readFileSync(advancedTargetFixture.targetPath).equals(advancedTargetBytes), "Desktop stale-journal recovery overwrote the newer target");
+    assert(fs.existsSync(advancedTargetFixture.rollbackPath) && fs.readFileSync(advancedTargetFixture.rollbackPath).equals(oldBytes), "Desktop stale-journal recovery discarded the exact rollback safety copy");
+    assert(!fs.existsSync(advancedTargetFixture.journalPath), "Desktop stale journal remained in the active recovery namespace");
+    assert(fs.readFileSync(restoredExpectedFixture.targetPath).equals(oldBytes), "Desktop terminal recovery changed an already restored expected target");
+    assert(fs.existsSync(restoredExpectedFixture.rollbackPath) && fs.readFileSync(restoredExpectedFixture.rollbackPath).equals(oldBytes), "Desktop terminal recovery discarded the restored target's exact rollback safety copy");
+    assert(!fs.existsSync(restoredExpectedFixture.journalPath), "Desktop restored-target journal remained in the active recovery namespace");
+    assert(fs.readFileSync(concurrentCreateFixture.targetPath).equals(concurrentCreateBytes), "Desktop create-race recovery overwrote the concurrent target");
+    assert(fs.existsSync(concurrentCreateFixture.stagedPath) && fs.readFileSync(concurrentCreateFixture.stagedPath).equals(newBytes), "Desktop create-race recovery discarded its staged safety evidence");
+    assert(!fs.existsSync(concurrentCreateFixture.journalPath), "Desktop create-race journal remained in the active recovery namespace");
+    assert(fs.readFileSync(preparedAfterDetachFixture.targetPath).equals(oldBytes), "Prepared-after-detach desktop recovery left the canonical target missing");
+    assert(!fs.existsSync(preparedAfterDetachFixture.stagedPath) && !fs.existsSync(preparedAfterDetachFixture.journalPath), "Prepared-after-detach desktop recovery retained owned active metadata");
+    assert(fs.readFileSync(preparedAfterDetachFixture.rollbackPath).equals(oldBytes), "Prepared-after-detach desktop recovery lost the exact rollback safety copy");
+    assert(fs.readFileSync(installedForeignSidesFixture.targetPath).equals(newBytes), "Installed desktop terminal recovery changed the verified target");
+    assert(fs.readFileSync(installedForeignSidesFixture.stagedPath).equals(foreignStagedBytes) && fs.readFileSync(installedForeignSidesFixture.rollbackPath).equals(foreignRollbackBytes), "Installed desktop terminal recovery mutated foreign side artifacts");
+    assert(!fs.existsSync(installedForeignSidesFixture.journalPath), "Installed desktop terminal recovery retained its active journal");
+    const countDetachedStaleDesktopJournals = () => fs.readdirSync(recoveryDirectory)
+      .filter((fileName) => fileName.startsWith(`${path.basename(advancedTargetFixture.journalPath)}.delete-`)).length;
+    assert(staleJournalCleanupFailures === 1 && countDetachedStaleDesktopJournals() === 1, "Desktop stale-journal cleanup failure did not retain exactly one detached terminal journal");
+    await desktopRecoveryFs.recoverInterruptedReplacement();
+    await desktopRecoveryFs.recoverInterruptedReplacement();
+    assert(countDetachedStaleDesktopJournals() === 1, "Repeated desktop recovery amplified a detached stale journal");
+    assert(fs.readFileSync(installedForeignSidesFixture.stagedPath).equals(foreignStagedBytes) && fs.readFileSync(installedForeignSidesFixture.rollbackPath).equals(foreignRollbackBytes), "Repeated desktop recovery mutated foreign side artifacts");
+
+    const replaceRecoveredDesktopTarget = async (label, fixture, currentBytes, nextBytes, transactionId, existingStagePath = null) => {
+      const stagedPath = existingStagePath || path.join(
+        path.dirname(fixture.targetPath),
+        `.${path.basename(fixture.targetPath)}.tinylocal-1800000000000-${transactionId}.tmp`
+      );
+      if (!fs.existsSync(stagedPath)) {
+        fs.writeFileSync(stagedPath, nextBytes);
+      }
+      await desktopRecoveryFs.replaceFile(
+        toDesktopReplacementRelative(stagedPath),
+        toDesktopReplacementRelative(fixture.targetPath),
+        {
+          expectedTargetSha256: crypto.createHash("sha256").update(currentBytes).digest("hex"),
+          expectedStagedSha256: crypto.createHash("sha256").update(nextBytes).digest("hex")
+        }
+      );
+      assert(fs.readFileSync(fixture.targetPath).equals(nextBytes), `${label} still blocked a later desktop replacement`);
+    };
+    const replacementAfterStaleJournalBytes = Buffer.from("replacement-after-stale-journal");
+    await replaceRecoveredDesktopTarget("Stale third-party target", advancedTargetFixture, advancedTargetBytes, replacementAfterStaleJournalBytes, "8".repeat(32));
+    await replaceRecoveredDesktopTarget("Restored expected target", restoredExpectedFixture, oldBytes, Buffer.from("replacement-after-restored-target"), "9".repeat(32));
+    await replaceRecoveredDesktopTarget("Concurrent create winner", concurrentCreateFixture, concurrentCreateBytes, newBytes, "a".repeat(32), concurrentCreateFixture.stagedPath);
+    await replaceRecoveredDesktopTarget("Prepared-after-detach target", preparedAfterDetachFixture, oldBytes, Buffer.from("after-prepared-detach"), "d".repeat(32));
+    await replaceRecoveredDesktopTarget("Installed target with foreign sides", installedForeignSidesFixture, newBytes, Buffer.from("after-installed-foreign-sides"), "e".repeat(32));
+    assert(fs.existsSync(advancedTargetFixture.rollbackPath) && fs.readFileSync(advancedTargetFixture.rollbackPath).equals(oldBytes), "Later desktop replacement removed the retained old safety copy");
+    assert(fs.existsSync(restoredExpectedFixture.rollbackPath) && fs.readFileSync(restoredExpectedFixture.rollbackPath).equals(oldBytes), "Later desktop replacement removed the restored target's retained safety copy");
+    assert(fs.readFileSync(installedForeignSidesFixture.stagedPath).equals(foreignStagedBytes) && fs.readFileSync(installedForeignSidesFixture.rollbackPath).equals(foreignRollbackBytes), "Later desktop replacement removed foreign side artifacts retained by terminal recovery");
+  } finally {
+    plugin.app.vault.adapter.basePath = originalBasePathForPathSmoke;
+    plugin.app.vault.adapter.path.absolute = originalAbsolutePathForPathSmoke;
+    fs.rmSync(desktopReplacementRecoveryTemp, { recursive: true, force: true });
+  }
+
   const legacyMigrationTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-legacy-migration-"));
-  const originalFsRenameForMigration = fs.promises.rename;
   const originalConsoleDebugForMigration = console.debug;
   try {
     plugin.app.vault.adapter.basePath = legacyMigrationTemp;
@@ -2065,12 +1614,6 @@ try {
     fs.writeFileSync(path.join(oldPluginDir, "cache-backups", "nested", "backup.json"), "{}");
     fs.writeFileSync(path.join(newPluginDir, "original-files-backups", "backup-current", "image.jpg"), "image");
     fs.writeFileSync(path.join(cacheBackupsDir, "existing.json"), "{}");
-    fs.promises.rename = async (src, dest) => {
-      if (String(src).includes("tiny-local")) {
-        throw new Error("simulated cross-device rename");
-      }
-      return await originalFsRenameForMigration(src, dest);
-    };
     console.debug = () => {};
     await plugin.migrateLegacyPluginData();
     assert(fs.existsSync(path.join(newPluginDir, "tinyLocal-cache.json")), "Legacy migration copy fallback did not create cache file in new plugin dir");
@@ -2078,26 +1621,216 @@ try {
     assert(fs.existsSync(path.join(cacheBackupsDir, "existing.json")), "Backup migration removed an existing destination file while merging");
     assert(fs.existsSync(path.join(originalFilesBackupsDir, "backup-current", "image.jpg")), "Current plugin image backups were not moved to vault-level storage");
     assert(!fs.existsSync(path.join(oldPluginDir, "tinyLocal-cache.json")), "Legacy migration copy fallback left duplicate cache file in old plugin dir");
-    assert(!fs.existsSync(path.join(oldPluginDir, "cache-backups")), "Legacy migration copy fallback left duplicate backup dir in old plugin dir");
-    assert(!fs.existsSync(path.join(newPluginDir, "original-files-backups")), "Backup migration left the current plugin backup directory behind");
+    const findMigrationQuarantineDirectories = (directory) => {
+      if (!fs.existsSync(directory)) return [];
+      const found = [];
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const entryPath = path.join(directory, entry.name);
+        if (!entry.isDirectory()) continue;
+        if (/^\.tinylocal-quarantine-\d+-[a-f0-9]{32}\.tmp$/i.test(entry.name)) {
+          found.push(entryPath);
+        } else {
+          found.push(...findMigrationQuarantineDirectories(entryPath));
+        }
+      }
+      return found;
+    };
+    const retainedMigrationQuarantines = [
+      ...findMigrationQuarantineDirectories(oldPluginDir),
+      ...findMigrationQuarantineDirectories(path.join(newPluginDir, "original-files-backups"))
+    ];
+    assert(retainedMigrationQuarantines.length >= 3, "Migration removed its transaction-owned safety copies");
+    const migrationErrorsOnRetry = [];
+    const originalConsoleErrorForMigrationRetry = console.error;
+    try {
+      console.error = (...args) => {
+        if (String(args[1] || "").includes("Migration item error")) migrationErrorsOnRetry.push(args);
+      };
+      await plugin.migrateLegacyPluginData();
+    } finally {
+      console.error = originalConsoleErrorForMigrationRetry;
+    }
+    assert(migrationErrorsOnRetry.length === 0, "A repeated migration treated its retained recovery tree as user data or a partial failure");
+    assert(
+      findMigrationQuarantineDirectories(cacheBackupsDir).length === 0
+        && findMigrationQuarantineDirectories(originalFilesBackupsDir).length === 0,
+      "A repeated migration copied its own retained quarantine into destination storage"
+    );
+
+    const desktopMigrationSource = path.join(legacyMigrationTemp, "migration-race-source.bin");
+    const desktopMigrationDest = path.join(legacyMigrationTemp, "migration-race-dest.bin");
+    const desktopMigrationSourceRelative = "migration-race-source.bin";
+    const desktopMigrationDestRelative = "migration-race-dest.bin";
+    fs.writeFileSync(desktopMigrationSource, "desktop-same");
+    fs.writeFileSync(desktopMigrationDest, "desktop-same");
+    const desktopFsPort = plugin.getPlatformPorts().fs;
+    const originalDesktopMoveFileToUniqueSibling = desktopFsPort.moveFileToUniqueSibling;
+    let desktopMigrationQuarantine = null;
+    desktopFsPort.moveFileToUniqueSibling = async (sourcePath, options) => {
+      desktopMigrationQuarantine = await originalDesktopMoveFileToUniqueSibling.call(desktopFsPort, sourcePath, options);
+      if (sourcePath === desktopMigrationSourceRelative) {
+        fs.writeFileSync(desktopMigrationSource, "desktop-new-sync-version");
+      }
+      return desktopMigrationQuarantine;
+    };
+    try {
+      await plugin.migrationRunner.mergeMigrationItem(desktopMigrationSourceRelative, desktopMigrationDestRelative);
+    } finally {
+      desktopFsPort.moveFileToUniqueSibling = originalDesktopMoveFileToUniqueSibling;
+    }
+    assert(fs.readFileSync(desktopMigrationSource, "utf8") === "desktop-new-sync-version", "Desktop migration deleted a source version written after quarantine");
+    const desktopMigrationQuarantineAbsolute = desktopMigrationQuarantine && path.join(legacyMigrationTemp, ...desktopMigrationQuarantine.split("/"));
+    assert(desktopMigrationQuarantineAbsolute && fs.readFileSync(desktopMigrationQuarantineAbsolute, "utf8") === "desktop-same", "Desktop migration did not retain the isolated old source revision");
+    const desktopMigrationTransactionId = path.basename(path.dirname(desktopMigrationQuarantineAbsolute)).match(/[a-f0-9]{32}(?=\.tmp$)/i)?.[0];
+    assert(desktopMigrationTransactionId && fs.existsSync(path.join(legacyMigrationTemp, ".local-image-compress", "recovery", `migration-quarantine-v1-${desktopMigrationTransactionId}.json`)), "Desktop migration did not retain the journal owning its safety copy");
+
+    const migrationRecoveryDir = path.join(legacyMigrationTemp, ".local-image-compress", "recovery");
+    const writeMigrationRecoveryJournal = (transactionId, sourcePath, destinationPath, quarantinePath, bytes) => {
+      const payload = {
+        version: 1,
+        transactionId,
+        sourcePath,
+        destinationPath,
+        quarantinePath,
+        sourceSha256: crypto.createHash("sha256").update(bytes).digest("hex")
+      };
+      const journal = {
+        ...payload,
+        checksum: crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex")
+      };
+      fs.mkdirSync(migrationRecoveryDir, { recursive: true });
+      const journalPath = path.join(migrationRecoveryDir, `migration-quarantine-v1-${transactionId}.json`);
+      fs.writeFileSync(journalPath, JSON.stringify(journal));
+      return journalPath;
+    };
+
+    const beforeRenameBytes = Buffer.from("journal-before-rename");
+    const beforeRenameSource = path.join(legacyMigrationTemp, "Migration", "before-rename.bin");
+    const beforeRenameDest = path.join(legacyMigrationTemp, "Migration", "before-rename-dest.bin");
+    fs.mkdirSync(path.dirname(beforeRenameSource), { recursive: true });
+    fs.writeFileSync(beforeRenameSource, beforeRenameBytes);
+    const beforeRenameJournal = writeMigrationRecoveryJournal(
+      "11111111111111111111111111111111",
+      "Migration/before-rename.bin",
+      "Migration/before-rename-dest.bin",
+      "Migration/.tinylocal-quarantine-1700000000000-11111111111111111111111111111111.tmp/before-rename.bin",
+      beforeRenameBytes
+    );
+    await plugin.migrationRunner.recoverMigrationQuarantineJournals();
+    assert(fs.readFileSync(beforeRenameSource).equals(beforeRenameBytes) && !fs.existsSync(beforeRenameJournal), "Pre-rename migration journal did not resolve without touching its source");
+
+    const landedBytes = Buffer.from("journal-after-rename");
+    const landedSource = path.join(legacyMigrationTemp, "Migration", "after-rename.bin");
+    const landedDest = path.join(legacyMigrationTemp, "Migration", "after-rename-dest.bin");
+    const landedQuarantine = path.join(legacyMigrationTemp, "Migration", ".tinylocal-quarantine-1700000000001-22222222222222222222222222222222.tmp", "after-rename.bin");
+    fs.mkdirSync(path.dirname(landedQuarantine), { recursive: true });
+    fs.writeFileSync(landedQuarantine, landedBytes);
+    fs.writeFileSync(landedDest, landedBytes);
+    const landedJournal = writeMigrationRecoveryJournal(
+      "22222222222222222222222222222222",
+      "Migration/after-rename.bin",
+      "Migration/after-rename-dest.bin",
+      "Migration/.tinylocal-quarantine-1700000000001-22222222222222222222222222222222.tmp/after-rename.bin",
+      landedBytes
+    );
+    await plugin.migrationRunner.recoverMigrationQuarantineJournals();
+    assert(!fs.existsSync(landedSource) && fs.readFileSync(landedQuarantine).equals(landedBytes) && fs.existsSync(landedJournal), "Landed migration recovery discarded its transaction-owned safety copy or journal");
+
+    const restoreBytes = Buffer.from("journal-restore-source");
+    const restoreSource = path.join(legacyMigrationTemp, "Migration", "restore-source.bin");
+    const restoreDest = path.join(legacyMigrationTemp, "Migration", "restore-dest.bin");
+    const restoreQuarantine = path.join(legacyMigrationTemp, "Migration", ".tinylocal-quarantine-1700000000002-33333333333333333333333333333333.tmp", "restore-source.bin");
+    fs.mkdirSync(path.dirname(restoreQuarantine), { recursive: true });
+    fs.writeFileSync(restoreQuarantine, restoreBytes);
+    fs.writeFileSync(restoreDest, "different-destination");
+    const restoreJournal = writeMigrationRecoveryJournal(
+      "33333333333333333333333333333333",
+      "Migration/restore-source.bin",
+      "Migration/restore-dest.bin",
+      "Migration/.tinylocal-quarantine-1700000000002-33333333333333333333333333333333.tmp/restore-source.bin",
+      restoreBytes
+    );
+    await plugin.migrationRunner.recoverMigrationQuarantineJournals();
+    assert(fs.readFileSync(restoreSource).equals(restoreBytes) && fs.readFileSync(restoreQuarantine).equals(restoreBytes) && fs.existsSync(restoreJournal), "Mismatched destination recovery did not restore the canonical source while retaining its verified fallback and journal");
+    fs.unlinkSync(restoreQuarantine);
+    fs.rmdirSync(path.dirname(restoreQuarantine));
+    fs.unlinkSync(restoreJournal);
+
+    const ambiguousBytes = Buffer.from("journal-ambiguous-old");
+    const ambiguousSource = path.join(legacyMigrationTemp, "Migration", "ambiguous-source.bin");
+    const ambiguousDest = path.join(legacyMigrationTemp, "Migration", "ambiguous-dest.bin");
+    const ambiguousQuarantine = path.join(legacyMigrationTemp, "Migration", ".tinylocal-quarantine-1700000000003-44444444444444444444444444444444.tmp", "ambiguous-source.bin");
+    fs.mkdirSync(path.dirname(ambiguousQuarantine), { recursive: true });
+    fs.writeFileSync(ambiguousQuarantine, ambiguousBytes);
+    fs.writeFileSync(ambiguousSource, "new-sync-version");
+    fs.writeFileSync(ambiguousDest, "different-destination");
+    const ambiguousJournal = writeMigrationRecoveryJournal(
+      "44444444444444444444444444444444",
+      "Migration/ambiguous-source.bin",
+      "Migration/ambiguous-dest.bin",
+      "Migration/.tinylocal-quarantine-1700000000003-44444444444444444444444444444444.tmp/ambiguous-source.bin",
+      ambiguousBytes
+    );
+    await plugin.migrationRunner.recoverMigrationQuarantineJournals();
+    assert(fs.existsSync(ambiguousQuarantine) && fs.existsSync(ambiguousJournal) && fs.readFileSync(ambiguousSource, "utf8") === "new-sync-version", "Ambiguous migration recovery did not preserve both source versions and its journal");
+    fs.unlinkSync(ambiguousQuarantine);
+    fs.rmdirSync(path.dirname(ambiguousQuarantine));
+    fs.unlinkSync(ambiguousJournal);
+
+    const invalidJournalPath = path.join(migrationRecoveryDir, "migration-quarantine-v1-55555555555555555555555555555555.json");
+    fs.writeFileSync(invalidJournalPath, JSON.stringify({ version: 1, checksum: "0".repeat(64) }));
+    await plugin.migrationRunner.recoverMigrationQuarantineJournals();
+    assert(fs.existsSync(invalidJournalPath), "Invalid migration recovery journal was executed or deleted");
+    fs.unlinkSync(invalidJournalPath);
+
+    const craftedVictimBytes = Buffer.from("crafted-journal-victim");
+    const craftedVictimPath = path.join(legacyMigrationTemp, "Migration", "crafted-victim.bin");
+    fs.writeFileSync(craftedVictimPath, craftedVictimBytes);
+    const craftedJournalPath = writeMigrationRecoveryJournal(
+      "66666666666666666666666666666666",
+      "Migration/crafted-source.bin",
+      "Migration/crafted-destination.bin",
+      "Migration/crafted-victim.bin",
+      craftedVictimBytes
+    );
+    await plugin.migrationRunner.recoverMigrationQuarantineJournals();
+    assert(fs.readFileSync(craftedVictimPath).equals(craftedVictimBytes), "Correctly checksummed crafted migration journal mutated a non-quarantine victim");
+    assert(fs.existsSync(craftedJournalPath), "Correctly checksummed crafted migration journal was executed or deleted");
+    fs.unlinkSync(craftedJournalPath);
   } finally {
-    fs.promises.rename = originalFsRenameForMigration;
     console.debug = originalConsoleDebugForMigration;
     plugin.app.vault.adapter.basePath = originalBasePathForPathSmoke;
     plugin.app.vault.adapter.path.absolute = originalAbsolutePathForPathSmoke;
     fs.rmSync(legacyMigrationTemp, { recursive: true, force: true });
   }
 
+  // ponytail: one result object keeps the approved full-audit reproductions deterministic.
+  const fullAuditBugReproducerObserved = {
+    legacyMovedCacheInvalidated: false,
+    regionalExternalLanguageWins: false,
+    externalLanguageReloadedOnSwitch: false
+  };
   const i18nCacheTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-i18n-cache-"));
+  const originalBugReproducerLanguage = mockObsidianLanguage;
   try {
     const vaultA = path.join(i18nCacheTemp, "vault-a");
     const vaultB = path.join(i18nCacheTemp, "vault-b");
+    const regionalVault = path.join(i18nCacheTemp, "vault-regional");
+    const switchVault = path.join(i18nCacheTemp, "vault-switch");
     const langA = path.join(vaultA, ".obsidian", "plugins", "local-image-compress", "lang");
     const langB = path.join(vaultB, ".obsidian", "plugins", "local-image-compress", "lang");
+    const regionalLang = path.join(regionalVault, ".obsidian", "plugins", "local-image-compress", "lang");
+    const switchLang = path.join(switchVault, ".obsidian", "plugins", "local-image-compress", "lang");
     fs.mkdirSync(langA, { recursive: true });
     fs.mkdirSync(langB, { recursive: true });
+    fs.mkdirSync(regionalLang, { recursive: true });
+    fs.mkdirSync(switchLang, { recursive: true });
     fs.writeFileSync(path.join(langA, "en.json"), JSON.stringify({ "settings.title": "Vault A Settings" }));
     fs.writeFileSync(path.join(langB, "en.json"), JSON.stringify({ "settings.title": "Vault B Settings" }));
+    fs.writeFileSync(path.join(regionalLang, "pt.json"), JSON.stringify({ "settings.title": "Generic Portuguese" }));
+    fs.writeFileSync(path.join(regionalLang, "pt-br.json"), JSON.stringify({ "settings.title": "Brazilian Portuguese" }));
+    fs.writeFileSync(path.join(switchLang, "en.json"), JSON.stringify({ "settings.title": "External English" }));
+    fs.writeFileSync(path.join(switchLang, "de.json"), JSON.stringify({ "settings.title": "External German" }));
     plugin.app.vault.adapter.basePath = vaultA;
     plugin.app.vault.adapter.path.absolute = vaultA;
     await plugin.preloadExternalLanguageFiles();
@@ -2106,7 +1839,24 @@ try {
     plugin.app.vault.adapter.path.absolute = vaultB;
     await plugin.preloadExternalLanguageFiles();
     assert(plugin.moveService.getMoveText("settings.title") === "Vault B Settings", "External i18n cache leaked across plugin directories");
+
+    mockObsidianLanguage = "pt-BR";
+    plugin.app.vault.adapter.basePath = regionalVault;
+    plugin.app.vault.adapter.path.absolute = regionalVault;
+    await plugin.preloadExternalLanguageFiles();
+    fullAuditBugReproducerObserved.regionalExternalLanguageWins =
+      plugin.moveService.getMoveText("settings.title") === "Brazilian Portuguese";
+
+    mockObsidianLanguage = "en";
+    plugin.app.vault.adapter.basePath = switchVault;
+    plugin.app.vault.adapter.path.absolute = switchVault;
+    await plugin.preloadExternalLanguageFiles();
+    mockObsidianLanguage = "de";
+    await plugin.handleLocaleConfigChanged();
+    fullAuditBugReproducerObserved.externalLanguageReloadedOnSwitch =
+      plugin.moveService.getMoveText("settings.title") === "External German";
   } finally {
+    mockObsidianLanguage = originalBugReproducerLanguage;
     plugin.app.vault.adapter.basePath = originalBasePathForPathSmoke;
     plugin.app.vault.adapter.path.absolute = originalAbsolutePathForPathSmoke;
     fs.rmSync(i18nCacheTemp, { recursive: true, force: true });
@@ -2167,6 +1917,114 @@ try {
   } finally {
     plugin.statusBarController.showMenu = originalShowStatusMenuForClick;
   }
+  const LifecycleObsidianMock = require("obsidian");
+  const originalNoticeForGuardedMenu = LifecycleObsidianMock.Notice;
+  const originalConsoleErrorForGuardedMenu = console.error;
+  const guardedMenuNotices = [];
+  let guardedMenuUnhandledRejection = null;
+  const guardedMenuRejectionListener = (error) => {
+    guardedMenuUnhandledRejection = error;
+  };
+  try {
+    LifecycleObsidianMock.Notice = class {
+      constructor(message) {
+        guardedMenuNotices.push(String(message));
+      }
+    };
+    console.error = () => {};
+    process.on("unhandledRejection", guardedMenuRejectionListener);
+    plugin.statusBarController.showMenu = async () => {
+      throw new Error("simulated status menu statistics failure");
+    };
+    plugin.statusBarItem.setAttribute("aria-expanded", "true");
+    plugin.statusBarItem.dispatchEvent("click", { preventDefault() {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(guardedMenuUnhandledRejection === null, "Status/ribbon menu callback leaked a rejected promise");
+    assert(plugin.statusBarItem.attributes["aria-expanded"] === "false", "Failed status menu open left aria-expanded stuck");
+    assert(guardedMenuNotices.length === 1, "Failed status menu open did not show one actionable Notice");
+    let guardedMenuRetryCalls = 0;
+    plugin.statusBarController.showMenu = async () => {
+      guardedMenuRetryCalls += 1;
+    };
+    plugin.statusBarItem.dispatchEvent("click", { preventDefault() {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(guardedMenuRetryCalls === 1, "Status menu could not open after a guarded failure");
+  } finally {
+    process.removeListener("unhandledRejection", guardedMenuRejectionListener);
+    plugin.statusBarController.showMenu = originalShowStatusMenuForClick;
+    LifecycleObsidianMock.Notice = originalNoticeForGuardedMenu;
+    console.error = originalConsoleErrorForGuardedMenu;
+  }
+
+  const originalUpdateIndexForLifecycle = plugin.updateImageIndexForFile;
+  const originalRenameIndexForLifecycle = plugin.renameImageIndexFile;
+  const originalRenameCacheForLifecycle = plugin.cache.renameCacheEntries;
+  const originalCompactDeletedForLifecycle = plugin.cache.compactDeletedPath;
+  const originalScheduleIndexForLifecycle = plugin.scheduleImageIndexRefresh;
+  const originalScheduleProcessedForLifecycle = plugin.scheduleImageIndexProcessedRefresh;
+  const originalScheduleStatusForLifecycle = plugin.scheduleStatusBarUpdate;
+  const originalHandleNewFileForLifecycle = plugin.handleNewFile;
+  const originalLifecycleInitialized = plugin.isInitialized;
+  try {
+    const lifecycleFile = Object.assign(new LifecycleObsidianMock.TFile(), createMockFile("Images/lifecycle-fence.png", 100, 1));
+    let downstreamLifecycleCalls = 0;
+    plugin.isInitialized = true;
+    plugin.scheduleImageIndexRefresh = () => { downstreamLifecycleCalls += 1; };
+    plugin.scheduleImageIndexProcessedRefresh = () => { downstreamLifecycleCalls += 1; };
+    plugin.scheduleStatusBarUpdate = () => { downstreamLifecycleCalls += 1; };
+    plugin.renameImageIndexFile = async () => { downstreamLifecycleCalls += 1; };
+    plugin.handleNewFile = async () => { downstreamLifecycleCalls += 1; };
+
+    const runLifecycleBarrier = async (installBarrier, startHandler, label) => {
+      let releaseBarrier = null;
+      let markBarrierStarted = null;
+      const barrierStarted = new Promise((resolve) => { markBarrierStarted = resolve; });
+      installBarrier(async () => {
+        markBarrierStarted();
+        await new Promise((resolve) => { releaseBarrier = resolve; });
+      });
+      plugin.isUnloading = false;
+      downstreamLifecycleCalls = 0;
+      const handlerPromise = startHandler();
+      await barrierStarted;
+      plugin.isUnloading = true;
+      releaseBarrier();
+      await handlerPromise;
+      assert(downstreamLifecycleCalls === 0, `${label} handler scheduled or mutated downstream state after unload`);
+    };
+
+    await runLifecycleBarrier(
+      (barrier) => { plugin.updateImageIndexForFile = barrier; },
+      () => plugin.handleVaultCreate(lifecycleFile),
+      "create"
+    );
+    await runLifecycleBarrier(
+      (barrier) => { plugin.cache.renameCacheEntries = barrier; },
+      () => plugin.handleVaultRename(lifecycleFile, "Images/lifecycle-old.png"),
+      "rename"
+    );
+    await runLifecycleBarrier(
+      (barrier) => { plugin.cache.compactDeletedPath = barrier; },
+      () => plugin.handleVaultDelete(lifecycleFile),
+      "delete"
+    );
+    await runLifecycleBarrier(
+      (barrier) => { plugin.updateImageIndexForFile = barrier; },
+      () => plugin.handleVaultModify(lifecycleFile),
+      "modify"
+    );
+  } finally {
+    plugin.isUnloading = false;
+    plugin.isInitialized = originalLifecycleInitialized;
+    plugin.updateImageIndexForFile = originalUpdateIndexForLifecycle;
+    plugin.renameImageIndexFile = originalRenameIndexForLifecycle;
+    plugin.cache.renameCacheEntries = originalRenameCacheForLifecycle;
+    plugin.cache.compactDeletedPath = originalCompactDeletedForLifecycle;
+    plugin.scheduleImageIndexRefresh = originalScheduleIndexForLifecycle;
+    plugin.scheduleImageIndexProcessedRefresh = originalScheduleProcessedForLifecycle;
+    plugin.scheduleStatusBarUpdate = originalScheduleStatusForLifecycle;
+    plugin.handleNewFile = originalHandleNewFileForLifecycle;
+  }
   assert(plugin.cache && String(plugin.cache.cacheFile).includes("tinyLocal-cache.json"), "Plugin cache was not initialized");
 
   const ConcurrencyLimiterClass = plugin.compressionLimiter.constructor;
@@ -2216,6 +2074,91 @@ try {
   await withLimiterTimeout(blockingLimiterTask, "ConcurrencyLimiter blocking task did not settle");
   assert(await withLimiterTimeout(queuedLimiterTask, "ConcurrencyLimiter did not recover after a corrupted queued waiter") === "queued-ok", "ConcurrencyLimiter recovered waiter returned the wrong value");
   assert(corruptQueueLimiter.active === 0 && corruptQueueLimiter.queue.length === 0, "ConcurrencyLimiter kept stale state after corrupted waiter recovery");
+
+  const transferLimiter = new ConcurrencyLimiterClass(1);
+  const transferOrder = [];
+  let releaseTransferredPermit = null;
+  let bargingTask = null;
+  let maxTransferActive = 0;
+  const heldPermitTask = transferLimiter.run(async () => {
+    transferOrder.push("A");
+    await new Promise((resolve) => {
+      releaseTransferredPermit = resolve;
+    });
+  });
+  const queuedPermitTask = transferLimiter.run(async () => {
+    maxTransferActive = Math.max(maxTransferActive, transferLimiter.active);
+    transferOrder.push("B");
+  });
+  assert(transferLimiter.queue.length === 1, "ConcurrencyLimiter transfer test did not queue B");
+  const resolveQueuedPermit = transferLimiter.queue[0];
+  transferLimiter.queue[0] = () => {
+    bargingTask = transferLimiter.run(async () => {
+      maxTransferActive = Math.max(maxTransferActive, transferLimiter.active);
+      transferOrder.push("C");
+    });
+    resolveQueuedPermit();
+  };
+  releaseTransferredPermit();
+  await Promise.all([heldPermitTask, queuedPermitTask]);
+  await bargingTask;
+  assert(transferOrder.join(",") === "A,B,C", `ConcurrencyLimiter allowed a newcomer to barge: ${transferOrder.join(",")}`);
+  assert(maxTransferActive === 1 && transferLimiter.active === 0, `ConcurrencyLimiter permit transfer exceeded limit: ${maxTransferActive}`);
+
+  const MemoryBudgetLimiterClass = plugin.compressor.memoryLimiter.constructor;
+  const memoryBudgetLimiter = new MemoryBudgetLimiterClass(10);
+  const admittedMemoryWeights = [];
+  let releaseLargeMemoryJob = null;
+  const largeMemoryJob = memoryBudgetLimiter.run(7, async () => {
+    admittedMemoryWeights.push(7);
+    await new Promise((resolve) => {
+      releaseLargeMemoryJob = resolve;
+    });
+  });
+  await Promise.resolve();
+  const queuedFourMemoryJob = memoryBudgetLimiter.run(4, async () => {
+    admittedMemoryWeights.push(4);
+  });
+  const queuedThreeMemoryJob = memoryBudgetLimiter.run(3, async () => {
+    admittedMemoryWeights.push(3);
+  });
+  await Promise.resolve();
+  assert(admittedMemoryWeights.join(",") === "7", "Memory budget admitted queued jobs beyond the aggregate weight limit");
+  releaseLargeMemoryJob();
+  await Promise.all([largeMemoryJob, queuedFourMemoryJob, queuedThreeMemoryJob]);
+  assert(admittedMemoryWeights.join(",") === "7,4,3", "Memory budget did not preserve FIFO admission while using remaining capacity");
+
+  const resizableMemoryLimiter = new MemoryBudgetLimiterClass(10);
+  const shrinkingReservation = await resizableMemoryLimiter.reserve(7);
+  let queuedReservationAdmitted = false;
+  const queuedReservationPromise = resizableMemoryLimiter.reserve(4).then((reservation) => {
+    queuedReservationAdmitted = true;
+    return reservation;
+  });
+  await Promise.resolve();
+  assert(queuedReservationAdmitted === false, "Memory reservation admitted queued weight before capacity was released");
+  await shrinkingReservation.resize(6);
+  const queuedReservation = await withLimiterTimeout(queuedReservationPromise, "Shrinking a memory reservation did not release queued capacity");
+  assert(queuedReservationAdmitted === true, "Shrinking a memory reservation did not admit the FIFO waiter");
+  queuedReservation.release();
+  shrinkingReservation.release();
+
+  const growingMemoryLimiter = new MemoryBudgetLimiterClass(10);
+  const growingReservation = await growingMemoryLimiter.reserve(4);
+  const competingReservation = await growingMemoryLimiter.reserve(6);
+  let growthSettled = false;
+  const growthPromise = growingReservation.resize(7).then(() => {
+    growthSettled = true;
+  });
+  await Promise.resolve();
+  assert(growthSettled === false, "Memory reservation growth bypassed the aggregate budget");
+  competingReservation.release();
+  await withLimiterTimeout(growthPromise, "Memory reservation growth did not resume after capacity was released");
+  growingReservation.release();
+
+  const clampedPixels = new Uint8ClampedArray([1, 2, 3, 4]);
+  const pixelView = plugin.compressor.toUint8Array(clampedPixels);
+  assert(pixelView.buffer === clampedPixels.buffer && pixelView.byteOffset === clampedPixels.byteOffset, "Compressor copied a clamped pixel view instead of sharing its buffer");
 
   const originalLoadDataForNormalize = plugin.loadData;
   const originalSettingsForNormalize = plugin.settings;
@@ -2330,6 +2273,47 @@ try {
     plugin.imageIndexConfigKey = originalImageIndexConfigKeyForSaveConfig;
   }
 
+  const SettingsQueuePluginClass = plugin.constructor;
+  const ReloadedSettingsQueuePluginClass = loadFreshPluginClass();
+  const settingsQueuePluginA = new SettingsQueuePluginClass();
+  const settingsQueuePluginB = new ReloadedSettingsQueuePluginClass();
+  settingsQueuePluginA.app = plugin.app;
+  settingsQueuePluginB.app = plugin.app;
+  settingsQueuePluginA.manifest = { ...plugin.manifest };
+  settingsQueuePluginB.manifest = { ...plugin.manifest };
+  const persistedSettingsOrder = [];
+  let releaseSettingsWriteA = null;
+  let settingsWriteAStarted = null;
+  const settingsWriteAStartedPromise = new Promise((resolve) => {
+    settingsWriteAStarted = resolve;
+  });
+  settingsQueuePluginA.saveData = async (snapshot) => {
+    persistedSettingsOrder.push(`start-${snapshot.marker}`);
+    settingsWriteAStarted();
+    await new Promise((resolve) => {
+      releaseSettingsWriteA = resolve;
+    });
+    persistedSettingsOrder.push(`finish-${snapshot.marker}`);
+  };
+  settingsQueuePluginB.saveData = async (snapshot) => {
+    persistedSettingsOrder.push(`start-${snapshot.marker}`);
+    persistedSettingsOrder.push(`finish-${snapshot.marker}`);
+  };
+  settingsQueuePluginA.claimSettingsPersistenceOwnership();
+  const settingsWriteA = settingsQueuePluginA.persistSettingsSnapshot({ marker: "A" });
+  await settingsWriteAStartedPromise;
+  settingsQueuePluginB.claimSettingsPersistenceOwnership();
+  const settingsWriteB = settingsQueuePluginB.persistSettingsSnapshot({ marker: "B" });
+  const rejectedLateSettingsWriteA = await settingsQueuePluginA.persistSettingsSnapshot({ marker: "A-late" });
+  assert(rejectedLateSettingsWriteA === false, "An old plugin module accepted a settings save after ownership moved to the re-evaluated reload module");
+  await Promise.resolve();
+  assert(!persistedSettingsOrder.includes("start-B"), "Reload settings write bypassed the accepted old-instance snapshot");
+  releaseSettingsWriteA();
+  assert(await settingsWriteA === true, "Accepted old-instance settings snapshot was not persisted");
+  assert(await settingsWriteB === true, "Reload settings snapshot was not persisted");
+  assert(persistedSettingsOrder.join(",") === "start-A,finish-A,start-B,finish-B", `Settings persistence queue completed out of logical order: ${persistedSettingsOrder.join(",")}`);
+  plugin.claimSettingsPersistenceOwnership();
+
   const originalGetActiveDocumentForFolderSelector = plugin.getActiveDocument;
   const originalSetWindowTimeoutForFolderSelector = plugin.setWindowTimeout;
   try {
@@ -2381,11 +2365,19 @@ try {
     plugin.settings.outputFolder = "Compressed";
     const colonRelativeOutput = plugin.savingsCalculator.getCompressedFilePath("Images/photo:edited.jpg");
     assert(
-      colonRelativeOutput === path.join(basePathOnlyTemp, "Compressed", "Images", "photo:edited.jpg"),
-      `Vault-relative path with colon was treated as absolute: ${colonRelativeOutput}`
+      colonRelativeOutput === "Compressed/Images/photo:edited.jpg",
+      `Shared savings path left the vault-relative domain: ${colonRelativeOutput}`
     );
-    assert(plugin.cache.getVaultBasePath() === basePathOnlyTemp, "Cache did not resolve getBasePath()-only adapter");
-    assert(plugin.moveService.getVaultBasePath() === basePathOnlyTemp, "MoveService did not resolve getBasePath()-only adapter");
+    for (const invalidSavingsPath of [
+      path.join(basePathOnlyTemp, "Images", "native-inside-vault.jpg"),
+      "/tmp/native-posix.jpg",
+      "\\\\server\\share\\native-unc.jpg"
+    ]) {
+      assert(plugin.savingsCalculator.getCompressedFilePath(invalidSavingsPath) === null, `Savings path reinterpreted a native path as vault-relative: ${invalidSavingsPath}`);
+      assert(await plugin.savingsCalculator.getCompressedFileSize(invalidSavingsPath) === null, `Savings stat reinterpreted a native path as vault-relative: ${invalidSavingsPath}`);
+    }
+    assert(plugin.getPlatformPorts().fs.resolvePath("Images") === path.join(basePathOnlyTemp, "Images"), "Plugin-owned desktop port did not resolve getBasePath()-only adapter");
+    assert(plugin.cache.ports === plugin.getPlatformPorts(), "Cache did not reuse the plugin-owned PlatformPorts instance");
     const originalPath = path.join(basePathOnlyTemp, "Images", "basepath-only.jpg");
     const compressedPath = path.join(basePathOnlyTemp, "Compressed", "Images", "basepath-only.jpg");
     fs.mkdirSync(path.dirname(originalPath), { recursive: true });
@@ -2395,6 +2387,11 @@ try {
     await setMockFiles(plugin, [
       Object.assign(new (require("obsidian").TFile)(), createMockFile("Images/basepath-only.jpg", 100, 1))
     ]);
+    const getBasePathOnlyCandidates = await plugin.moveService.getCompressedMoveCandidates();
+    assert(
+      getBasePathOnlyCandidates.some((candidate) => candidate.compressedPath === "Compressed/Images/basepath-only.jpg"),
+      `MoveService stored a native compressed path: ${getBasePathOnlyCandidates.map((candidate) => candidate.compressedPath).join(", ")}`
+    );
     const getBasePathOnlyMoveCount = await plugin.moveService.getCompressedFilesCount();
     assert(getBasePathOnlyMoveCount === 1, `MoveService getBasePath()-only count was wrong: ${getBasePathOnlyMoveCount}`);
   } finally {
@@ -2458,6 +2455,14 @@ try {
     plugin.settings.autoCompressNewFiles = false;
     plugin.isUnloading = false;
     plugin.cache.acceptingWrites = true;
+    plugin.pluginGuardService = new plugin.pluginGuardService.constructor(plugin);
+    plugin.compressor = new plugin.compressor.constructor(
+      plugin.settings,
+      plugin.app,
+      null,
+      plugin.getPlatformPorts().fs,
+      plugin.getPlatformPorts().hash
+    );
     plugin.newFileQueue.newFileCompressionTimers.clear();
   }
 
@@ -2728,6 +2733,10 @@ try {
   const originalCompressorCompressForInitFailure = plugin.compressor.compress;
   const originalHandleSkippedCompressionForInitFailure = plugin.handleSkippedCompression;
   const originalIsProcessedForInitFailure = plugin.cache.isFileAlreadyProcessed;
+  const originalVaultReadBinaryForInitFailure = plugin.app.vault.readBinary;
+  const originalFilesForInitFailure = plugin.app._files;
+  const originalSaveCacheForInitFailure = plugin.cache.saveCache;
+  const originalAddSkippedEntryForInitFailure = plugin.cache.addSkippedEntry;
   try {
     let fatalInitCalls = 0;
     let compressionCallsBeforeInitFailure = 0;
@@ -2774,39 +2783,61 @@ try {
       compressionCallsForTooLarge += 1;
       return await task();
     };
-    plugin.handleSkippedCompression = async () => {};
-    const tooLargeResult = await plugin.runCompressionBatch([
-      createMockFile("Images/init-too-large.png", plugin.compressor.maxInputBytes + 1, 3)
-    ]);
-    assert(compressionCallsForTooLarge === 1, "Too-large file did not exercise compressor preflight");
-    assert(ensureCallsForTooLarge === 0, "Too-large batch item initialized WASM before compressor preflight skipped it");
-    assert(tooLargeResult.skippedValidation === 1 && tooLargeResult.skippedErrors === 0, "Too-large batch item was not handled as validation skip");
+	    plugin.handleSkippedCompression = originalHandleSkippedCompressionForInitFailure;
+	    plugin.cache.saveCache = async () => true;
+	    plugin.cache.addSkippedEntry = async () => true;
+	    const tooLargeFile = Object.assign(new ObsidianMock.TFile(), createMockFile("Images/init-too-large.png", plugin.compressor.maxInputBytes + 1, 3));
+	    await setMockFiles(plugin, [tooLargeFile]);
+	    let tooLargeBookkeepingReads = 0;
+	    plugin.app.vault.readBinary = async () => {
+	      tooLargeBookkeepingReads += 1;
+	      throw new Error("too_large workflow must not read binary content");
+	    };
+	    const tooLargeResult = await plugin.runCompressionBatch([tooLargeFile]);
+	    assert(compressionCallsForTooLarge === 1, "Too-large file did not exercise compressor preflight");
+	    assert(ensureCallsForTooLarge === 0, "Too-large batch item initialized WASM before compressor preflight skipped it");
+	    assert(tooLargeResult.skippedValidation === 1 && tooLargeResult.skippedErrors === 0, "Too-large batch item was not handled as validation skip");
+	    plugin.cache.cacheData.entries = {};
+	    await plugin.compressFile(tooLargeFile);
+	    plugin.cache.cacheData.entries = {};
+	    await plugin.autoCompressNewFile(tooLargeFile);
+	    assert(compressionCallsForTooLarge === 3, `Too-large manual/auto/batch paths did not all reach compressor preflight: ${compressionCallsForTooLarge}`);
+	    assert(tooLargeBookkeepingReads === 0 && ensureCallsForTooLarge === 0, "too_large manual/auto/batch path read bytes or initialized WASM");
+	    plugin.cache.addSkippedEntry = async () => false;
+	    const failedTooLargeCommit = await plugin.runCompressionBatch([tooLargeFile]);
+	    assert(failedTooLargeCommit.skippedValidation === 0 && failedTooLargeCommit.skippedErrors === 1, "Failed too_large cache commit was still counted as a durable validation skip");
   } finally {
     plugin.compressor.ensureWasmReady = originalEnsureWasmReadyForBatch;
     plugin.runLimitedCompression = originalRunLimitedForInitFailure;
     plugin.compressor.compress = originalCompressorCompressForInitFailure;
-    plugin.handleSkippedCompression = originalHandleSkippedCompressionForInitFailure;
-    plugin.cache.isFileAlreadyProcessed = originalIsProcessedForInitFailure;
+	    plugin.handleSkippedCompression = originalHandleSkippedCompressionForInitFailure;
+	    plugin.cache.isFileAlreadyProcessed = originalIsProcessedForInitFailure;
+	    plugin.app.vault.readBinary = originalVaultReadBinaryForInitFailure;
+	    plugin.app._files = originalFilesForInitFailure;
+	    plugin.cache.saveCache = originalSaveCacheForInitFailure;
+	    plugin.cache.addSkippedEntry = originalAddSkippedEntryForInitFailure;
   }
 
   const originalRunLimitedForProgress = plugin.runLimitedCompression;
   const originalCompressorCompressForProgress = plugin.compressor.compress;
   const originalIsProcessedForProgress = plugin.cache.isFileAlreadyProcessed;
-  const originalAddToCacheForProgress = plugin.cache.addToCache;
+  const originalAddCompressionArtifactForProgress = plugin.cache.addCompressionArtifact;
   const originalUpdateImageIndexForProgress = plugin.updateImageIndexForFile;
   const originalStatusBarUpdateForProgress = plugin.statusBarController.update;
   const originalMaybeAutoMoveForProgress = plugin.maybeAutoMoveCompressed;
+  const originalCacheCreateBackupForProgress = plugin.cache.createBackup;
+  const originalUpdateSavingsForProgress = plugin.updateSavingsIndicatorInSettings;
   try {
     plugin.cache.isFileAlreadyProcessed = async () => false;
-    plugin.cache.addToCache = async () => {};
+    plugin.cache.addCompressionArtifact = async () => true;
     plugin.updateImageIndexForFile = async () => {};
     plugin.statusBarController.update = async () => {};
     plugin.maybeAutoMoveCompressed = async () => {};
     plugin.runLimitedCompression = async (task) => task();
-    plugin.compressor.compress = async (file) => {
+    plugin.compressor.compress = async (file, _settings, operation) => {
       const delay = file.name.includes("slow") ? 40 : 0;
       await new Promise((resolve) => originalGlobals.setTimeout(resolve, delay));
-      return { success: true, savings: 25 };
+      return createCompressionSuccess(file, operation);
     };
     const progressUpdates = [];
     await plugin.runCompressionBatch([
@@ -2825,6 +2856,45 @@ try {
       JSON.stringify(progressUpdates) === JSON.stringify([1, 1, 2, 2, 3, 3]),
       `Parallel batch progress was not completion-based and monotonic: ${progressUpdates.join(",")}`
     );
+
+    let failedSuccessCallbacks = 0;
+    let unexpectedErrorCallbacks = 0;
+    plugin.compressor.compress = async (file, _settings, operation) => createCompressionSuccess(file, operation);
+    plugin.updateImageIndexForFile = async () => {
+      throw new Error("post-commit index failure");
+    };
+    plugin.cache.createBackup = async () => {
+      throw new Error("post-commit backup failure");
+    };
+    plugin.updateSavingsIndicatorInSettings = async () => {
+      throw new Error("post-commit savings failure");
+    };
+    const reportingFailureResult = await plugin.runCompressionBatch([
+      createMockFile("Images/reporting-failure.jpg", 100000, 4)
+    ], {
+      onCompressed: async () => {
+        failedSuccessCallbacks += 1;
+        throw new Error("post-commit success callback failure");
+      },
+      onCacheUpdated: async () => {
+        failedSuccessCallbacks += 1;
+        throw new Error("post-commit cache callback failure");
+      },
+      onError: async () => {
+        unexpectedErrorCallbacks += 1;
+        throw new Error("unexpected error callback failure");
+      }
+    });
+    assert(
+      reportingFailureResult.compressed === 1
+        && reportingFailureResult.processed === 1
+        && reportingFailureResult.skippedErrors === 0,
+      `Post-commit reporting failure changed terminal batch counters: ${JSON.stringify(reportingFailureResult)}`
+    );
+    assert(failedSuccessCallbacks === 2 && unexpectedErrorCallbacks === 0, "Post-commit reporting callbacks did not remain isolated");
+    plugin.updateImageIndexForFile = async () => {};
+    plugin.cache.createBackup = originalCacheCreateBackupForProgress;
+    plugin.updateSavingsIndicatorInSettings = originalUpdateSavingsForProgress;
 
     global.__progressWidthUpdates = [];
     await plugin.processBatchCompression([
@@ -2846,6 +2916,20 @@ try {
       `Modal progress did not complete at 100%: ${modalWidthPercentages.join(",")}`
     );
 
+    let modalAutoMoveAfterStatusFailure = 0;
+    plugin.statusBarController.update = async () => {
+      throw new Error("post-batch status failure");
+    };
+    plugin.maybeAutoMoveCompressed = async () => {
+      modalAutoMoveAfterStatusFailure += 1;
+    };
+    await plugin.processBatchCompression([
+      createMockFile("Images/modal-post-commit-failure.jpg", 100000, 5)
+    ], "Modal post-commit failure smoke");
+    assert(modalAutoMoveAfterStatusFailure === 1, "Post-batch status failure suppressed auto-move");
+    plugin.statusBarController.update = async () => {};
+    plugin.maybeAutoMoveCompressed = async () => {};
+
     const cancellationController = new AbortController();
     let cancellationCompressionCalls = 0;
     let cancellationLimiterTail = Promise.resolve();
@@ -2862,10 +2946,10 @@ try {
         releaseCurrent();
       }
     };
-    plugin.compressor.compress = async () => {
+    plugin.compressor.compress = async (file, _settings, operation) => {
       cancellationCompressionCalls += 1;
       cancellationController.abort();
-      return { success: true, savings: 25 };
+      return createCompressionSuccess(file, operation);
     };
     const cancellationResult = await plugin.runCompressionBatch([
       createMockFile("Images/cancel-a.jpg", 100000, 10),
@@ -2880,15 +2964,37 @@ try {
     assert(cancellationResult.compressed === 1, `Batch cancellation did not preserve the completed in-flight item: ${cancellationResult.compressed}`);
     assert(cancellationResult.processed === 1, `Batch cancellation advanced progress after cancellation: ${cancellationResult.processed}`);
     assert(cancellationResult.skippedErrors === 0, "Batch cancellation was counted as an error");
+
+    plugin.runLimitedCompression = async (task) => await task();
+    plugin.compressor.compress = async (file, _settings, operation) => createCompressionSuccess(file, operation);
+    plugin.cache.addCompressionArtifact = async () => false;
+    let artifactCommitErrors = 0;
+    let artifactCommitSuccessCallbacks = 0;
+    const artifactCommitFailureResult = await plugin.runCompressionBatch([
+      createMockFile("Images/artifact-commit-failure.jpg", 100000, 14)
+    ], {
+      onCompressed: async () => {
+        artifactCommitSuccessCallbacks += 1;
+      },
+      onError: async (_file, _processed, _total, error) => {
+        if (String(error?.message || error).includes("Compression artifact could not be committed")) {
+          artifactCommitErrors += 1;
+        }
+      }
+    });
+    assert(artifactCommitFailureResult.compressed === 0 && artifactCommitFailureResult.skippedErrors === 1, "Failed artifact commit was counted as compressed");
+    assert(artifactCommitErrors === 1 && artifactCommitSuccessCallbacks === 0, "Failed artifact commit did not surface exactly once or still ran success callbacks");
   } finally {
     delete global.__progressWidthUpdates;
     plugin.runLimitedCompression = originalRunLimitedForProgress;
     plugin.compressor.compress = originalCompressorCompressForProgress;
     plugin.cache.isFileAlreadyProcessed = originalIsProcessedForProgress;
-    plugin.cache.addToCache = originalAddToCacheForProgress;
+    plugin.cache.addCompressionArtifact = originalAddCompressionArtifactForProgress;
     plugin.updateImageIndexForFile = originalUpdateImageIndexForProgress;
     plugin.statusBarController.update = originalStatusBarUpdateForProgress;
     plugin.maybeAutoMoveCompressed = originalMaybeAutoMoveForProgress;
+    plugin.cache.createBackup = originalCacheCreateBackupForProgress;
+    plugin.updateSavingsIndicatorInSettings = originalUpdateSavingsForProgress;
   }
 
   const previousSetTimeout = global.setTimeout;
@@ -2896,7 +3002,7 @@ try {
   global.setTimeout = originalGlobals.setTimeout;
   global.clearTimeout = originalGlobals.clearTimeout;
   const wasmCompressionTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-wasm-"));
-  const originalVaultReadBinary = plugin.app.vault.readBinary;
+  const preWasmVaultReadBinary = plugin.app.vault.readBinary;
   const originalVaultBasePath = plugin.app.vault.adapter.basePath;
   const originalVaultAbsolutePath = plugin.app.vault.adapter.path.absolute;
   const originalWorkerFactory = plugin.compressor.workerFactory;
@@ -2911,6 +3017,7 @@ try {
   const originalOutputFolder = plugin.settings.outputFolder;
   try {
     pointMockVaultAtPath(plugin.app, wasmCompressionTemp);
+    const originalVaultReadBinary = plugin.app.vault.readBinary;
     plugin.settings.outputFolder = "Compressed";
 
     const previousBlob = global.Blob;
@@ -3077,9 +3184,15 @@ try {
     const previousWindowExists = Object.prototype.hasOwnProperty.call(global, "window");
     const previousGlobalWindow = global.window;
     const previousActiveWindow = plugin.app.workspace.activeWindow;
+    // The fallback host captures the module-load globals; the artifact loaded
+    // under stubbed timers, so re-point the stub at real timers for this test.
+    const stubbedSetTimeoutForFallback = global.setTimeout;
+    const stubbedClearTimeoutForFallback = global.clearTimeout;
     try {
       delete global.window;
       plugin.app.workspace.activeWindow = undefined;
+      global.setTimeout = originalGlobals.setTimeout;
+      global.clearTimeout = originalGlobals.clearTimeout;
       let fallbackTimerFired = false;
       await new Promise((resolve) => {
         getCompressorSlots(plugin)[0].setWorkerTimeout(() => {
@@ -3087,8 +3200,10 @@ try {
           resolve();
         }, 0);
       });
-      assert(fallbackTimerFired, "Worker timer fallback did not use globalThis when window was unavailable");
+      assert(fallbackTimerFired, "Worker timer fallback did not use global timers when window was unavailable");
     } finally {
+      global.setTimeout = stubbedSetTimeoutForFallback;
+      global.clearTimeout = stubbedClearTimeoutForFallback;
       if (previousWindowExists) {
         global.window = previousGlobalWindow;
       } else {
@@ -3146,6 +3261,67 @@ try {
     assert(tooLargeResult.skipReason === "too_large", `Too-large smoke used wrong skipReason: ${tooLargeResult.skipReason}`);
     assert(tooLargeReadCalls === 0, "Too-large smoke still read file contents before skipping");
 
+    const originalEnsureWasmReadyForActualSize = plugin.compressor.ensureWasmReady;
+    const originalCompressBufferForActualSize = plugin.compressor.compressBuffer;
+    const originalWriteStagedOutputForActualSize = plugin.compressor.writeStagedOutput;
+    const originalToArrayBufferForActualSize = plugin.compressor.toArrayBuffer;
+    const originalMd5HexForActualSize = plugin.compressor.hashPort.md5Hex;
+    const originalSha256HexForActualSize = plugin.compressor.hashPort.sha256Hex;
+    try {
+      let actualSizeReadValue = new ArrayBuffer(plugin.compressor.maxInputBytes + 1);
+      let actualSizeReadCalls = 0;
+      let actualSizeConversionCalls = 0;
+      let actualSizeHashCalls = 0;
+      let actualSizeCompressCalls = 0;
+      let actualSizeWriteCalls = 0;
+      plugin.compressor.ensureWasmReady = async () => {};
+      plugin.app.vault.readBinary = async () => {
+        actualSizeReadCalls += 1;
+        return actualSizeReadValue;
+      };
+      plugin.compressor.toArrayBuffer = function(input) {
+        actualSizeConversionCalls += 1;
+        return originalToArrayBufferForActualSize.call(this, input);
+      };
+      plugin.compressor.hashPort.md5Hex = () => {
+        actualSizeHashCalls += 1;
+        return MOCK_MD5;
+      };
+      plugin.compressor.hashPort.sha256Hex = () => {
+        actualSizeHashCalls += 1;
+        return "a".repeat(64);
+      };
+      plugin.compressor.compressBuffer = async () => {
+        actualSizeCompressCalls += 1;
+        return createValidEncodedOutput("jpeg");
+      };
+      plugin.compressor.writeStagedOutput = async () => {
+        actualSizeWriteCalls += 1;
+      };
+
+      const staleArrayBufferFile = createMockFile("Images/stale-size-array-buffer.jpg", 32, 104);
+      staleArrayBufferFile.vault = plugin.app.vault;
+      const staleArrayBufferResult = await plugin.compressor.compress(staleArrayBufferFile, plugin.settings);
+      assert(staleArrayBufferResult.success === false && staleArrayBufferResult.skipReason === "too_large", "Stale stat accepted an oversized ArrayBuffer input");
+
+      const oversizedBacking = new Uint8Array(plugin.compressor.maxInputBytes + 1);
+      actualSizeReadValue = oversizedBacking.subarray(8, 40);
+      const stalePartialViewFile = createMockFile("Images/stale-size-partial-view.jpg", actualSizeReadValue.byteLength, 105);
+      stalePartialViewFile.vault = plugin.app.vault;
+      const stalePartialViewResult = await plugin.compressor.compress(stalePartialViewFile, plugin.settings);
+      assert(stalePartialViewResult.success === false && stalePartialViewResult.skipReason === "too_large", "Stale stat accepted a partial view with an oversized retained backing buffer");
+      assert(actualSizeReadCalls === 2, `Actual-size smoke performed an unexpected number of reads: ${actualSizeReadCalls}`);
+      assert(actualSizeConversionCalls === 0 && actualSizeHashCalls === 0 && actualSizeCompressCalls === 0 && actualSizeWriteCalls === 0, "Actual-size rejection copied, hashed, compressed, or wrote oversized input bytes");
+    } finally {
+      plugin.compressor.ensureWasmReady = originalEnsureWasmReadyForActualSize;
+      plugin.compressor.compressBuffer = originalCompressBufferForActualSize;
+      plugin.compressor.writeStagedOutput = originalWriteStagedOutputForActualSize;
+      plugin.compressor.toArrayBuffer = originalToArrayBufferForActualSize;
+      plugin.compressor.hashPort.md5Hex = originalMd5HexForActualSize;
+      plugin.compressor.hashPort.sha256Hex = originalSha256HexForActualSize;
+      plugin.app.vault.readBinary = originalVaultReadBinary;
+    }
+
     plugin.app.vault.readBinary = originalVaultReadBinary;
     plugin.compressor.maxInputBytes = originalMaxInputBytes;
     plugin.compressor.maxImagePixels = originalMaxImagePixels;
@@ -3180,20 +3356,380 @@ try {
       plugin.app.vault.readBinary = originalVaultReadBinary;
     }
 
+    const originalEnsureWasmReadyForReadAdmission = plugin.compressor.ensureWasmReady;
+    const originalCompressBufferForReadAdmission = plugin.compressor.compressBuffer;
+    const originalWriteStagedOutputForReadAdmission = plugin.compressor.writeStagedOutput;
+    try {
+      plugin.compressor.ensureWasmReady = async () => {};
+      plugin.compressor.compressBuffer = async () => createValidEncodedOutput("jpeg");
+      plugin.compressor.writeStagedOutput = async () => {};
+      let releaseFirstAdmittedRead = null;
+      let admittedReadCalls = 0;
+      const firstAdmittedRead = new Promise((resolve) => {
+        releaseFirstAdmittedRead = resolve;
+      });
+      plugin.app.vault.readBinary = async () => {
+        admittedReadCalls += 1;
+        if (admittedReadCalls === 1) {
+          return await firstAdmittedRead;
+        }
+        return toArrayBuffer(new Uint8Array(jpegInput));
+      };
+      const firstAdmissionFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/read-admission-a.jpg", new Uint8Array(jpegInput), 131);
+      const secondAdmissionFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/read-admission-b.jpg", new Uint8Array(jpegInput), 132);
+      const firstAdmissionPromise = plugin.compressor.compress(firstAdmissionFile, plugin.settings);
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 0));
+      const expectedPreReadReservation = Math.min(plugin.compressor.memoryBudgetBytes, plugin.compressor.maxInputBytes);
+      assert(plugin.compressor.memoryLimiter.activeWeight === expectedPreReadReservation, `Compressor did not reserve input memory before readBinary: ${plugin.compressor.memoryLimiter.activeWeight}`);
+      const secondAdmissionPromise = plugin.compressor.compress(secondAdmissionFile, plugin.settings);
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 0));
+      assert(admittedReadCalls === 1, "Compressor admitted a second full-buffer read before the first read released its reservation");
+      releaseFirstAdmittedRead(toArrayBuffer(new Uint8Array(jpegInput)));
+      const admissionResults = await withTestTimeout("pre-read memory admission", Promise.all([firstAdmissionPromise, secondAdmissionPromise]), 1000);
+      assert(admissionResults.every((result) => result.success === true), `Pre-read admission smoke failed: ${admissionResults.map((result) => result.error).join(", ")}`);
+      assert(admittedReadCalls === 2, `Pre-read admission smoke performed an unexpected number of reads: ${admittedReadCalls}`);
+    } finally {
+      plugin.compressor.ensureWasmReady = originalEnsureWasmReadyForReadAdmission;
+      plugin.compressor.compressBuffer = originalCompressBufferForReadAdmission;
+      plugin.compressor.writeStagedOutput = originalWriteStagedOutputForReadAdmission;
+      plugin.app.vault.readBinary = originalVaultReadBinary;
+    }
+
+    const originalEnsureWasmReadyForPartialView = plugin.compressor.ensureWasmReady;
+    const originalCompressBufferForPartialView = plugin.compressor.compressBuffer;
+    const originalWriteStagedOutputForPartialView = plugin.compressor.writeStagedOutput;
+    const originalToArrayBufferForPartialView = plugin.compressor.toArrayBuffer;
+    const originalMaxInputBytesForPartialView = plugin.compressor.maxInputBytes;
+    try {
+      plugin.compressor.ensureWasmReady = async () => {};
+      plugin.compressor.compressBuffer = async () => createValidEncodedOutput("jpeg");
+      plugin.compressor.writeStagedOutput = async () => {};
+      const partialBacking = new Uint8Array(jpegInput.byteLength + 4096);
+      plugin.compressor.maxInputBytes = partialBacking.byteLength;
+      const partialInput = partialBacking.subarray(4, 4 + jpegInput.byteLength);
+      partialInput.set(new Uint8Array(jpegInput));
+      let partialCopyObserved = false;
+      plugin.app.vault.readBinary = async () => partialInput;
+      plugin.compressor.toArrayBuffer = function(input) {
+        if (input === partialInput) {
+          partialCopyObserved = true;
+          const expectedCopyReservation = Math.min(
+            this.memoryBudgetBytes,
+            Math.max(this.maxInputBytes, partialInput.buffer.byteLength) + partialInput.byteLength
+          );
+          assert(this.memoryLimiter.activeWeight === expectedCopyReservation, `Partial-view copy started with ${this.memoryLimiter.activeWeight} reserved bytes instead of ${expectedCopyReservation}`);
+        }
+        return originalToArrayBufferForPartialView.call(this, input);
+      };
+      const partialViewFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/partial-view.jpg", new Uint8Array(jpegInput), 132);
+      const partialViewResult = await plugin.compressor.compress(partialViewFile, plugin.settings);
+      assert(partialViewResult.success === true, `Partial typed-array compression failed: ${partialViewResult.error}`);
+      assert(partialCopyObserved, "Partial typed-array compression did not exercise the owned ArrayBuffer copy path");
+    } finally {
+      plugin.compressor.ensureWasmReady = originalEnsureWasmReadyForPartialView;
+      plugin.compressor.compressBuffer = originalCompressBufferForPartialView;
+      plugin.compressor.writeStagedOutput = originalWriteStagedOutputForPartialView;
+      plugin.compressor.toArrayBuffer = originalToArrayBufferForPartialView;
+      plugin.compressor.maxInputBytes = originalMaxInputBytesForPartialView;
+      plugin.app.vault.readBinary = originalVaultReadBinary;
+    }
+
     const originalEnsureWasmReadyForReadTimeout = plugin.compressor.ensureWasmReady;
+    const originalCompressBufferForReadTimeout = plugin.compressor.compressBuffer;
+    const originalWriteStagedOutputForReadTimeout = plugin.compressor.writeStagedOutput;
     try {
       plugin.compressor.processTimeoutMs = 10;
       plugin.compressor.ensureWasmReady = async () => {};
-      plugin.app.vault.readBinary = async () => neverSettlingPromise();
+      plugin.compressor.compressBuffer = async () => createValidEncodedOutput("jpeg");
+      plugin.compressor.writeStagedOutput = async () => {};
+      let releaseLateRead = null;
+      let readTimeoutCalls = 0;
+      const lateReadPromise = new Promise((resolve) => {
+        releaseLateRead = resolve;
+      });
+      plugin.app.vault.readBinary = async () => {
+        readTimeoutCalls += 1;
+        if (readTimeoutCalls === 1) {
+          return await lateReadPromise;
+        }
+        return toArrayBuffer(new Uint8Array(jpegInput));
+      };
       const readTimeoutFile = createMockFile("Images/read-timeout.jpg", 1000, 131);
       readTimeoutFile.vault = plugin.app.vault;
       const readTimeoutResult = await plugin.compressor.compress(readTimeoutFile, plugin.settings);
       assert(readTimeoutResult.success === false, "Read-timeout smoke unexpectedly succeeded");
       assert(String(readTimeoutResult.error || "").includes("File read timed out after 10ms"), `Read-timeout smoke returned wrong error: ${readTimeoutResult.error}`);
+      const queuedAfterTimeoutFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/read-after-timeout.jpg", new Uint8Array(jpegInput), 132);
+      const queuedAfterTimeoutPromise = plugin.compressor.compress(queuedAfterTimeoutFile, plugin.settings);
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 0));
+      assert(readTimeoutCalls === 1, "A timed-out native read released buffered read admission before the native promise settled");
+      releaseLateRead(toArrayBuffer(new Uint8Array(jpegInput)));
+      const queuedAfterTimeoutResult = await withTestTimeout("read admission after late timeout settlement", queuedAfterTimeoutPromise, 1000);
+      assert(queuedAfterTimeoutResult.success === true, `Compression queued behind a timed-out read did not resume: ${queuedAfterTimeoutResult.error}`);
+      assert(readTimeoutCalls === 2, `Queued compression performed an unexpected number of reads: ${readTimeoutCalls}`);
     } finally {
       plugin.compressor.processTimeoutMs = originalProcessTimeoutMs;
       plugin.compressor.ensureWasmReady = originalEnsureWasmReadyForReadTimeout;
+      plugin.compressor.compressBuffer = originalCompressBufferForReadTimeout;
+      plugin.compressor.writeStagedOutput = originalWriteStagedOutputForReadTimeout;
       plugin.app.vault.readBinary = originalVaultReadBinary;
+    }
+
+    const originalEnsureWasmReadyForSourceCas = plugin.compressor.ensureWasmReady;
+    const originalCompressBufferForSourceCas = plugin.compressor.compressBuffer;
+    const originalWriteStagedOutputForSourceCas = plugin.compressor.writeStagedOutput;
+    try {
+      plugin.compressor.ensureWasmReady = async () => {};
+      let releaseSourceCasEncode = null;
+      let sourceCasEncodeStarted = null;
+      const sourceCasEncodeStartedPromise = new Promise((resolve) => {
+        sourceCasEncodeStarted = resolve;
+      });
+      plugin.compressor.compressBuffer = async () => {
+        sourceCasEncodeStarted();
+        return await new Promise((resolve) => {
+          releaseSourceCasEncode = resolve;
+        });
+      };
+      let sourceCasWriteCalled = false;
+      plugin.compressor.writeStagedOutput = async () => {
+        sourceCasWriteCalled = true;
+      };
+      const sourceCasFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/source-cas.jpg", new Uint8Array(jpegInput), 133);
+      const sourceCasPromise = plugin.compressor.compress(sourceCasFile, plugin.settings);
+      await sourceCasEncodeStartedPromise;
+      fs.writeFileSync(path.join(wasmCompressionTemp, "Images", "source-cas.jpg"), Buffer.from(new Uint8Array(jpegInput).map((byte, index) => index === 0 ? byte : byte ^ 0x01)));
+      releaseSourceCasEncode(createValidEncodedOutput("jpeg"));
+      const sourceCasResult = await sourceCasPromise;
+      assert(sourceCasResult.success === false, "Compression published output after the source content changed during encode");
+      assert(String(sourceCasResult.error || "").includes("source content changed during encode"), `Source CAS returned wrong error: ${sourceCasResult.error}`);
+      assert(sourceCasWriteCalled === false, "Compression entered staged publication after source CAS failed");
+    } finally {
+      plugin.compressor.ensureWasmReady = originalEnsureWasmReadyForSourceCas;
+      plugin.compressor.compressBuffer = originalCompressBufferForSourceCas;
+      plugin.compressor.writeStagedOutput = originalWriteStagedOutputForSourceCas;
+      plugin.app.vault.readBinary = originalVaultReadBinary;
+    }
+
+    const stagedSourceFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/source-cas-staged.jpg", new Uint8Array(jpegInput), 133);
+    const stagedSourcePath = path.join(wasmCompressionTemp, "Images", "source-cas-staged.jpg");
+    const stagedSourceOutputPath = path.join(wasmCompressionTemp, "Compressed", "Images", "source-cas-staged.jpg");
+    const stagedSourceFs = new Proxy(plugin.compressor.fsPort, {
+      get(target, property, receiver) {
+        if (property === "writeBinary") {
+          return async (...args) => {
+            await target.writeBinary(...args);
+            fs.writeFileSync(stagedSourcePath, Buffer.from(new Uint8Array(jpegInput).map((byte, index) => index === 0 ? byte : byte ^ 0x02)));
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    });
+    const StagedSourceCompressorClass = plugin.compressor.constructor;
+    const stagedSourceCompressor = new StagedSourceCompressorClass(
+      plugin.settings,
+      plugin.app,
+      createMockWorkerFactory([{}]),
+      stagedSourceFs,
+      plugin.compressor.hashPort
+    );
+    try {
+      stagedSourceCompressor.ensureWasmReady = async () => {};
+      stagedSourceCompressor.compressBuffer = async () => createValidEncodedOutput("jpeg");
+      fs.rmSync(stagedSourceOutputPath, { force: true });
+      const stagedSourceResult = await stagedSourceCompressor.compress(stagedSourceFile, plugin.settings);
+      assert(stagedSourceResult.success === false, "Compression published output after the source changed during staged publication");
+      assert(String(stagedSourceResult.error || "").includes("source content changed before publication"), `Late source CAS returned wrong error: ${stagedSourceResult.error}`);
+      assert(!fs.existsSync(stagedSourceOutputPath), "Late source CAS left a stale compressed output published");
+    } finally {
+      stagedSourceCompressor.destroy();
+    }
+
+    const originalEnsureWasmReadyForOutputCas = plugin.compressor.ensureWasmReady;
+    const originalCompressBufferForOutputCas = plugin.compressor.compressBuffer;
+    try {
+      plugin.compressor.ensureWasmReady = async () => {};
+      let releaseOutputCasEncode = null;
+      let outputCasEncodeStarted = null;
+      const outputCasEncodeStartedPromise = new Promise((resolve) => {
+        outputCasEncodeStarted = resolve;
+      });
+      plugin.compressor.compressBuffer = async () => {
+        outputCasEncodeStarted();
+        return await new Promise((resolve) => {
+          releaseOutputCasEncode = resolve;
+        });
+      };
+      const outputCasFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/output-cas.jpg", new Uint8Array(jpegInput), 134);
+      const outputCasPath = path.join(wasmCompressionTemp, "Compressed", "Images", "output-cas.jpg");
+      fs.rmSync(outputCasPath, { force: true });
+      const outputCasPromise = plugin.compressor.compress(outputCasFile, plugin.settings);
+      await outputCasEncodeStartedPromise;
+      const competingOutput = Buffer.from("sync competitor output");
+      fs.mkdirSync(path.dirname(outputCasPath), { recursive: true });
+      fs.writeFileSync(outputCasPath, competingOutput);
+      releaseOutputCasEncode(createValidEncodedOutput("jpeg"));
+      const outputCasResult = await outputCasPromise;
+      assert(outputCasResult.success === false, "Compression overwrote an output created after its target snapshot");
+      assert(fs.readFileSync(outputCasPath).equals(competingOutput), "Output target CAS did not preserve the competing revision");
+      const outputCasTempNames = fs.readdirSync(path.dirname(outputCasPath)).filter((name) => name.includes("output-cas.jpg.tinylocal-") && name.endsWith(".tmp"));
+      assert(outputCasTempNames.length === 0, `Output target CAS leaked staged files: ${outputCasTempNames.join(",")}`);
+    } finally {
+      plugin.compressor.ensureWasmReady = originalEnsureWasmReadyForOutputCas;
+      plugin.compressor.compressBuffer = originalCompressBufferForOutputCas;
+      plugin.app.vault.readBinary = originalVaultReadBinary;
+    }
+
+    const StaleCompressorClass = plugin.compressor.constructor;
+    const staleCompressor = new StaleCompressorClass(
+      plugin.settings,
+      plugin.app,
+      createMockWorkerFactory([{}]),
+      plugin.compressor.fsPort,
+      plugin.compressor.hashPort
+    );
+    let staleEncodeStarted = null;
+    let releaseStaleEncode = null;
+    let staleWriteCalled = false;
+    staleCompressor.ensureWasmReady = async () => {};
+    const staleEncodeStartedPromise = new Promise((resolve) => {
+      staleEncodeStarted = resolve;
+    });
+    staleCompressor.compressBuffer = async () => {
+      staleEncodeStarted();
+      return await new Promise((resolve) => {
+        releaseStaleEncode = resolve;
+      });
+    };
+    staleCompressor.writeStagedOutput = async () => {
+      staleWriteCalled = true;
+    };
+    const staleCompressorFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/stale-compressor.jpg", new Uint8Array(jpegInput), 135);
+    const staleCompressorPromise = staleCompressor.compress(staleCompressorFile, plugin.settings);
+    await staleEncodeStartedPromise;
+    staleCompressor.destroy();
+    releaseStaleEncode(createValidEncodedOutput("jpeg"));
+    const staleCompressorResult = await staleCompressorPromise;
+    assert(staleCompressorResult.success === false, "An unloaded Compressor instance published its completed worker result");
+    assert(String(staleCompressorResult.error || "").includes("plugin was unloaded"), `Stale Compressor lifecycle fence returned wrong error: ${staleCompressorResult.error}`);
+    assert(staleWriteCalled === false, "An unloaded Compressor instance entered staged publication");
+
+    const commitFenceFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/commit-fence.jpg", new Uint8Array(jpegInput), 135);
+    const commitFenceOutputPath = path.join(wasmCompressionTemp, "Compressed", "Images", "commit-fence.jpg");
+    let commitFenceReplaceStarted = null;
+    let releaseCommitFenceReplace = null;
+    const commitFenceReplaceStartedPromise = new Promise((resolve) => {
+      commitFenceReplaceStarted = resolve;
+    });
+    const commitFenceFs = new Proxy(plugin.compressor.fsPort, {
+      get(target, property, receiver) {
+        if (property === "replaceFile") {
+          return async (...args) => {
+            commitFenceReplaceStarted();
+            await new Promise((resolve) => {
+              releaseCommitFenceReplace = resolve;
+            });
+            return await target.replaceFile(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    });
+    const commitFenceCompressor = new StaleCompressorClass(
+      plugin.settings,
+      plugin.app,
+      createMockWorkerFactory([{}]),
+      commitFenceFs,
+      plugin.compressor.hashPort
+    );
+    try {
+      commitFenceCompressor.ensureWasmReady = async () => {};
+      commitFenceCompressor.compressBuffer = async () => createValidEncodedOutput("jpeg");
+      fs.rmSync(commitFenceOutputPath, { force: true });
+      const commitFenceCompression = commitFenceCompressor.compress(commitFenceFile, plugin.settings);
+      await commitFenceReplaceStartedPromise;
+      commitFenceCompressor.destroy();
+      releaseCommitFenceReplace();
+      const commitFenceResult = await commitFenceCompression;
+      assert(commitFenceResult.success === false, "Destroyed Compressor committed a replacement that was already queued at the platform boundary");
+      assert(!fs.existsSync(commitFenceOutputPath), "Destroyed Compressor left output published after its final platform commit fence");
+    } finally {
+      releaseCommitFenceReplace?.();
+      commitFenceCompressor.destroy();
+    }
+
+    const reloadOutputFile = writeVaultBinary(plugin.app, wasmCompressionTemp, "Images/reload-publication.jpg", new Uint8Array(jpegInput), 136);
+    const reloadOutputPath = path.join(wasmCompressionTemp, "Compressed", "Images", "reload-publication.jpg");
+    fs.rmSync(reloadOutputPath, { force: true });
+    const realCompressorFs = plugin.compressor.fsPort;
+    let oldPublicationMkdirStarted = null;
+    let releaseOldPublicationMkdir = null;
+    const oldPublicationMkdirStartedPromise = new Promise((resolve) => {
+      oldPublicationMkdirStarted = resolve;
+    });
+    let oldPublicationWriteCalls = 0;
+    let oldPublicationPaused = false;
+    const oldCompressorFs = new Proxy(realCompressorFs, {
+      get(target, property, receiver) {
+        if (property === "mkdir") {
+          return async (dirPath) => {
+            await target.mkdir(dirPath);
+            if (!oldPublicationPaused && String(dirPath).includes("Compressed")) {
+              oldPublicationPaused = true;
+              oldPublicationMkdirStarted();
+              await new Promise((resolve) => {
+                releaseOldPublicationMkdir = resolve;
+              });
+            }
+          };
+        }
+        if (property === "writeBinary") {
+          return async (...args) => {
+            oldPublicationWriteCalls += 1;
+            return await target.writeBinary(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+    });
+    const oldReloadCompressor = new StaleCompressorClass(
+      plugin.settings,
+      plugin.app,
+      createMockWorkerFactory([{}]),
+      oldCompressorFs,
+      plugin.compressor.hashPort
+    );
+    const newReloadCompressor = new StaleCompressorClass(
+      plugin.settings,
+      plugin.app,
+      createMockWorkerFactory([{}]),
+      realCompressorFs,
+      plugin.compressor.hashPort
+    );
+    const newReloadOutput = new Uint8Array(createValidJpegOutput(VALID_JPEG_OUTPUT.byteLength + 16));
+    try {
+      oldReloadCompressor.ensureWasmReady = async () => {};
+      oldReloadCompressor.compressBuffer = async () => createValidEncodedOutput("jpeg");
+      newReloadCompressor.ensureWasmReady = async () => {};
+      newReloadCompressor.compressBuffer = async () => newReloadOutput.buffer.slice(newReloadOutput.byteOffset, newReloadOutput.byteOffset + newReloadOutput.byteLength);
+      const oldReloadCompression = oldReloadCompressor.compress(reloadOutputFile, plugin.settings);
+      await oldPublicationMkdirStartedPromise;
+      oldReloadCompressor.destroy();
+      const newReloadResult = await newReloadCompressor.compress(reloadOutputFile, plugin.settings);
+      assert(newReloadResult.success === true, `Reloaded Compressor did not publish its output: ${newReloadResult.error}`);
+      assert(fs.readFileSync(reloadOutputPath).equals(Buffer.from(newReloadOutput)), "Reloaded Compressor published unexpected output bytes");
+      releaseOldPublicationMkdir();
+      const oldReloadResult = await oldReloadCompression;
+      assert(oldReloadResult.success === false && String(oldReloadResult.error || "").includes("plugin was unloaded"), `Old Compressor did not stop after reload publication: ${oldReloadResult.error}`);
+      assert(oldPublicationWriteCalls === 0, "Old Compressor wrote staged bytes after unload/reload");
+      assert(fs.readFileSync(reloadOutputPath).equals(Buffer.from(newReloadOutput)), "Old Compressor replaced the newer instance's published output");
+    } finally {
+      releaseOldPublicationMkdir?.();
+      oldReloadCompressor.destroy();
+      newReloadCompressor.destroy();
     }
 
     const originalEnsureWasmReadyForJpegFailure = plugin.compressor.ensureWasmReady;
@@ -3212,20 +3748,6 @@ try {
       plugin.compressor.compressBuffer = originalCompressBufferForJpegFailure;
       plugin.app.vault.readBinary = originalVaultReadBinary;
     }
-
-    const createdAdapterDirs = new Set();
-    const duplicateMkdirAdapter = {
-      exists: async (vaultPath) => createdAdapterDirs.has(vaultPath),
-      mkdir: async (vaultPath) => {
-        if (vaultPath === "Compressed/Images") {
-          createdAdapterDirs.add(vaultPath);
-          throw new Error("simulated duplicate mkdir race");
-        }
-        createdAdapterDirs.add(vaultPath);
-      }
-    };
-    await plugin.compressor.ensureAdapterDirectory(duplicateMkdirAdapter, "Compressed/Images/race.png");
-    assert(createdAdapterDirs.has("Compressed/Images"), "ensureAdapterDirectory() did not tolerate duplicate mkdir races");
 
     plugin.compressor.maxInputBytes = originalMaxInputBytes;
     plugin.app.vault.readBinary = originalVaultReadBinary;
@@ -3639,7 +4161,7 @@ try {
     plugin.settings.pngQuality = originalPngQuality;
     plugin.settings.jpegQuality = originalJpegQuality;
     plugin.settings.outputFolder = originalOutputFolder;
-    plugin.app.vault.readBinary = originalVaultReadBinary;
+    plugin.app.vault.readBinary = preWasmVaultReadBinary;
     plugin.app.vault.adapter.basePath = originalVaultBasePath;
     plugin.app.vault.adapter.path.absolute = originalVaultAbsolutePath;
     global.setTimeout = previousSetTimeout;
@@ -3736,6 +4258,7 @@ try {
   const originalGetStatsSnapshot = plugin.getStatsSnapshot;
   let displayFailedAsExpected = false;
   try {
+    settingsTab._isDisposed = false;
     plugin.getStatsSnapshot = async () => {
       throw new Error("simulated stats failure");
     };
@@ -3747,6 +4270,223 @@ try {
   }
   assert(displayFailedAsExpected, "SettingsTab.renderSettings() did not surface the simulated stats failure");
   assert(settingsTab._isRendering === false, "SettingsTab.renderSettings() left its rendering state active after a failed await");
+
+  const SettingsTabClass = settingsTab.constructor;
+  const renderFenceStats = await originalGetStatsSnapshot.call(plugin);
+  const renderFenceTab = new SettingsTabClass(plugin.app, plugin);
+  let resolveRenderFenceStats = null;
+  let renderFenceStatsStarted = null;
+  const renderFenceStatsStartedPromise = new Promise((resolve) => {
+    renderFenceStatsStarted = resolve;
+  });
+  try {
+    plugin.getStatsSnapshot = async () => {
+      renderFenceStatsStarted();
+      return await new Promise((resolve) => {
+        resolveRenderFenceStats = resolve;
+      });
+    };
+    const fencedRender = renderFenceTab.renderSettings();
+    await renderFenceStatsStartedPromise;
+    renderFenceTab.hide();
+    const childrenAtStatsDispose = renderFenceTab.containerEl.children.length;
+    resolveRenderFenceStats(renderFenceStats);
+    await fencedRender;
+    assert(renderFenceTab.containerEl.children.length === childrenAtStatsDispose, "Disposed settings render created DOM after getStatsSnapshot resolved");
+    assert(renderFenceTab._renderRootsCleanups.length === 0 && renderFenceTab._savingsTooltipCleanups.length === 0, "Disposed settings render retained render-scoped listeners after stats resolution");
+  } finally {
+    plugin.getStatsSnapshot = originalGetStatsSnapshot;
+  }
+
+  const backupRenderFenceTab = new SettingsTabClass(plugin.app, plugin);
+  const originalGetAvailableBackupsForRenderFence = plugin.cache.getAvailableBackups;
+  let resolveAvailableBackups = null;
+  let availableBackupsStarted = null;
+  const availableBackupsStartedPromise = new Promise((resolve) => {
+    availableBackupsStarted = resolve;
+  });
+  try {
+    plugin.getStatsSnapshot = async () => renderFenceStats;
+    plugin.cache.getAvailableBackups = async () => {
+      availableBackupsStarted();
+      return await new Promise((resolve) => {
+        resolveAvailableBackups = resolve;
+      });
+    };
+    const fencedBackupRender = backupRenderFenceTab.renderSettings();
+    await availableBackupsStartedPromise;
+    backupRenderFenceTab.hide();
+    const childrenAtBackupDispose = backupRenderFenceTab.containerEl.children.length;
+    resolveAvailableBackups([]);
+    await fencedBackupRender;
+    assert(backupRenderFenceTab.containerEl.children.length === childrenAtBackupDispose, "Disposed settings render created DOM after backup discovery resolved");
+    assert(backupRenderFenceTab._renderRootsCleanups.length === 0 && backupRenderFenceTab._savingsTooltipCleanups.length === 0, "Disposed backup render retained render-scoped listeners");
+  } finally {
+    plugin.getStatsSnapshot = originalGetStatsSnapshot;
+    plugin.cache.getAvailableBackups = originalGetAvailableBackupsForRenderFence;
+  }
+
+  const automationFenceTab = new SettingsTabClass(plugin.app, plugin);
+  const originalSettingForAutomationFence = ObsidianMock.Setting;
+  const originalSaveSettingsForAutomationFence = plugin.saveSettings;
+  const originalBackgroundSettingForAutomationFence = plugin.settings.autoBackgroundCompression;
+  const automationToggleCallbacks = [];
+  const automationVisibilityCalls = [];
+  let resolveAutomationSave = null;
+  let automationSaveStarted = null;
+  const automationSaveStartedPromise = new Promise((resolve) => {
+    automationSaveStarted = resolve;
+  });
+  try {
+    ObsidianMock.Setting = class {
+      constructor(containerEl) {
+        this.containerEl = containerEl;
+        this.settingEl = createMockElement();
+        this.controlEl = createMockElement();
+      }
+      setName() { return this; }
+      setDesc() { return this; }
+      setHeading() { return this; }
+      addToggle(builder) {
+        const component = {
+          setValue() { return this; },
+          onChange(callback) { automationToggleCallbacks.push(callback); return this; }
+        };
+        builder(component);
+        return this;
+      }
+      addSlider(builder) {
+        const component = {
+          setLimits() { return this; },
+          setValue() { return this; },
+          setDynamicTooltip() { return this; },
+          onChange() { return this; }
+        };
+        builder(component);
+        return this;
+      }
+    };
+    automationFenceTab.applySubsettingVisibility = (...args) => {
+      automationVisibilityCalls.push(args);
+    };
+    plugin.saveSettings = async () => {
+      automationSaveStarted();
+      return await new Promise((resolve) => {
+        resolveAutomationSave = resolve;
+      });
+    };
+    automationFenceTab.renderAutomationSection(automationFenceTab.containerEl, automationFenceTab._renderGeneration);
+    assert(automationToggleCallbacks.length >= 2, "Automation render did not expose the background-compression toggle callback");
+    const visibilityCallsBeforeAsyncSave = automationVisibilityCalls.length;
+    const staleAutomationSave = automationToggleCallbacks[1](true);
+    await automationSaveStartedPromise;
+    automationFenceTab.hide();
+    resolveAutomationSave();
+    await staleAutomationSave;
+    assert(automationVisibilityCalls.length === visibilityCallsBeforeAsyncSave, "An automation toggle mutated detached settings DOM after its save resolved");
+  } finally {
+    resolveAutomationSave?.();
+    ObsidianMock.Setting = originalSettingForAutomationFence;
+    plugin.saveSettings = originalSaveSettingsForAutomationFence;
+    plugin.settings.autoBackgroundCompression = originalBackgroundSettingForAutomationFence;
+  }
+
+  const animationFrameFenceTab = new SettingsTabClass(plugin.app, plugin);
+  let ownedFrameCallbackRan = false;
+  const cancelledOwnedFrames = [];
+  animationFrameFenceTab.containerEl.win = {
+    requestAnimationFrame() {
+      return 73;
+    },
+    cancelAnimationFrame(handle) {
+      cancelledOwnedFrames.push(handle);
+    },
+    setTimeout: originalGlobals.setTimeout,
+    clearTimeout: originalGlobals.clearTimeout,
+    performance: { now: () => 0 }
+  };
+  animationFrameFenceTab.requestWindowAnimationFrame(() => {
+    ownedFrameCallbackRan = true;
+  });
+  animationFrameFenceTab.hide();
+  assert(cancelledOwnedFrames.includes(73), "SettingsTab.hide() did not cancel its owned animation frame");
+  assert(animationFrameFenceTab._ownedAnimationFrames.size === 0 && ownedFrameCallbackRan === false, "Disposed SettingsTab retained or executed an owned animation frame");
+
+  const generationFrameFenceTab = new SettingsTabClass(plugin.app, plugin);
+  let generationFrameCallback = null;
+  let staleGenerationFrameRan = false;
+  generationFrameFenceTab.containerEl.win = {
+    requestAnimationFrame(callback) {
+      generationFrameCallback = callback;
+      return 74;
+    },
+    cancelAnimationFrame() {},
+    setTimeout: originalGlobals.setTimeout,
+    clearTimeout: originalGlobals.clearTimeout,
+    performance: { now: () => 0 }
+  };
+  generationFrameFenceTab.requestWindowAnimationFrame(() => {
+    staleGenerationFrameRan = true;
+  });
+  generationFrameFenceTab._renderGeneration += 1;
+  generationFrameCallback(0);
+  assert(staleGenerationFrameRan === false && generationFrameFenceTab._ownedAnimationFrames.size === 0, "A stale settings animation frame crossed a render generation");
+
+  const postHideFrameTab = new SettingsTabClass(plugin.app, plugin);
+  const postHideFrames = [];
+  let resolvePostHideStats = null;
+  let markPostHideStatsStarted = null;
+  let postHideFocusCalls = 0;
+  const postHideStatsStarted = new Promise((resolve) => {
+    markPostHideStatsStarted = resolve;
+  });
+  const originalGetStatsSnapshotForPostHideFrame = plugin.getStatsSnapshot;
+  postHideFrameTab.containerEl.win = {
+    requestAnimationFrame(callback) {
+      const frame = { callback, handle: 80 + postHideFrames.length, cancelled: false };
+      postHideFrames.push(frame);
+      return frame.handle;
+    },
+    cancelAnimationFrame(handle) {
+      const frame = postHideFrames.find((candidate) => candidate.handle === handle);
+      if (frame) frame.cancelled = true;
+    },
+    setTimeout: originalGlobals.setTimeout,
+    clearTimeout: originalGlobals.clearTimeout,
+    performance: { now: () => 0 }
+  };
+  postHideFrameTab.getActiveDocument = () => ({
+    activeElement: {
+      focus() {
+        postHideFocusCalls += 1;
+      }
+    }
+  });
+  try {
+    plugin.getStatsSnapshot = async () => {
+      markPostHideStatsStarted();
+      return await new Promise((resolve) => {
+        resolvePostHideStats = resolve;
+      });
+    };
+    postHideFrameTab.rerenderPreservingScroll();
+    assert(postHideFrames.length === 1, "Settings rerender did not schedule its initial animation frame");
+    postHideFrames[0].callback(0);
+    await postHideStatsStarted;
+    postHideFrameTab.hide();
+    resolvePostHideStats(renderFenceStats);
+    await withTestTimeout("post-hide settings frame settlement", (async () => {
+      while (postHideFrameTab._isRendering) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    })(), 1000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(postHideFrames.length === 1, "A completed stale settings render scheduled a new animation frame after hide()");
+    assert(postHideFocusCalls === 0, "A completed stale settings render focused detached UI after hide()");
+  } finally {
+    resolvePostHideStats?.(renderFenceStats);
+    plugin.getStatsSnapshot = originalGetStatsSnapshotForPostHideFrame;
+  }
 
   const originalSettingsTabRenderForRerender = settingsTab.renderSettings;
   const originalSettingsTabRaf = settingsTab.requestWindowAnimationFrame;
@@ -3840,6 +4580,8 @@ try {
     plugin.saveSettings = originalPluginSaveSettingsForDebounce;
     settingsTab.saveSettingsDebounceTimer = null;
   }
+  settingsTab._isDisposed = false;
+  settingsTab._isVisible = true;
 
   const originalSettingsContainerWindow = settingsTab.containerEl.win;
   const originalPluginSaveSettingsForWindowOwnership = plugin.saveSettings;
@@ -3940,6 +4682,8 @@ try {
     plugin.saveSettings = originalPluginSaveSettingsForDebounce;
     settingsTab.saveSettingsDebounceTimer = null;
   }
+  settingsTab._isDisposed = false;
+  settingsTab._isVisible = true;
 
   assert(settingsTab.normalizeAllowedRootSelection("") === null, "Allowed roots should reject the empty vault root selection");
   assert(settingsTab.normalizeAllowedRootSelection("/") === null, "Allowed roots should reject the slash vault root selection");
@@ -3999,6 +4743,30 @@ try {
     console.error = originalConsoleErrorForButtonFailure;
   }
 
+  const staleButtonTab = new SettingsTabClass(plugin.app, plugin);
+  const staleButtonCalls = [];
+  let finishStaleButtonTask;
+  const staleButtonTask = new Promise((resolve) => {
+    finishStaleButtonTask = resolve;
+  });
+  const staleButtonRun = staleButtonTab.runButtonTask({
+    setDisabled(value) {
+      staleButtonCalls.push(["disabled", value]);
+      return this;
+    },
+    setButtonText(value) {
+      staleButtonCalls.push(["text", value]);
+      return this;
+    }
+  }, "common.refresh", "common.refreshing", async () => staleButtonTask);
+  staleButtonTab.hide();
+  finishStaleButtonTask();
+  await staleButtonRun;
+  assert(JSON.stringify(staleButtonCalls) === JSON.stringify([
+    ["disabled", true],
+    ["text", "Refreshing..."]
+  ]), `A settings task mutated its stale button after hide(): ${JSON.stringify(staleButtonCalls)}`);
+
   const subsettingRow = { settingEl: createMockElement() };
   let subsettingVisible = null;
   subsettingRow.settingEl.toggle = (value) => {
@@ -4028,6 +4796,7 @@ try {
     }
   };
   const tooltipContainer = createMockElement();
+  const pluginLifecycleCallbacksBeforeTooltip = plugin.registeredCallbacks.length;
   tooltipContainer.getBoundingClientRect = () => ({ left: 20, top: 60, width: 160, height: 20, bottom: 80 });
   settingsTab.getActiveDocument = () => activeDocument;
   settingsTab.getActiveWindow = () => ({
@@ -4051,11 +4820,65 @@ try {
   assert(activeDocument.body.children.length === 1, "Savings tooltip did not render on hover");
   assert(activeDocument.body.children[0].style.getPropertyValue("--local-image-compress-savings-tooltip-left"), "Savings tooltip did not calculate left position");
   assert(activeDocument.body.children[0].style.getPropertyValue("--local-image-compress-savings-tooltip-top"), "Savings tooltip did not calculate top position");
+  assert(activeDocument.body.children[0].style.getPropertyValue("--local-image-compress-savings-tooltip-arrow-x"), "Savings tooltip did not calculate arrow position");
+  assert(activeDocument.body.children[0].children[0].classList.contains("tiny-local-savings-tooltip-placement-above"), "Savings tooltip did not mark above-target placement");
   tooltipContainer.dispatchEvent("mouseleave", {});
   settingsTab.cleanupSavingsTooltips();
   assert(activeDocument.body.children.length === 0, "Savings tooltip cleanup left tooltip DOM behind");
   assert((tooltipContainer._listeners.mouseenter || []).length === 0, "Savings tooltip cleanup left mouseenter listener behind");
   assert((tooltipContainer._listeners.mouseleave || []).length === 0, "Savings tooltip cleanup left mouseleave listener behind");
+  assert(plugin.registeredCallbacks.length === pluginLifecycleCallbacksBeforeTooltip, "Render-scoped savings tooltip accumulated plugin-lifetime cleanup callbacks");
+
+  const scopedTooltipFrameTab = new SettingsTabClass(plugin.app, plugin);
+  const cancelledTooltipFrames = [];
+  let nextTooltipFrameHandle = 90;
+  let nextTooltipTimerHandle = 1;
+  const tooltipFrameWindow = {
+    innerWidth: 320,
+    innerHeight: 240,
+    requestAnimationFrame() {
+      return nextTooltipFrameHandle++;
+    },
+    cancelAnimationFrame(handle) {
+      cancelledTooltipFrames.push(handle);
+    },
+    setTimeout(callback) {
+      callback();
+      return nextTooltipTimerHandle++;
+    },
+    clearTimeout() {},
+    performance: { now: () => 0 },
+    document: activeDocument
+  };
+  scopedTooltipFrameTab.containerEl.win = tooltipFrameWindow;
+  scopedTooltipFrameTab.getActiveDocument = () => activeDocument;
+  scopedTooltipFrameTab.getActiveWindow = () => tooltipFrameWindow;
+  for (let iteration = 0; iteration < 3; iteration++) {
+    const scopedTooltipContainer = createMockElement();
+    scopedTooltipContainer.win = tooltipFrameWindow;
+    scopedTooltipContainer.doc = activeDocument;
+    scopedTooltipContainer.getBoundingClientRect = () => ({ left: 20, top: 60, width: 160, height: 20, bottom: 80 });
+    scopedTooltipFrameTab.createSavingsTooltip(scopedTooltipContainer, {
+      originalSize: 1000,
+      currentSize: 700,
+      savedSize: 300,
+      savedPercentage: 30,
+      processedFiles: 1,
+      totalFiles: 2,
+      estimatedFiles: 0
+    });
+    scopedTooltipContainer.dispatchEvent("mouseenter", {});
+    assert(scopedTooltipFrameTab._ownedAnimationFrames.size === 1, "Savings tooltip did not own its pending position frame");
+    scopedTooltipContainer.dispatchEvent("mouseleave", {});
+    assert(scopedTooltipFrameTab._ownedAnimationFrames.size === 0, "Hidden savings tooltip retained its pending position frame");
+    scopedTooltipContainer.dispatchEvent("mouseenter", {});
+    assert(scopedTooltipFrameTab._ownedAnimationFrames.size === 1, "Savings tooltip did not own its replacement position frame");
+    scopedTooltipFrameTab.cleanupSavingsTooltips();
+    assert(scopedTooltipFrameTab._ownedAnimationFrames.size === 0, "Savings tooltip rerender retained its pending position frame");
+    assert((scopedTooltipContainer._listeners.mouseenter || []).length === 0, "Savings tooltip rerender retained its old container listener");
+  }
+  assert(cancelledTooltipFrames.length === 6, `Savings tooltip cleanup cancelled ${cancelledTooltipFrames.length} of 6 render-scoped frames`);
+  assert(plugin.registeredCallbacks.length === pluginLifecycleCallbacksBeforeTooltip, "Repeated savings tooltip renders accumulated plugin-lifetime callbacks");
 
   const tooltipTimers = [];
   const tooltipTimerWindow = {
@@ -4189,6 +5012,7 @@ try {
 
   let settingsDisplayCount = 0;
   const originalSettingsTabUpdateStats = settingsTab.updateStats;
+  settingsTab._isDisposed = false;
   settingsTab._isVisible = true;
   settingsTab.updateStats = async () => {
     settingsDisplayCount += 1;
@@ -4251,6 +5075,34 @@ try {
     plugin.backgroundCompressionService.lastUserActivity = originalLastUserActivity;
     plugin.backgroundCompressionService.lastUserActivityPerfTime = originalLastUserActivityPerfTime;
   }
+
+  const popoutActivityListeners = new Map();
+  const popoutActivityDocument = {
+    addEventListener(name, callback) {
+      const callbacks = popoutActivityListeners.get(name) || [];
+      callbacks.push(callback);
+      popoutActivityListeners.set(name, callbacks);
+    },
+    removeEventListener(name, callback) {
+      const callbacks = popoutActivityListeners.get(name) || [];
+      popoutActivityListeners.set(name, callbacks.filter((candidate) => candidate !== callback));
+    }
+  };
+  const windowOpenHandler = plugin.app._workspaceHandlers["window-open"];
+  const windowCloseHandler = plugin.app._workspaceHandlers["window-close"];
+  assert(typeof windowOpenHandler === "function" && typeof windowCloseHandler === "function", "Popout activity lifecycle handlers were not registered");
+  windowOpenHandler({}, { document: popoutActivityDocument });
+  windowOpenHandler({}, { document: popoutActivityDocument });
+  assert(plugin.backgroundCompressionService.activityDocuments.has(popoutActivityDocument), "Future popout document was not tracked");
+  assert((popoutActivityListeners.get("keydown") || []).length === 1, "Popout activity document registered duplicate listeners");
+  plugin.backgroundCompressionService.lastUserActivityPerfTime = 0;
+  for (const callback of popoutActivityListeners.get("keydown") || []) {
+    callback({});
+  }
+  assert(plugin.backgroundCompressionService.lastUserActivityPerfTime > 0, "Popout keyboard activity did not reset the inactivity clock");
+  windowCloseHandler({}, { document: popoutActivityDocument });
+  assert(!plugin.backgroundCompressionService.activityDocuments.has(popoutActivityDocument), "Closed popout document stayed tracked");
+  assert((popoutActivityListeners.get("keydown") || []).length === 0, "Closed popout document kept activity listeners");
 
   const originalIsUserInactiveForThreshold = plugin.backgroundCompressionService.isUserInactive;
   const originalStartBackgroundCompression = plugin.backgroundCompressionService.startBackgroundCompression;
@@ -4683,15 +5535,16 @@ try {
   let compressedScanRealpathErrors = 0;
   let compressedScanCycleReaddirCalls = 0;
   try {
+    const compressedScanVaultRealPath = await originalFsRealpath(plugin.app.vault.adapter.getBasePath());
     fs.promises.realpath = async (dirPath) => {
       if (String(dirPath).includes(`${path.sep}bad`) || String(dirPath).includes("/bad")) {
         throw new Error("simulated realpath failure");
       }
       if (String(dirPath).includes("cycle")) {
-        return "C:/Vault/Cafe\u0301";
+        return path.join(compressedScanVaultRealPath, "Cafe\u0301");
       }
       if (String(dirPath).includes("virtual-compressed")) {
-        return "C:/Vault/Caf\u00e9";
+        return path.join(compressedScanVaultRealPath, "Caf\u00e9");
       }
       return originalFsRealpath(dirPath);
     };
@@ -4701,17 +5554,17 @@ try {
           compressedScanCycleReaddirCalls += 1;
         }
         return [
-          { name: "cycle", isSymbolicLink: () => false, isDirectory: () => true },
-          { name: "linked", isSymbolicLink: () => true, isDirectory: () => true },
-          { name: "bad", isSymbolicLink: () => false, isDirectory: () => true },
-          { name: "image.png", isSymbolicLink: () => false, isDirectory: () => false }
+          { name: "cycle", isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false },
+          { name: "linked", isSymbolicLink: () => true, isDirectory: () => true, isFile: () => false },
+          { name: "bad", isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false },
+          { name: "image.png", isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true }
         ];
       }
       return originalFsReaddir(dirPath, { withFileTypes: true });
     };
     fs.promises.stat = async (filePath) => {
       if (String(filePath).includes("virtual-compressed")) {
-        return { size: 12345 };
+        return { size: 12345, mtimeMs: 0, isDirectory: () => false };
       }
       return originalFsStat(filePath);
     };
@@ -4873,6 +5726,30 @@ try {
     plugin.imageIndex.ready = false;
     await plugin.imageIndex.upsert(createMockFile("Race/fresh-delta-before-rebuild.png", 25000, 1000), plugin.cache);
     assert(plugin.imageIndex.isReady() === false, "ImageIndex upsert marked a fresh index ready without a rebuild");
+
+    const recordsBeforeCancelledRebuild = plugin.imageIndex.getAllFiles().map((file) => file.path).sort();
+    let cancelledRebuildYieldReached = null;
+    let releaseCancelledRebuild = null;
+    const cancelledRebuildYieldPromise = new Promise((resolve) => {
+      cancelledRebuildYieldReached = resolve;
+    });
+    plugin.yieldToUi = async () => {
+      cancelledRebuildYieldReached();
+      await new Promise((resolve) => {
+        releaseCancelledRebuild = resolve;
+      });
+    };
+    const cancelledRebuild = plugin.imageIndex.rebuild(plugin.cache);
+    await cancelledRebuildYieldPromise;
+    plugin.imageIndex.cancelPendingWork();
+    releaseCancelledRebuild();
+    await cancelledRebuild;
+    assert(plugin.imageIndex.isReady() === false, "Cancelled ImageIndex rebuild published ready state after unload fence");
+    assert.deepEqual(
+      plugin.imageIndex.getAllFiles().map((file) => file.path).sort(),
+      recordsBeforeCancelledRebuild,
+      "Cancelled ImageIndex rebuild published a new records snapshot"
+    );
   } finally {
     plugin.yieldToUi = originalYieldForReadyRace;
     plugin.app._files = originalFilesForReadyRace;
@@ -5080,7 +5957,12 @@ try {
       await withTestTimeout("plugin guard enable retry", enableRetryGuard, 1000);
       const retryTimer = enableRetryTimers.find((timer) => !timer.cleared && timer.delay >= 10000);
       assert(retryTimer, "Plugin guard enable timeout did not schedule a retry timer");
-      await withTestTimeout("plugin guard enable retry callback", Promise.resolve(retryTimer.callback()), 1000);
+      retryTimer.callback();
+      await withTestTimeout("plugin guard enable retry callback", (async () => {
+        while (enableCalls < 2) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      })(), 1000);
       assert(enableCalls >= 2, `Plugin guard enable timeout did not schedule a retry: ${enableCalls}`);
       assert(plugin.app.plugins.enabledPlugins.has(guardedPluginId), "Plugin guard enable retry left the guarded plugin disabled");
       assert(guardEnableRetryWarnings.messages.some((message) => message.includes("Timed out while trying to enable plugin")), "Plugin guard enable timeout did not emit the expected warning");
@@ -5265,6 +6147,222 @@ try {
     assert(enableCalls === 0, "releaseAllGuards re-enabled a plugin after user/external toggle left it disabled");
     assert(!plugin.app.plugins.enabledPlugins.has(guardedPluginId), "releaseAllGuards ignored user/external disabled state");
     assert(plugin.pluginGuardService.guards.size === 0, "releaseAllGuards did not clear user-toggle guard state");
+
+    const PluginGuardServiceClass = plugin.pluginGuardService.constructor;
+    disableCalls = 0;
+    enableCalls = 0;
+    let releaseCrossInstanceDisableA = null;
+    let crossInstanceDisableAStarted = null;
+    const crossInstanceDisableAStartedPromise = new Promise((resolve) => {
+      crossInstanceDisableAStarted = resolve;
+    });
+    const crossInstanceGuardA = new PluginGuardServiceClass(plugin);
+    const ReloadedGuardPluginClass = loadFreshPluginClass();
+    const reloadedGuardPlugin = new ReloadedGuardPluginClass();
+    reloadedGuardPlugin.app = plugin.app;
+    reloadedGuardPlugin.manifest = { ...plugin.manifest };
+    const crossInstanceGuardB = reloadedGuardPlugin.pluginGuardService;
+    crossInstanceGuardA.operationTimeoutMs = 10;
+    crossInstanceGuardB.operationTimeoutMs = 1000;
+    plugin.app.plugins.enabledPlugins = new Set([guardedPluginId]);
+    plugin.app.plugins.disablePlugin = async (id) => {
+      disableCalls += 1;
+      if (disableCalls === 1) {
+        crossInstanceDisableAStarted();
+        await new Promise((resolve) => {
+          releaseCrossInstanceDisableA = resolve;
+        });
+      }
+      plugin.app.plugins.enabledPlugins.delete(id);
+    };
+    plugin.app.plugins.enablePlugin = async (id) => {
+      enableCalls += 1;
+      plugin.app.plugins.enabledPlugins.add(id);
+    };
+    const crossInstanceAcquireA = withRealGlobalTimers(() => crossInstanceGuardA.acquire(guardedPluginId));
+    await crossInstanceDisableAStartedPromise;
+    await crossInstanceAcquireA;
+    await crossInstanceGuardA.releaseAllGuards(true);
+    const crossInstanceAcquireB = crossInstanceGuardB.acquire(guardedPluginId);
+    await Promise.resolve();
+    releaseCrossInstanceDisableA();
+    await withTestTimeout("cross-module replacement guard acquire", crossInstanceAcquireB, 1000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert(enableCalls === 0, `Old guard module restored a plugin while the re-evaluated reload module owned it: ${enableCalls}`);
+    assert(!plugin.app.plugins.enabledPlugins.has(guardedPluginId), "Old guard module enabled the guarded plugin during re-evaluated reload work");
+    await crossInstanceGuardB.release(guardedPluginId);
+    assert(enableCalls === 1, `Reload guard did not restore the plugin exactly once after release: ${enableCalls}`);
+    assert(plugin.app.plugins.enabledPlugins.has(guardedPluginId), "Reload guard left the guarded plugin disabled after release");
+
+    disableCalls = 0;
+    enableCalls = 0;
+    let lateEnableStarted = null;
+    let releaseLateEnable = null;
+    const lateEnableStartedPromise = new Promise((resolve) => {
+      lateEnableStarted = resolve;
+    });
+    const lateEnableGuardA = new PluginGuardServiceClass(plugin);
+    const LateEnableReloadedPluginClass = loadFreshPluginClass();
+    const lateEnableReloadedPlugin = new LateEnableReloadedPluginClass();
+    lateEnableReloadedPlugin.app = plugin.app;
+    lateEnableReloadedPlugin.manifest = { ...plugin.manifest };
+    const lateEnableGuardB = lateEnableReloadedPlugin.pluginGuardService;
+    lateEnableGuardA.operationTimeoutMs = 10;
+    lateEnableGuardB.operationTimeoutMs = 1000;
+    plugin.app.plugins.enabledPlugins = new Set([guardedPluginId]);
+    plugin.app.plugins.disablePlugin = async (id) => {
+      disableCalls += 1;
+      plugin.app.plugins.enabledPlugins.delete(id);
+    };
+    plugin.app.plugins.enablePlugin = async (id) => {
+      enableCalls += 1;
+      if (enableCalls === 1) {
+        lateEnableStarted();
+        await new Promise((resolve) => {
+          releaseLateEnable = resolve;
+        });
+      }
+      plugin.app.plugins.enabledPlugins.add(id);
+    };
+    try {
+      await lateEnableGuardA.acquire(guardedPluginId);
+      const timedOutReleaseA = withRealGlobalTimers(() => lateEnableGuardA.release(guardedPluginId));
+      await lateEnableStartedPromise;
+      await withTestTimeout("late enable source release timeout", timedOutReleaseA, 1000);
+      await lateEnableGuardB.acquire(guardedPluginId);
+      assert(!plugin.app.plugins.enabledPlugins.has(guardedPluginId), "Reload guard did not begin with the plugin disabled after an old enable timeout");
+      releaseLateEnable();
+      await withTestTimeout("late enable compensation", (async () => {
+        while (disableCalls < 2 || plugin.app.plugins.enabledPlugins.has(guardedPluginId)) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      })(), 1000);
+      assert(!plugin.app.plugins.enabledPlugins.has(guardedPluginId), "Late old-module enable escaped compensation during reload guard work");
+      await lateEnableGuardB.release(guardedPluginId);
+      assert(enableCalls === 2 && plugin.app.plugins.enabledPlugins.has(guardedPluginId), "Reload guard did not restore exactly once after compensating a late enable");
+    } finally {
+      releaseLateEnable?.();
+      await lateEnableGuardA.releaseAllGuards(true);
+      await lateEnableGuardB.releaseAllGuards(true);
+    }
+
+    disableCalls = 0;
+    enableCalls = 0;
+    const afterEffectGuard = new PluginGuardServiceClass(plugin);
+    plugin.app.plugins.enabledPlugins = new Set([guardedPluginId]);
+    plugin.app.plugins.disablePlugin = async (id) => {
+      disableCalls += 1;
+      plugin.app.plugins.enabledPlugins.delete(id);
+      throw new Error("Injected disable after-effect rejection");
+    };
+    plugin.app.plugins.enablePlugin = async (id) => {
+      enableCalls += 1;
+      plugin.app.plugins.enabledPlugins.add(id);
+      throw new Error("Injected enable after-effect rejection");
+    };
+    let afterEffectTaskObservedDisabled = false;
+    await afterEffectGuard.withDisabled([guardedPluginId], async () => {
+      afterEffectTaskObservedDisabled = !plugin.app.plugins.enabledPlugins.has(guardedPluginId);
+    });
+    assert(afterEffectTaskObservedDisabled, "Plugin guard ignored a disable effect because the registry Promise rejected after changing state");
+    assert(disableCalls === 1 && enableCalls === 1, "Plugin guard retried or skipped an after-effect registry operation unexpectedly");
+    assert(plugin.app.plugins.enabledPlugins.has(guardedPluginId), "Plugin guard left the plugin disabled after an enable after-effect rejection");
+
+    const originalSetWindowTimeoutForGuardFence = plugin.setWindowTimeout;
+    const originalClearWindowTimeoutForGuardFence = plugin.clearWindowTimeout;
+    const fencedGuardTimers = [];
+    try {
+      plugin.setWindowTimeout = (callback, delay) => {
+        const timer = { callback, delay, cleared: false };
+        fencedGuardTimers.push(timer);
+        return timer;
+      };
+      plugin.clearWindowTimeout = (timer) => {
+        if (timer) {
+          timer.cleared = true;
+        }
+      };
+
+      const timeoutWindowGuard = new PluginGuardServiceClass(plugin);
+      timeoutWindowGuard.operationTimeoutMs = 5;
+      let resolveTimeoutWindowDisable = null;
+      let timeoutWindowEnableCalls = 0;
+      plugin.app.plugins.enabledPlugins = new Set([guardedPluginId]);
+      plugin.app.plugins.disablePlugin = async () => {
+        await new Promise((resolve) => {
+          resolveTimeoutWindowDisable = resolve;
+        });
+        plugin.app.plugins.enabledPlugins.delete(guardedPluginId);
+      };
+      plugin.app.plugins.enablePlugin = async () => {
+        timeoutWindowEnableCalls += 1;
+        plugin.app.plugins.enabledPlugins.add(guardedPluginId);
+      };
+      const timeoutWindowAcquire = timeoutWindowGuard.acquire(guardedPluginId);
+      for (let attempt = 0; attempt < 20 && (!resolveTimeoutWindowDisable || !fencedGuardTimers.some((timer) => !timer.cleared && timer.delay === 5)); attempt++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      const disableTimeoutWindowTimer = fencedGuardTimers.find((timer) => !timer.cleared && timer.delay === 5);
+      assert(disableTimeoutWindowTimer && resolveTimeoutWindowDisable, "Late-disable timeout-window test did not reach the operation boundary");
+      disableTimeoutWindowTimer.callback();
+      resolveTimeoutWindowDisable();
+      await withTestTimeout("late disable timeout-window acquire", timeoutWindowAcquire, 1000);
+      await new Promise((resolve) => setImmediate(resolve));
+      await timeoutWindowGuard.release(guardedPluginId);
+      assert(timeoutWindowEnableCalls === 1, "Disable completing immediately after timeout was not restored exactly once");
+
+      fencedGuardTimers.length = 0;
+      let postShutdownEnableCalls = 0;
+      const shutdownGuard = new PluginGuardServiceClass(plugin);
+      plugin.app.plugins.enabledPlugins = new Set();
+      plugin.app.plugins.enablePlugin = async () => {
+        postShutdownEnableCalls += 1;
+      };
+      shutdownGuard.scheduleEnableRetry(guardedPluginId);
+      const retryAfterShutdown = fencedGuardTimers.find((timer) => !timer.cleared);
+      assert(retryAfterShutdown, "PluginGuard shutdown test did not schedule a retry");
+      await shutdownGuard.releaseAllGuards(true);
+      await Promise.resolve(retryAfterShutdown.callback());
+      assert(postShutdownEnableCalls === 0, "PluginGuard retry invoked Plugin API after shutdown");
+      assert(shutdownGuard.enableRetryTimers.size === 0 && shutdownGuard.operationTimeouts.size === 0, "PluginGuard shutdown retained lifecycle timers");
+
+      fencedGuardTimers.length = 0;
+      const pendingShutdownGuard = new PluginGuardServiceClass(plugin);
+      let finishPendingShutdownDisable = null;
+      let pendingShutdownDisableFinished = null;
+      let postShutdownCompensationCalls = 0;
+      plugin.app.plugins.enabledPlugins = new Set([guardedPluginId]);
+      plugin.app.plugins.disablePlugin = async () => {
+        await new Promise((resolve) => {
+          finishPendingShutdownDisable = resolve;
+        });
+        plugin.app.plugins.enabledPlugins.delete(guardedPluginId);
+        pendingShutdownDisableFinished?.();
+      };
+      plugin.app.plugins.enablePlugin = async () => {
+        postShutdownCompensationCalls += 1;
+        plugin.app.plugins.enabledPlugins.add(guardedPluginId);
+      };
+      const pendingShutdownDisableCompleted = new Promise((resolve) => {
+        pendingShutdownDisableFinished = resolve;
+      });
+      const pendingShutdownAcquire = pendingShutdownGuard.acquire(guardedPluginId);
+      for (let attempt = 0; attempt < 20 && !finishPendingShutdownDisable; attempt++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      assert(finishPendingShutdownDisable, "PluginGuard shutdown test did not reach its pending disable operation");
+      await pendingShutdownGuard.releaseAllGuards(true);
+      postShutdownCompensationCalls = 0;
+      finishPendingShutdownDisable();
+      await pendingShutdownDisableCompleted;
+      await pendingShutdownAcquire;
+      await new Promise((resolve) => setImmediate(resolve));
+      assert(postShutdownCompensationCalls === 1, "Late disable after shutdown was not compensated exactly once");
+      assert(plugin.app.plugins.enabledPlugins.has(guardedPluginId), "Late disable after shutdown left the third-party plugin disabled");
+    } finally {
+      plugin.setWindowTimeout = originalSetWindowTimeoutForGuardFence;
+      plugin.clearWindowTimeout = originalClearWindowTimeoutForGuardFence;
+    }
   } finally {
     plugin.app.plugins = originalPlugins;
   }
@@ -5318,11 +6416,19 @@ try {
   const originalCacheFile = plugin.cache.cacheFile;
   const originalCacheBackupsDir = plugin.cache.cacheBackupsDir;
   const originalCacheData = plugin.cache.cacheData;
+  const originalFilesForMigration = plugin.app._files;
+  const originalCacheAdapterBasePath = plugin.app.vault.adapter.basePath;
+  const originalCacheAdapterAbsolutePath = plugin.app.vault.adapter.path.absolute;
   const setCacheTestFile = (cacheFile, cacheBackupsDir = path.join(path.dirname(cacheFile), "cache-backups")) => {
-    plugin.cache.cacheFile = cacheFile;
-    plugin.cache.cacheBackupsDir = cacheBackupsDir;
+    plugin.app.vault.adapter.basePath = path.dirname(cacheFile);
+    plugin.app.vault.adapter.path.absolute = path.dirname(cacheFile);
+    plugin.cache.cacheFile = plugin.getPlatformPorts().fs.toVaultRelativePath(cacheFile);
+    plugin.cache.cacheBackupsDir = plugin.getPlatformPorts().fs.toVaultRelativePath(cacheBackupsDir);
   };
+  const resolveCacheTestPath = (filePath) => plugin.getPlatformPorts().fs.resolvePath(String(filePath));
   const restoreCacheTestPaths = () => {
+    plugin.app.vault.adapter.basePath = originalCacheAdapterBasePath;
+    plugin.app.vault.adapter.path.absolute = originalCacheAdapterAbsolutePath;
     plugin.cache.cacheFile = originalCacheFile;
     plugin.cache.cacheBackupsDir = originalCacheBackupsDir;
   };
@@ -5337,20 +6443,56 @@ try {
           timestamp: 1,
           originalSize: 1000
         },
+        [`Images/safe-legacy-moved.png:${MOCK_MD5_ALT}:100`]: {
+          md5: MOCK_MD5_ALT,
+          mtime: 100,
+          timestamp: 300,
+          originalSize: 1000
+        },
+        [`Images/estimated-legacy-moved.png:${MOCK_MD5}:100`]: {
+          md5: MOCK_MD5,
+          mtime: 100,
+          timestamp: 300
+        },
         "Skipped/raw.png": {
           skipped: true,
           reason: "pngquant_quality_failed",
           timestamp: 1,
           sourceMtime: 5,
           sourceSize: 100
+        },
+        "Skipped/path-only.png": {
+          skipped: true,
+          reason: "too_small",
+          timestamp: 1,
+          originalSize: 100
         }
       }
     }, null, 2));
+    plugin.app._files = [
+      createMockFile("Images/safe-legacy-moved.png", 600, 200),
+      createMockFile("Images/estimated-legacy-moved.png", 700, 250)
+    ];
     setCacheTestFile(migrationCacheFile);
     plugin.cache.loadCacheSync();
     assert(plugin.cache.cacheData.version === plugin.cache.CACHE_VERSION, "Cache version mismatch was not migrated");
     assert(plugin.cache.getEntriesForPath("Folder:WithColon/image.png").length === 1, "Legacy cache key with ':' in path was not parsed from the right");
+    const migratedSafeMovedEntry = plugin.cache.getEntriesForPath("Images/safe-legacy-moved.png")[0]?.[1];
+    assert(migratedSafeMovedEntry?.state === "moved", "Safe legacy processed cache entry was not promoted to moved state");
+    assert(migratedSafeMovedEntry.processedMtime === 200 && migratedSafeMovedEntry.processedSize === 600, "Safe legacy processed cache entry did not capture current processed identity");
+    assert(migratedSafeMovedEntry.originalSize === 1000, "Safe legacy processed cache entry did not preserve exact originalSize");
+    assert(migratedSafeMovedEntry.sourceMtime === undefined && migratedSafeMovedEntry.sourceSize === undefined, "Safe legacy moved migration invented missing source identity");
+    const migratedEstimatedMovedEntry = plugin.cache.getEntriesForPath("Images/estimated-legacy-moved.png")[0]?.[1];
+    assert(migratedEstimatedMovedEntry?.state === "moved", "Legacy processed cache entry without originalSize was not promoted to moved state");
+    assert(migratedEstimatedMovedEntry.processedMtime === 250 && migratedEstimatedMovedEntry.processedSize === 700, "Estimated legacy processed cache entry did not capture current processed identity");
+    assert(!Object.prototype.hasOwnProperty.call(migratedEstimatedMovedEntry, "originalSize"), "Estimated legacy moved migration invented originalSize");
+    assert(await plugin.cache.getFreshEntryForFile(createMockFile("Images/estimated-legacy-moved.png", 700, 250)), "Estimated legacy moved cache entry was not fresh after migration");
+    const changedLegacyMovedFile = createMockFile("Images/estimated-legacy-moved.png", 701, 251);
+    fullAuditBugReproducerObserved.legacyMovedCacheInvalidated =
+      await plugin.cache.getFreshEntryForFile(changedLegacyMovedFile) === null
+      && !await plugin.cache.isFileAlreadyProcessed(changedLegacyMovedFile);
     assert(plugin.cache.getEntriesForPath("Skipped/raw.png").length === 1, "Raw skipped cache key was not preserved");
+    assert(plugin.cache.getEntriesForPath("Skipped/path-only.png").length === 0, "Legacy skipped path-only cache entry was preserved instead of dropped");
     const migratedColonEntry = plugin.cache.getEntriesForPath("Folder:WithColon/image.png")[0][1];
     const migratedSkippedEntry = plugin.cache.getEntriesForPath("Skipped/raw.png")[0][1];
     assert(migratedColonEntry.path === "Folder:WithColon/image.png", `Migrated entry path is wrong: ${migratedColonEntry.path}`);
@@ -5363,8 +6505,106 @@ try {
     assert(migrationBackups.length === 1, "Cache migration did not create a backup");
   } finally {
     restoreCacheTestPaths();
+    plugin.app._files = originalFilesForMigration;
     plugin.cache.cacheData = originalCacheData;
     fs.rmSync(migrationTemp, { recursive: true, force: true });
+  }
+
+  const migrationRevisionTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-migration-revision-"));
+  const originalCreateBackupForMigrationRevision = plugin.cache.createBackup;
+  try {
+    const migrationRevisionFile = path.join(migrationRevisionTemp, "tinyLocal-cache.json");
+    const newerMigrationPayload = JSON.stringify({
+      version: plugin.cache.CACHE_VERSION,
+      entries: {},
+      newerMarker: "preserve-migration-winner"
+    });
+    fs.writeFileSync(migrationRevisionFile, JSON.stringify({ version: "0.9.0", entries: {} }));
+    setCacheTestFile(migrationRevisionFile);
+    let injectedNewerMigration = false;
+    plugin.cache.createBackup = async () => {
+      await originalCreateBackupForMigrationRevision.call(plugin.cache);
+      if (!injectedNewerMigration) {
+        injectedNewerMigration = true;
+        fs.writeFileSync(migrationRevisionFile, newerMigrationPayload);
+      }
+    };
+    await plugin.cache.loadCache();
+    assert(injectedNewerMigration, "Cache migration revision test did not inject a concurrent writer");
+    assert.equal(fs.readFileSync(migrationRevisionFile, "utf8"), newerMigrationPayload, "Cache migration overwrote a newer concurrent revision");
+    assert(plugin.cache.cacheData.newerMarker === "preserve-migration-winner", "Cache migration did not reload the newer winning revision");
+  } finally {
+    plugin.cache.createBackup = originalCreateBackupForMigrationRevision;
+    restoreCacheTestPaths();
+    plugin.cache.cacheData = originalCacheData;
+    fs.rmSync(migrationRevisionTemp, { recursive: true, force: true });
+  }
+
+  const repairRevisionTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-repair-revision-"));
+  const originalWriteCacheFileAtomicForRepairRevision = plugin.cache.writeCacheFileAtomic;
+  try {
+    const repairRevisionFile = path.join(repairRevisionTemp, "tinyLocal-cache.json");
+    const newerRepairPayload = JSON.stringify({
+      version: plugin.cache.CACHE_VERSION,
+      entries: {},
+      newerMarker: "preserve-repair-winner"
+    });
+    fs.writeFileSync(repairRevisionFile, "{ invalid repair race");
+    setCacheTestFile(repairRevisionFile);
+    let injectedNewerRepair = false;
+    plugin.cache.writeCacheFileAtomic = async (...args) => {
+      if (!injectedNewerRepair) {
+        injectedNewerRepair = true;
+        fs.writeFileSync(repairRevisionFile, newerRepairPayload);
+      }
+      return await originalWriteCacheFileAtomicForRepairRevision.apply(plugin.cache, args);
+    };
+    await plugin.cache.loadCache();
+    assert(injectedNewerRepair, "Cache repair revision test did not inject a concurrent writer");
+    assert.equal(fs.readFileSync(repairRevisionFile, "utf8"), newerRepairPayload, "Cache repair overwrote a newer concurrent revision");
+    assert(plugin.cache.cacheData.newerMarker === "preserve-repair-winner", "Cache repair did not reload the newer winning revision");
+  } finally {
+    plugin.cache.writeCacheFileAtomic = originalWriteCacheFileAtomicForRepairRevision;
+    restoreCacheTestPaths();
+    plugin.cache.cacheData = originalCacheData;
+    fs.rmSync(repairRevisionTemp, { recursive: true, force: true });
+  }
+
+  const cacheContentIdentityTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-content-identity-"));
+  try {
+    setCacheTestFile(path.join(cacheContentIdentityTemp, "tinyLocal-cache.json"));
+    const contentIdentityPath = "Images/content-identity.bin";
+    const contentIdentityFile = path.join(cacheContentIdentityTemp, "Images", "content-identity.bin");
+    const originalIdentityBytes = Buffer.from("alpha");
+    const substitutedIdentityBytes = Buffer.from("bravo");
+    fs.mkdirSync(path.dirname(contentIdentityFile), { recursive: true });
+    fs.writeFileSync(contentIdentityFile, originalIdentityBytes);
+    const contentIdentityMtime = 123456;
+    const contentIdentityMock = createMockFile(contentIdentityPath, originalIdentityBytes.length, contentIdentityMtime);
+    const contentIdentityKey = plugin.cache.buildCacheKey(contentIdentityPath, MOCK_MD5, contentIdentityMtime);
+    plugin.cache.cacheData = {
+      version: plugin.cache.CACHE_VERSION,
+      entries: {
+        [contentIdentityKey]: {
+          path: contentIdentityPath,
+          md5: MOCK_MD5,
+          mtime: contentIdentityMtime,
+          timestamp: 1,
+          lastAccessMs: Date.now() + 60_000,
+          state: "processed",
+          processedMtime: contentIdentityMtime,
+          processedSize: originalIdentityBytes.length,
+          outputSha256: crypto.createHash("sha256").update(originalIdentityBytes).digest("hex")
+        }
+      }
+    };
+    assert(await plugin.cache.isFileAlreadyProcessed(contentIdentityMock), "Content-bound cache entry rejected its original bytes");
+    fs.writeFileSync(contentIdentityFile, substitutedIdentityBytes);
+    assert(!await plugin.cache.isFileAlreadyProcessed(contentIdentityMock), "Cache freshness accepted substituted bytes with identical size and mtime metadata");
+  } finally {
+    restoreCacheTestPaths();
+    plugin.cache.cacheData = originalCacheData;
+    fs.rmSync(cacheContentIdentityTemp, { recursive: true, force: true });
   }
 
   const corruptCacheTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-corrupt-cache-"));
@@ -5375,11 +6615,12 @@ try {
     await plugin.cache.loadCache();
     assert(plugin.cache.lastLoadError, "Corrupt async cache load did not record lastLoadError");
     assert(plugin.cache.brokenCacheBackupPath, "Corrupt async cache load did not record brokenCacheBackupPath");
-    assert(fs.existsSync(plugin.cache.brokenCacheBackupPath), "Corrupt async cache load did not create a broken cache copy");
-    assert(plugin.cache.brokenCacheBackupPath.includes(path.join("cache-backups", "broken")), "Broken async cache copy was not placed under cache-backups/broken");
-    assert(fs.readFileSync(plugin.cache.brokenCacheBackupPath, "utf8") === "{ invalid json", "Broken async cache copy does not preserve original corrupt content");
+    const asyncBrokenPath = plugin.getPlatformPorts().fs.resolvePath(plugin.cache.brokenCacheBackupPath);
+    assert(fs.existsSync(asyncBrokenPath), "Corrupt async cache load did not create a broken cache copy");
+    assert(plugin.cache.brokenCacheBackupPath.includes("cache-backups/broken"), "Broken async cache copy was not placed under cache-backups/broken");
+    assert(fs.readFileSync(asyncBrokenPath, "utf8") === "{ invalid json", "Broken async cache copy does not preserve original corrupt content");
     assert(Object.keys(plugin.cache.cacheData.entries).length === 0, "Corrupt async cache load did not fall back to an empty in-memory cache");
-    const asyncBrokenDir = path.dirname(plugin.cache.brokenCacheBackupPath);
+    const asyncBrokenDir = path.dirname(asyncBrokenPath);
     const asyncBrokenCount = fs.readdirSync(asyncBrokenDir).filter((name) => name.startsWith("tinyLocal-cache.broken-")).length;
     assert(JSON.parse(fs.readFileSync(corruptCacheFile, "utf8")).version === plugin.cache.CACHE_VERSION, "Corrupt async cache file was not replaced with an empty valid cache");
     await plugin.cache.loadCache();
@@ -5392,13 +6633,18 @@ try {
     plugin.cache.loadCacheSync();
     assert(plugin.cache.lastLoadError, "Corrupt sync cache load did not record lastLoadError");
     assert(plugin.cache.brokenCacheBackupPath, "Corrupt sync cache load did not record brokenCacheBackupPath");
-    assert(fs.existsSync(plugin.cache.brokenCacheBackupPath), "Corrupt sync cache load did not create a broken cache copy");
-    assert(plugin.cache.brokenCacheBackupPath.includes(path.join("cache-backups", "broken")), "Broken sync cache copy was not placed under cache-backups/broken");
-    assert(fs.readFileSync(plugin.cache.brokenCacheBackupPath, "utf8") === "{ invalid json sync", "Broken sync cache copy does not preserve original corrupt content");
-    assert(JSON.parse(fs.readFileSync(corruptSyncCacheFile, "utf8")).version === plugin.cache.CACHE_VERSION, "Corrupt sync cache file was not replaced with an empty valid cache");
+    const syncBrokenPath = plugin.getPlatformPorts().fs.resolvePath(plugin.cache.brokenCacheBackupPath);
+    assert(fs.existsSync(syncBrokenPath), "Corrupt sync cache load did not create a broken cache copy");
+    assert(plugin.cache.brokenCacheBackupPath.includes("cache-backups/broken"), "Broken sync cache copy was not placed under cache-backups/broken");
+    assert(fs.readFileSync(syncBrokenPath, "utf8") === "{ invalid json sync", "Broken sync cache copy does not preserve original corrupt content");
+    assert(fs.readFileSync(corruptSyncCacheFile, "utf8") === "{ invalid json sync", "Sync recovery performed an unsafe raw cache replacement");
+    assert(fs.readdirSync(corruptCacheTemp).some((name) => name.startsWith(".tinyLocal-cache-pending-")), "Sync recovery did not publish a pending journal");
+    await plugin.cache.loadCache();
+    assert(JSON.parse(fs.readFileSync(corruptSyncCacheFile, "utf8")).version === plugin.cache.CACHE_VERSION, "Async startup did not replay the sync recovery journal");
 
     const originalWriteCacheFileAtomic = plugin.cache.writeCacheFileAtomic;
     const originalWriteCacheFileSyncAtomic = plugin.cache.writeCacheFileSyncAtomic;
+    const originalPersistPendingCacheWriteSync = plugin.cache.persistPendingCacheWriteSync;
     const originalConsoleErrorForBrokenRecovery = console.error;
     let brokenRecoveryLogs = 0;
     try {
@@ -5416,23 +6662,24 @@ try {
       };
       await plugin.cache.loadCache();
       assert(plugin.cache.brokenCacheBackupPath, "Async recovery write failure did not keep a broken cache backup path");
-      assert(fs.existsSync(plugin.cache.brokenCacheBackupPath), "Async recovery write failure did not preserve a broken cache copy");
+      assert(fs.existsSync(plugin.getPlatformPorts().fs.resolvePath(plugin.cache.brokenCacheBackupPath)), "Async recovery write failure did not preserve a broken cache copy");
       assert(fs.readFileSync(recoveryAsyncCacheFile, "utf8") === "{ invalid recovery async", "Async recovery write failure unexpectedly rewrote the corrupt cache");
 
       const recoverySyncCacheFile = path.join(corruptCacheTemp, "tinyLocal-cache-recovery-sync.json");
       fs.writeFileSync(recoverySyncCacheFile, "{ invalid recovery sync");
       setCacheTestFile(recoverySyncCacheFile);
-      plugin.cache.writeCacheFileSyncAtomic = () => {
-        throw new Error("simulated sync recovery write failure");
+      plugin.cache.persistPendingCacheWriteSync = () => {
+        throw new Error("simulated sync pending-journal failure");
       };
       plugin.cache.loadCacheSync();
       assert(plugin.cache.brokenCacheBackupPath, "Sync recovery write failure did not keep a broken cache backup path");
-      assert(fs.existsSync(plugin.cache.brokenCacheBackupPath), "Sync recovery write failure did not preserve a broken cache copy");
+      assert(fs.existsSync(plugin.getPlatformPorts().fs.resolvePath(plugin.cache.brokenCacheBackupPath)), "Sync recovery write failure did not preserve a broken cache copy");
       assert(fs.readFileSync(recoverySyncCacheFile, "utf8") === "{ invalid recovery sync", "Sync recovery write failure unexpectedly rewrote the corrupt cache");
       assert(brokenRecoveryLogs === 2, `Broken cache recovery logged wrong number of failures: ${brokenRecoveryLogs}`);
     } finally {
       plugin.cache.writeCacheFileAtomic = originalWriteCacheFileAtomic;
       plugin.cache.writeCacheFileSyncAtomic = originalWriteCacheFileSyncAtomic;
+      plugin.cache.persistPendingCacheWriteSync = originalPersistPendingCacheWriteSync;
       console.error = originalConsoleErrorForBrokenRecovery;
     }
   } finally {
@@ -5448,6 +6695,7 @@ try {
   const originalCacheSaveCacheForCompaction = plugin.cache.saveCache;
   const originalGetFileMd5ForCompaction = plugin.cache.getFileMd5;
   const originalGetOutputMetadataForCompaction = plugin.cache.getOutputMetadata;
+  const originalPointCompactionForCompaction = plugin.cache.compaction.compactPath;
   try {
     const currentFile = createMockFile("Images/current.png", 80, 20);
     const conflictFile = createMockFile("Images/conflict.png", 70, 30);
@@ -5503,11 +6751,16 @@ try {
     plugin.cache.saveCache = async (options) => {
       compactionSaveCalls += 1;
       compactionSaveOptions = options;
+      return true;
     };
 
     const compactionResult = await plugin.cache.compactCache();
     assert(compactionResult.removed === 3 && compactionResult.missingFilesRemoved === 1 && compactionResult.supersededRemoved === 2, `Cache compaction returned wrong counts: ${JSON.stringify(compactionResult)}`);
     assert(!plugin.cache.cacheData.entries[staleKey] && !plugin.cache.cacheData.entries[missingModernKey] && !plugin.cache.cacheData.entries[stalePendingKey], "Cache compaction kept proven stale modern entries");
+    assert(
+      [staleKey, missingModernKey, stalePendingKey].every((cacheKey) => plugin.cache.getMutationRevision(plugin.cache.cacheData.tombstones?.[cacheKey])),
+      "Cache compaction deleted entries without logical tombstones, allowing stale snapshots to resurrect them"
+    );
     assert(plugin.cache.cacheData.entries[currentKey] && plugin.cache.cacheData.entries[missingLegacyKey], "Cache compaction removed current or legacy entries");
     assert(plugin.cache.cacheData.entries[conflictPendingKey] && plugin.cache.cacheData.entries[activePendingKey], "Cache compaction removed active/conflicting pending_move entries");
     assert(plugin.cache.cacheData.entries[ambiguousLeftKey] && plugin.cache.cacheData.entries[ambiguousRightKey], "Cache compaction removed ambiguous source records");
@@ -5520,19 +6773,235 @@ try {
     assert(secondCompactionResult.removed === 0, "Cache compaction removed ambiguous/current entries on a repeated pass");
     assert(compactionBackupCalls === 1 && compactionSaveCalls === 1, "No-op cache compaction wrote a backup or cache file");
 
+    const replacementRaceKey = "modern:replacement-race";
+    const newerReplacementEntry = { path: "Missing/replacement-race.png", state: "moved", processedMtime: 99, processedSize: 9, timestamp: 99 };
+    plugin.cache.cacheData.entries[replacementRaceKey] = { path: "Missing/replacement-race.png", state: "skipped", sourceMtime: 1, sourceSize: 10, timestamp: 1 };
+    let replacementRaceInjected = false;
+    plugin.cache.createBackup = async () => {
+      compactionBackupCalls += 1;
+      if (!replacementRaceInjected) {
+        replacementRaceInjected = true;
+        plugin.cache.cacheData.entries[replacementRaceKey] = newerReplacementEntry;
+      }
+    };
+    const savesBeforeReplacementRace = compactionSaveCalls;
+    const replacementRaceResult = await plugin.cache.compactCache();
+    assert(replacementRaceResult.removed === 0, "Cache compaction reported removal after its selected key was replaced");
+    assert(plugin.cache.cacheData.entries[replacementRaceKey] === newerReplacementEntry, "Cache compaction deleted a newer replacement of the same key");
+    assert(compactionSaveCalls === savesBeforeReplacementRace, "Cache compaction persisted a stale deletion after key replacement");
+
     plugin.cache.cacheData.entries["deleted:modern"] = { path: "Deleted/child.png", state: "skipped", sourceMtime: 1, sourceSize: 10 };
     plugin.cache.cacheData.entries["deleted:legacy"] = { path: "Deleted/legacy.png", state: "processed", timestamp: 1 };
     const deletedPathResult = await plugin.cache.compactDeletedPath("Deleted");
     assert(deletedPathResult.removed === 1 && !plugin.cache.cacheData.entries["deleted:modern"], "Point compaction did not remove a deleted modern child entry");
+    assert(plugin.cache.getMutationRevision(plugin.cache.cacheData.tombstones?.["deleted:modern"]), "Point compaction deleted an entry without a logical tombstone");
     assert(plugin.cache.cacheData.entries["deleted:legacy"], "Point compaction removed a deleted legacy child entry");
-    assert(compactionBackupCalls === 2 && compactionSaveCalls === 2, "Point compaction did not create exactly one backup and one save");
+    assert(compactionBackupCalls === 3 && compactionSaveCalls === 2, "Point compaction or replacement-race verification used the wrong backup/save count");
+
+    plugin.cache.compaction.compactPath = async () => {
+      throw new Error("post-commit point compaction failure");
+    };
+    assert.deepEqual(
+      await plugin.cache.compactPath("Images/already-committed.png"),
+      { removed: 0, missingFilesRemoved: 0, supersededRemoved: 0 },
+      "Best-effort point compaction escaped after a durable cache commit"
+    );
   } finally {
     plugin.app._files = originalFilesForCompaction;
     plugin.cache.createBackup = originalCacheCreateBackupForCompaction;
     plugin.cache.saveCache = originalCacheSaveCacheForCompaction;
     plugin.cache.getFileMd5 = originalGetFileMd5ForCompaction;
     plugin.cache.getOutputMetadata = originalGetOutputMetadataForCompaction;
+    plugin.cache.compaction.compactPath = originalPointCompactionForCompaction;
     plugin.cache.cacheData = originalCacheData;
+  }
+
+  const failedCacheCommitTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-failed-cache-commit-"));
+  const originalFilesForFailedCacheCommit = plugin.app._files;
+  const originalCacheDataForFailedCacheCommit = plugin.cache.cacheData;
+  const originalSaveCacheForFailedCacheCommit = plugin.cache.saveCache;
+  const originalCreateBackupForFailedCacheCommit = plugin.cache.createBackup;
+  const failedCacheCommitPorts = plugin.getPlatformPorts();
+  const originalFileSha256ForFailedCacheCommit = failedCacheCommitPorts.hash.fileSha256Hex;
+  const originalRemoveFileForFailedCacheCommit = failedCacheCommitPorts.fs.removeFileIfUnchanged;
+  const originalStatForFailedCacheCommit = failedCacheCommitPorts.fs.stat;
+  const buildArtifact = (sourcePath, outputPath, outputBytes, sourceMtime) => ({
+    sourcePath,
+    sourceMtime,
+    sourceSize: 100,
+    sourceMd5: crypto.createHash("md5").update(sourcePath).digest("hex"),
+    sourceSha256: crypto.createHash("sha256").update(sourcePath).digest("hex"),
+    outputPath,
+    outputSize: outputBytes.byteLength,
+    outputSha256: crypto.createHash("sha256").update(outputBytes).digest("hex"),
+    compressionSettingsKey: "smoke:failed-cache-commit"
+  });
+  const assertCacheRolledBack = (before, message) => {
+    assert.equal(plugin.cache.serializeForDisk(), before, message);
+  };
+  try {
+    setCacheTestFile(path.join(failedCacheCommitTemp, "tinyLocal-cache.json"));
+    plugin.cache.acceptingWrites = true;
+
+    const staleMetadataSourcePath = "Images/stale-output-metadata.png";
+    const staleMetadataOutputPath = "Compressed/stale-output-metadata.bin";
+    const staleMetadataNativePath = path.join(failedCacheCommitTemp, ...staleMetadataOutputPath.split("/"));
+    const staleMetadataBytes = Buffer.alloc(40, 0x10);
+    fs.mkdirSync(path.dirname(staleMetadataNativePath), { recursive: true });
+    fs.writeFileSync(staleMetadataNativePath, staleMetadataBytes);
+    plugin.app._files = [createMockFile(staleMetadataSourcePath, 100, 9)];
+    plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
+    let staleOutputStatReads = 0;
+    failedCacheCommitPorts.fs.stat = async function(filePath) {
+      const stat = await originalStatForFailedCacheCommit.call(this, filePath);
+      if (filePath === staleMetadataOutputPath && stat) {
+        staleOutputStatReads++;
+        return { ...stat, size: 0 };
+      }
+      return stat;
+    };
+    const staleMetadataArtifact = buildArtifact(staleMetadataSourcePath, staleMetadataOutputPath, staleMetadataBytes, 9);
+    const staleMetadataResult = await withRealGlobalTimers(() => plugin.cache.addCompressionArtifact(staleMetadataArtifact));
+    assert.equal(staleMetadataResult, true, "addCompressionArtifact() rejected exact output bytes with stale size metadata");
+    const staleMetadataEntry = plugin.cache.getEntriesForPath(staleMetadataSourcePath)[0]?.[1];
+    assert(staleOutputStatReads >= 2, "Compression artifact test did not exercise both stale metadata fences");
+    assert.equal(staleMetadataEntry?.outputSize, staleMetadataBytes.byteLength, "Cache did not retain the compressor-verified output size");
+    failedCacheCommitPorts.fs.stat = originalStatForFailedCacheCommit;
+
+    const substitutionOutputPath = "Compressed/substitution.bin";
+    const substitutionNativePath = path.join(failedCacheCommitTemp, ...substitutionOutputPath.split("/"));
+    const ownedSubstitutionBytes = Buffer.alloc(32, 0x11);
+    const foreignSubstitutionBytes = Buffer.alloc(32, 0x22);
+    fs.mkdirSync(path.dirname(substitutionNativePath), { recursive: true });
+    fs.writeFileSync(substitutionNativePath, ownedSubstitutionBytes);
+    plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
+    const substitutionCacheBefore = plugin.cache.serializeForDisk();
+    let substitutionInjected = false;
+    failedCacheCommitPorts.hash.fileSha256Hex = async function(filePath, token) {
+      if (filePath === substitutionOutputPath && !substitutionInjected) {
+        substitutionInjected = true;
+        fs.writeFileSync(substitutionNativePath, foreignSubstitutionBytes);
+      }
+      return await originalFileSha256ForFailedCacheCommit.call(this, filePath, token);
+    };
+    await assert.rejects(
+      withRealGlobalTimers(() => plugin.cache.addCompressionArtifact(
+        buildArtifact("Images/substitution.png", substitutionOutputPath, ownedSubstitutionBytes, 10)
+      )),
+      /Compression output changed before cache commit/,
+      "addCompressionArtifact() accepted a same-size foreign substitution between stat and hash"
+    );
+    assert(substitutionInjected, "Compression artifact substitution test did not reach the hash boundary");
+    assertCacheRolledBack(substitutionCacheBefore, "Rejected foreign compression output mutated cache RAM");
+    assert(fs.readFileSync(substitutionNativePath).equals(foreignSubstitutionBytes), "Rejected foreign compression output was removed or overwritten");
+    failedCacheCommitPorts.hash.fileSha256Hex = originalFileSha256ForFailedCacheCommit;
+
+    plugin.cache.saveCache = async () => false;
+    const failedOutputPath = "Compressed/save-failed.bin";
+    const failedOutputNativePath = path.join(failedCacheCommitTemp, ...failedOutputPath.split("/"));
+    const siblingOutputNativePath = path.join(failedCacheCommitTemp, "Compressed", "foreign-sibling.bin");
+    const failedOutputBytes = Buffer.alloc(24, 0x33);
+    const siblingOutputBytes = Buffer.alloc(24, 0x44);
+    fs.writeFileSync(failedOutputNativePath, failedOutputBytes);
+    fs.writeFileSync(siblingOutputNativePath, siblingOutputBytes);
+    plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
+    const failedArtifactCacheBefore = plugin.cache.serializeForDisk();
+    let cleanupIdentity = null;
+    failedCacheCommitPorts.fs.removeFileIfUnchanged = async function(filePath, expectedSha256, token) {
+      cleanupIdentity = { filePath, expectedSha256 };
+      return await originalRemoveFileForFailedCacheCommit.call(this, filePath, expectedSha256, token);
+    };
+    const failedArtifact = buildArtifact("Images/save-failed.png", failedOutputPath, failedOutputBytes, 11);
+    const failedArtifactResult = await withRealGlobalTimers(() => plugin.cache.addCompressionArtifact(failedArtifact));
+    assert.equal(failedArtifactResult, false, "addCompressionArtifact() acknowledged a failed cache save");
+    assertCacheRolledBack(failedArtifactCacheBefore, "Failed compression artifact commit left non-durable cache RAM");
+    assert.deepEqual(
+      cleanupIdentity,
+      { filePath: failedOutputPath, expectedSha256: failedArtifact.outputSha256 },
+      "Failed compression artifact commit did not clean up its exact owned output identity"
+    );
+    assert(!fs.existsSync(failedOutputNativePath), "Failed compression artifact commit retained its exact owned output");
+    assert(fs.readFileSync(siblingOutputNativePath).equals(siblingOutputBytes), "Failed compression artifact cleanup touched a foreign sibling output");
+    failedCacheCommitPorts.fs.removeFileIfUnchanged = originalRemoveFileForFailedCacheCommit;
+
+    const skippedFile = createMockFile("Images/save-failed-skip.png", 100, 12);
+    await setMockFiles(plugin, [skippedFile]);
+    plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
+    const skippedCacheBefore = plugin.cache.serializeForDisk();
+    const skippedResult = await plugin.cache.addSkippedEntry(skippedFile.path, "too_small");
+    assert.equal(skippedResult, false, "addSkippedEntry() acknowledged a failed cache save");
+    assertCacheRolledBack(skippedCacheBefore, "Failed skipped-entry commit left non-durable cache RAM");
+
+    const renameOldPath = "Images/save-failed-rename.png";
+    const renameNewPath = "Images/save-failed-renamed.png";
+    const renameKey = plugin.cache.buildCacheKey(renameOldPath, MOCK_MD5, 13);
+    const renameData = plugin.cache.getEmptyCacheData();
+    renameData.entries[renameKey] = {
+      path: renameOldPath,
+      md5: MOCK_MD5,
+      mtime: 13,
+      sourceMtime: 13,
+      sourceSize: 100,
+      state: "skipped",
+      timestamp: 13
+    };
+    plugin.cache.cacheData = renameData;
+    const renameCacheBefore = plugin.cache.serializeForDisk();
+    const renameResult = await plugin.cache.renameCacheEntries(renameOldPath, renameNewPath);
+    assert.equal(renameResult, false, "renameCacheEntries() acknowledged a failed cache save");
+    assert.strictEqual(plugin.cache.cacheData, renameData, "Failed rename did not restore the original cache snapshot object");
+    assertCacheRolledBack(renameCacheBefore, "Failed rename left non-durable cache RAM");
+
+    const clearKey = plugin.cache.buildCacheKey("Images/save-failed-clear.png", MOCK_MD5, 14);
+    plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
+    plugin.cache.cacheData.entries[clearKey] = {
+      path: "Images/save-failed-clear.png",
+      md5: MOCK_MD5,
+      mtime: 14,
+      sourceMtime: 14,
+      sourceSize: 100,
+      state: "skipped",
+      timestamp: 14
+    };
+    const clearCacheBefore = plugin.cache.serializeForDisk();
+    const clearResult = await plugin.cache.clearCache();
+    assert.equal(clearResult, false, "clearCache() acknowledged a failed cache save");
+    assertCacheRolledBack(clearCacheBefore, "Failed clearCache() left non-durable cache RAM");
+
+    plugin.app._files = [];
+    plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
+    plugin.cache.cacheData.entries["missing:save-failed-compaction"] = {
+      path: "Missing/save-failed-compaction.png",
+      md5: MOCK_MD5,
+      mtime: 15,
+      sourceMtime: 15,
+      sourceSize: 100,
+      state: "skipped",
+      timestamp: 15
+    };
+    const compactionCacheBefore = plugin.cache.serializeForDisk();
+    let failedCompactionBackupCalls = 0;
+    plugin.cache.createBackup = async () => {
+      failedCompactionBackupCalls += 1;
+    };
+    const failedCompactionResult = await plugin.cache.compactCache();
+    assert.deepEqual(
+      failedCompactionResult,
+      { removed: 0, missingFilesRemoved: 0, supersededRemoved: 0 },
+      "compactCache() reported removals after a failed cache save"
+    );
+    assert.equal(failedCompactionBackupCalls, 1, "Failed compaction test did not reach its durable commit boundary");
+    assertCacheRolledBack(compactionCacheBefore, "Failed compactCache() left non-durable cache RAM");
+  } finally {
+    failedCacheCommitPorts.hash.fileSha256Hex = originalFileSha256ForFailedCacheCommit;
+    failedCacheCommitPorts.fs.removeFileIfUnchanged = originalRemoveFileForFailedCacheCommit;
+    failedCacheCommitPorts.fs.stat = originalStatForFailedCacheCommit;
+    plugin.cache.saveCache = originalSaveCacheForFailedCacheCommit;
+    plugin.cache.createBackup = originalCreateBackupForFailedCacheCommit;
+    plugin.cache.cacheData = originalCacheDataForFailedCacheCommit;
+    plugin.app._files = originalFilesForFailedCacheCommit;
+    restoreCacheTestPaths();
+    fs.rmSync(failedCacheCommitTemp, { recursive: true, force: true });
   }
 
   const validCacheBackupNames = [
@@ -5581,6 +7050,135 @@ try {
     assert(restored, "restoreFromBackup() did not restore the selected backup");
     const restoredEntry = plugin.cache.getEntriesForPath("Images/restored.png")[0]?.[1];
     assert(restoredEntry && restoredEntry.timestamp === 1234, `restoreFromBackup() changed entry timestamp: ${restoredEntry && restoredEntry.timestamp}`);
+
+    const restoredCacheSnapshot = fs.readFileSync(restoreCacheFile, "utf8");
+    const malformedDesktopBackupName = "tinyLocal-cache-backup-2026-05-15T00-00-01-000-deadbeefcafebabe.json";
+    fs.writeFileSync(path.join(restoreBackupDir, malformedDesktopBackupName), JSON.stringify({ version: plugin.cache.CACHE_VERSION, entries: [] }));
+    const originalConsoleErrorForDesktopRestore = console.error;
+    console.error = () => {};
+    try {
+      assert(!await plugin.cache.restoreFromBackup(malformedDesktopBackupName), "Desktop restore accepted an invalid cache schema");
+      assert.equal(fs.readFileSync(restoreCacheFile, "utf8"), restoredCacheSnapshot, "Invalid desktop restore changed the current cache");
+
+      const restoreProbeForRequiredBackup = plugin.getPlatformPorts().fs.restoreProbe;
+      const resolveRestorePath = (filePath) => plugin.getPlatformPorts().fs.resolvePath(String(filePath));
+      const originalCopyViaHandleForRequiredBackup = restoreProbeForRequiredBackup.copyViaHandle;
+      restoreProbeForRequiredBackup.copyViaHandle = async (sourcePath, targetPath, options) => {
+        if (path.resolve(resolveRestorePath(sourcePath)) === path.resolve(restoreCacheFile)
+          && path.dirname(path.resolve(resolveRestorePath(targetPath))) === path.resolve(restoreBackupDir)) {
+          throw new Error("Injected desktop restore safety-backup failure");
+        }
+        return await originalCopyViaHandleForRequiredBackup.call(restoreProbeForRequiredBackup, sourcePath, targetPath, options);
+      };
+      try {
+        assert(!await plugin.cache.restoreFromBackup(restoreBackupName), "Desktop restore continued without a required safety backup");
+      } finally {
+        restoreProbeForRequiredBackup.copyViaHandle = originalCopyViaHandleForRequiredBackup;
+      }
+      assert.equal(fs.readFileSync(restoreCacheFile, "utf8"), restoredCacheSnapshot, "Desktop safety-backup failure changed the current cache");
+
+      const restoreProbe = plugin.getPlatformPorts().fs.restoreProbe;
+      const sourceSubstitutionBackupName = "tinyLocal-cache-backup-2026-05-15T00-00-02-000-deadbeefcafebabe.json";
+      const sourceSubstitutionBackupPath = path.join(restoreBackupDir, sourceSubstitutionBackupName);
+      fs.writeFileSync(sourceSubstitutionBackupPath, JSON.stringify({
+        version: plugin.cache.CACHE_VERSION,
+        entries: { substitution: { path: "Images/source-substitution.png", timestamp: 2 } }
+      }));
+      const originalCopyViaHandleForSubstitution = restoreProbe.copyViaHandle;
+      let sourceSubstitutionInjected = false;
+      restoreProbe.copyViaHandle = async (sourcePath, targetPath, options) => await originalCopyViaHandleForSubstitution.call(
+        restoreProbe,
+        sourcePath,
+        targetPath,
+        {
+          ...options,
+          afterOpen: async () => {
+            const release = await options.afterOpen();
+            if (!sourceSubstitutionInjected && path.resolve(resolveRestorePath(sourcePath)) === path.resolve(sourceSubstitutionBackupPath)) {
+              sourceSubstitutionInjected = true;
+              fs.renameSync(sourceSubstitutionBackupPath, `${sourceSubstitutionBackupPath}.opened`);
+              fs.writeFileSync(sourceSubstitutionBackupPath, JSON.stringify({ version: plugin.cache.CACHE_VERSION, entries: {} }));
+            }
+            return release;
+          }
+        }
+      );
+      try {
+        assert(!await plugin.cache.restoreFromBackup(sourceSubstitutionBackupName), "Desktop restore accepted a backup path substituted after its handle was opened");
+      } finally {
+        restoreProbe.copyViaHandle = originalCopyViaHandleForSubstitution;
+      }
+      assert.equal(fs.readFileSync(restoreCacheFile, "utf8"), restoredCacheSnapshot, "Backup source substitution changed the live cache");
+
+      const originalLstatIdentityForLiveSymlink = restoreProbe.lstatIdentity;
+      restoreProbe.lstatIdentity = async (filePath) => {
+        const identity = await originalLstatIdentityForLiveSymlink.call(restoreProbe, filePath);
+        return path.resolve(resolveRestorePath(filePath)) === path.resolve(restoreCacheFile)
+          ? { ...identity, isSymbolicLink: true }
+          : identity;
+      };
+      try {
+        assert(!await plugin.cache.restoreFromBackup(restoreBackupName), "Desktop restore accepted a symlink-like live cache target");
+      } finally {
+        restoreProbe.lstatIdentity = originalLstatIdentityForLiveSymlink;
+      }
+      assert.equal(fs.readFileSync(restoreCacheFile, "utf8"), restoredCacheSnapshot, "Symlink-like live cache rejection changed the target");
+
+      const restoreRaceBackupName = "tinyLocal-cache-backup-2026-05-15T00-00-03-000-deadbeefcafebabe.json";
+      const restoreRacePayload = JSON.stringify({
+        version: plugin.cache.CACHE_VERSION,
+        entries: { selected: { path: "Images/selected-race.png", timestamp: 3 } }
+      });
+      const preInstallConcurrentPayload = JSON.stringify({
+        version: plugin.cache.CACHE_VERSION,
+        entries: { concurrent: { path: "Images/concurrent-before-install.png", timestamp: 4 } }
+      });
+      fs.writeFileSync(path.join(restoreBackupDir, restoreRaceBackupName), restoreRacePayload);
+      fs.writeFileSync(restoreCacheFile, restoredCacheSnapshot);
+      const desktopFsForRestoreRace = plugin.getPlatformPorts().fs;
+      const originalReplaceFileForRestoreRace = desktopFsForRestoreRace.replaceFile;
+      let preInstallRaceInjected = false;
+      desktopFsForRestoreRace.replaceFile = async (stagedPath, targetPath, options) => {
+        if (!preInstallRaceInjected
+          && String(stagedPath).includes("tinylocal-recovery")
+          && path.resolve(resolveRestorePath(targetPath)) === path.resolve(restoreCacheFile)) {
+          preInstallRaceInjected = true;
+          fs.writeFileSync(restoreCacheFile, preInstallConcurrentPayload);
+        }
+        return await originalReplaceFileForRestoreRace.call(desktopFsForRestoreRace, stagedPath, targetPath, options);
+      };
+      try {
+        assert(!await plugin.cache.restoreFromBackup(restoreRaceBackupName), "Desktop restore overwrote a cache written immediately before conditional install");
+      } finally {
+        desktopFsForRestoreRace.replaceFile = originalReplaceFileForRestoreRace;
+      }
+      assert.equal(fs.readFileSync(restoreCacheFile, "utf8"), preInstallConcurrentPayload, "Conditional restore install did not preserve the concurrent cache revision");
+
+      const rollbackConcurrentPayload = JSON.stringify({
+        version: plugin.cache.CACHE_VERSION,
+        entries: { concurrent: { path: "Images/concurrent-before-rollback.png", timestamp: 5 } }
+      });
+      const originalReadTextForRestoreRollback = desktopFsForRestoreRace.readText;
+      let rollbackRaceInjected = false;
+      desktopFsForRestoreRace.readText = async (filePath) => {
+        if (!rollbackRaceInjected
+          && path.resolve(resolveRestorePath(filePath)) === path.resolve(restoreCacheFile)
+          && fs.readFileSync(restoreCacheFile, "utf8") === restoreRacePayload) {
+          rollbackRaceInjected = true;
+          fs.writeFileSync(restoreCacheFile, rollbackConcurrentPayload);
+        }
+        return await originalReadTextForRestoreRollback.call(desktopFsForRestoreRace, filePath);
+      };
+      try {
+        assert(!await plugin.cache.restoreFromBackup(restoreRaceBackupName), "Desktop restore rollback overwrote a newer concurrent cache revision");
+      } finally {
+        desktopFsForRestoreRace.readText = originalReadTextForRestoreRollback;
+      }
+      assert(rollbackRaceInjected, "Desktop restore rollback test did not reach the post-install readback boundary");
+      assert.equal(fs.readFileSync(restoreCacheFile, "utf8"), rollbackConcurrentPayload, "Desktop restore rollback replaced the newer concurrent cache revision");
+    } finally {
+      console.error = originalConsoleErrorForDesktopRestore;
+    }
   } finally {
     restoreCacheTestPaths();
     plugin.cache.cacheData = originalCacheData;
@@ -5692,7 +7290,7 @@ try {
   const backupSuffixTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-backup-suffix-"));
   try {
     setCacheTestFile(path.join(backupSuffixTemp, "tinyLocal-cache.json"));
-    fs.writeFileSync(plugin.cache.cacheFile, JSON.stringify(plugin.cache.getEmptyCacheData(), null, 2));
+    fs.writeFileSync(resolveCacheTestPath(plugin.cache.cacheFile), JSON.stringify(plugin.cache.getEmptyCacheData(), null, 2));
     await plugin.cache.createBackup();
     await plugin.cache.createBackup();
     const backupNames = fs.readdirSync(path.join(backupSuffixTemp, "cache-backups"));
@@ -5715,8 +7313,9 @@ try {
       fs.writeFileSync(backupPath, "{}");
       fs.utimesSync(backupPath, oldTime, oldTime);
     }
-    await plugin.cache.cleanupOldBackups(cleanupBackupsTemp);
-    assert(fs.readdirSync(cleanupBackupsTemp).length === 10, "Cache backup cleanup did not keep exactly the latest 10 old backups");
+    await plugin.cache.cleanupOldBackups(plugin.cache.cacheBackupsDir);
+    const cleanupBackupsAfterOldRetention = fs.readdirSync(cleanupBackupsTemp);
+    assert(cleanupBackupsAfterOldRetention.filter((name) => name.startsWith("tinyLocal-cache-backup-old-")).length === 10, `Cache backup cleanup did not keep exactly the latest 10 old backups: ${cleanupBackupsAfterOldRetention.join(", ")}`);
     const retainedSameMtimeBackups = fs.readdirSync(cleanupBackupsTemp).filter((name) => name.startsWith("tinyLocal-cache-backup-old-")).sort();
     assert(!retainedSameMtimeBackups.includes("tinyLocal-cache-backup-old-00.json"), "Cache backup cleanup kept the oldest same-mtime filename");
     assert(!retainedSameMtimeBackups.includes("tinyLocal-cache-backup-old-01.json"), "Cache backup cleanup kept the second-oldest same-mtime filename");
@@ -5724,7 +7323,7 @@ try {
     for (let index = 0; index < 12; index++) {
       fs.writeFileSync(path.join(cleanupBackupsTemp, `tinyLocal-cache-backup-fresh-${String(index).padStart(2, "0")}.json`), "{}");
     }
-    await plugin.cache.cleanupOldBackups(cleanupBackupsTemp);
+    await plugin.cache.cleanupOldBackups(plugin.cache.cacheBackupsDir);
     const remainingFresh = fs.readdirSync(cleanupBackupsTemp).filter((name) => name.includes("fresh-"));
     assert(remainingFresh.length === 12, "Cache backup cleanup deleted backups younger than the minimum retention window");
     const brokenDir = path.join(cleanupBackupsTemp, "broken");
@@ -5736,7 +7335,7 @@ try {
     }
     const freshBrokenPath = path.join(brokenDir, "tinyLocal-cache.broken-fresh.json");
     fs.writeFileSync(freshBrokenPath, "{}");
-    await plugin.cache.cleanupOldBackups(cleanupBackupsTemp);
+    await plugin.cache.cleanupOldBackups(plugin.cache.cacheBackupsDir);
     const remainingBroken = fs.readdirSync(brokenDir).filter((name) => name.startsWith("tinyLocal-cache.broken-"));
     const remainingOldBroken = remainingBroken.filter((name) => name.includes("old-"));
     assert(remainingBroken.length === 10, "Broken cache cleanup did not keep the retained set size at 10");
@@ -5749,7 +7348,7 @@ try {
     }
     const freshRootBrokenPath = path.join(cleanupBackupsTemp, "tinyLocal-cache.broken-root-fresh.json");
     fs.writeFileSync(freshRootBrokenPath, "{}");
-    await plugin.cache.cleanupOldBackups(cleanupBackupsTemp);
+    await plugin.cache.cleanupOldBackups(plugin.cache.cacheBackupsDir);
     const remainingRootBroken = fs.readdirSync(cleanupBackupsTemp).filter((name) => name.startsWith("tinyLocal-cache.broken-root-"));
     assert(remainingRootBroken.length === 10, "Root-level broken cache cleanup did not keep the retained set size at 10");
     assert(remainingRootBroken.includes("tinyLocal-cache.broken-root-fresh.json"), "Root-level broken cache cleanup deleted a fresh broken copy");
@@ -5768,7 +7367,7 @@ try {
       fs.utimesSync(backupPath, oldTime, oldTime);
     }
     await withRealGlobalTimers(() => plugin.cache.cleanupRetainedFiles(
-      cleanupLargeBackupsTemp,
+      plugin.cache.cacheBackupsDir,
       (fileName) => fileName.startsWith("tinyLocal-cache-backup-large-")
     ));
     const remainingLargeBackups = fs.readdirSync(cleanupLargeBackupsTemp).filter((name) => name.startsWith("tinyLocal-cache-backup-large-")).sort();
@@ -5786,7 +7385,7 @@ try {
     for (let index = 0; index < 60; index++) {
       fs.writeFileSync(path.join(cleanupFreshCapTemp, `tinyLocal-cache-backup-fresh-cap-${String(index).padStart(2, "0")}.json`), "{}");
     }
-    await plugin.cache.cleanupRetainedFiles(cleanupFreshCapTemp, (fileName) => fileName.startsWith("tinyLocal-cache-backup-fresh-cap-"));
+    await plugin.cache.cleanupRetainedFiles(plugin.cache.cacheBackupsDir, (fileName) => fileName.startsWith("tinyLocal-cache-backup-fresh-cap-"));
     const remainingFreshCapBackups = fs.readdirSync(cleanupFreshCapTemp).filter((name) => name.startsWith("tinyLocal-cache-backup-fresh-cap-"));
     assert(remainingFreshCapBackups.length === 50, `Cache backup hard cap retained ${remainingFreshCapBackups.length} fresh files instead of 50`);
   } finally {
@@ -5797,6 +7396,7 @@ try {
   const cleanupConcurrencyTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-cleanup-concurrency-"));
   const originalUnlinkForCleanupConcurrency = fs.promises.unlink;
   try {
+    setCacheTestFile(path.join(cleanupConcurrencyTemp, "tinyLocal-cache.json"), cleanupConcurrencyTemp);
     const oldTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
     for (let index = 0; index < 40; index++) {
       const filePath = path.join(cleanupConcurrencyTemp, `cleanup-${String(index).padStart(2, "0")}.json`);
@@ -5812,26 +7412,265 @@ try {
       activeUnlinks -= 1;
       return originalUnlinkForCleanupConcurrency.call(fs.promises, filePath);
     };
-    await plugin.cache.cleanupRetainedFiles(cleanupConcurrencyTemp, (fileName) => fileName.endsWith(".json"));
+    await plugin.cache.cleanupRetainedFiles(plugin.cache.cacheBackupsDir, (fileName) => fileName.endsWith(".json"));
     assert(maxActiveUnlinks <= 8, `cleanupRetainedFiles() unlinked too many files concurrently: ${maxActiveUnlinks}`);
   } finally {
     fs.promises.unlink = originalUnlinkForCleanupConcurrency;
+    restoreCacheTestPaths();
     fs.rmSync(cleanupConcurrencyTemp, { recursive: true, force: true });
+  }
+
+  const cleanupReplacementRaceTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-cleanup-replacement-"));
+  try {
+    setCacheTestFile(path.join(cleanupReplacementRaceTemp, "tinyLocal-cache.json"), cleanupReplacementRaceTemp);
+    const oldTime = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
+    for (let index = 0; index < 12; index += 1) {
+      const candidatePath = path.join(cleanupReplacementRaceTemp, `retention-race-${String(index).padStart(2, "0")}.json`);
+      fs.writeFileSync(candidatePath, `old-${index}`);
+      fs.utimesSync(candidatePath, oldTime, oldTime);
+    }
+    const cleanupFsPort = plugin.getPlatformPorts().fs;
+    const originalConditionalRemoveForRetention = cleanupFsPort.removeFileIfUnchanged;
+    let replacementRacePath = null;
+    try {
+      cleanupFsPort.removeFileIfUnchanged = async function(filePath, expectedSha256, token) {
+        if (!replacementRacePath && String(filePath).includes("retention-race-")) {
+          replacementRacePath = resolveCacheTestPath(filePath);
+          fs.writeFileSync(replacementRacePath, "sync-replacement-after-selection");
+        }
+        return await originalConditionalRemoveForRetention.call(this, filePath, expectedSha256, token);
+      };
+      await plugin.cache.cleanupRetainedFiles(plugin.cache.cacheBackupsDir, (fileName) => fileName.startsWith("retention-race-"));
+    } finally {
+      cleanupFsPort.removeFileIfUnchanged = originalConditionalRemoveForRetention;
+    }
+    assert(replacementRacePath, "Cache retention race did not reach a selected deletion candidate");
+    assert(fs.existsSync(replacementRacePath) && fs.readFileSync(replacementRacePath, "utf8") === "sync-replacement-after-selection", "Cache retention deleted a same-path replacement published after selection and hashing");
+  } finally {
+    restoreCacheTestPaths();
+    fs.rmSync(cleanupReplacementRaceTemp, { recursive: true, force: true });
+  }
+
+  const cleanupFinalBoundaryTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cleanup-final-boundary-"));
+  try {
+    setCacheTestFile(path.join(cleanupFinalBoundaryTemp, "tinyLocal-cache.json"), cleanupFinalBoundaryTemp);
+    const cleanupFsPort = plugin.getPlatformPorts().fs;
+    const candidatePath = "cleanup-final-boundary.bin";
+    const candidateAbsolutePath = path.join(cleanupFinalBoundaryTemp, candidatePath);
+    const candidateBytes = Buffer.from("cleanup-owned-revision");
+    const syncReplacementBytes = Buffer.from("sync-replacement-at-trash-boundary");
+    fs.writeFileSync(candidateAbsolutePath, candidateBytes);
+    const originalDesktopTrashItem = desktopTrashItem;
+    let injectedTrashBoundary = false;
+    let retainedTrashPath = null;
+    desktopTrashItem = async (filePath) => {
+      if (!injectedTrashBoundary && path.basename(String(filePath)).startsWith(`${candidatePath}.delete-`)) {
+        injectedTrashBoundary = true;
+        fs.writeFileSync(filePath, syncReplacementBytes);
+        retainedTrashPath = `${filePath}.mock-local-trash`;
+        await fs.promises.rename(filePath, retainedTrashPath);
+        return;
+      }
+      await originalDesktopTrashItem(filePath);
+    };
+    try {
+      const result = await cleanupFsPort.removeFileIfUnchanged(
+        candidatePath,
+        crypto.createHash("sha256").update(candidateBytes).digest("hex")
+      );
+      assert(result.removed && result.retainedConflictPath === null, "Desktop conditional cleanup did not logically remove its verified revision");
+    } finally {
+      desktopTrashItem = originalDesktopTrashItem;
+    }
+    assert(injectedTrashBoundary && retainedTrashPath, "Desktop cleanup regression did not inject at the final trash boundary");
+    assert(fs.existsSync(retainedTrashPath) && fs.readFileSync(retainedTrashPath).equals(syncReplacementBytes), "Desktop cleanup destroyed a Sync replacement published after its final identity/hash check");
+
+    const trashFailureCandidatePath = "cleanup-trash-failure.bin";
+    const trashFailureCandidateBytes = Buffer.from("cleanup-trash-failure-owned-revision");
+    fs.writeFileSync(path.join(cleanupFinalBoundaryTemp, trashFailureCandidatePath), trashFailureCandidateBytes);
+    let trashFailureCalls = 0;
+    desktopTrashItem = async (filePath) => {
+      if (path.basename(String(filePath)).startsWith(`${trashFailureCandidatePath}.delete-`)) {
+        trashFailureCalls += 1;
+        throw new Error("simulated unavailable OS trash");
+      }
+      await originalDesktopTrashItem(filePath);
+    };
+    let trashFailureResult;
+    try {
+      trashFailureResult = await cleanupFsPort.removeFileIfUnchanged(
+        trashFailureCandidatePath,
+        crypto.createHash("sha256").update(trashFailureCandidateBytes).digest("hex")
+      );
+    } finally {
+      desktopTrashItem = originalDesktopTrashItem;
+    }
+    assert(!trashFailureResult.removed && trashFailureResult.retainedConflictPath, "Desktop cleanup did not report its single retained revision when OS trash failed");
+    assert(!fs.existsSync(path.join(cleanupFinalBoundaryTemp, trashFailureCandidatePath)), "Desktop cleanup restored a failed-trash revision to the recovery journal path");
+    assert(fs.existsSync(cleanupFsPort.resolvePath(trashFailureResult.retainedConflictPath)), "Desktop cleanup lost the detached revision after OS trash failed");
+    const countDesktopTrashFailureCopies = () => fs.readdirSync(cleanupFinalBoundaryTemp, { recursive: true })
+      .map(String)
+      .filter((filePath) => path.basename(filePath).startsWith(`${trashFailureCandidatePath}.delete-`)).length;
+    const retainedDesktopTrashFailureCopies = countDesktopTrashFailureCopies();
+    await cleanupFsPort.recoverInterruptedReplacement();
+    await cleanupFsPort.recoverInterruptedReplacement();
+    assert(trashFailureCalls === 1 && retainedDesktopTrashFailureCopies === 1 && countDesktopTrashFailureCopies() === 1, "Repeated desktop recovery amplified a retained failed-trash revision");
+
+    // Regression: a persistently failing OS trash ("Failed to create
+    // FileOperation instance") must not poison deletions when Obsidian's
+    // vault-local trash is available — trashLocal is the primary mechanism.
+    const localTrashCandidatePath = "cleanup-local-trash.bin";
+    const localTrashCandidateBytes = Buffer.from("cleanup-local-trash-owned-revision");
+    fs.writeFileSync(path.join(cleanupFinalBoundaryTemp, localTrashCandidatePath), localTrashCandidateBytes);
+    const localTrashReceived = [];
+    let brokenOsTrashCalls = 0;
+    desktopTrashItem = async () => {
+      brokenOsTrashCalls += 1;
+      throw new Error("Failed to create FileOperation instance");
+    };
+    const cleanupMockAdapter = plugin.app.vault.adapter;
+    cleanupMockAdapter.trashLocal = async (vaultPath) => {
+      const trashDir = path.join(cleanupFinalBoundaryTemp, ".trash");
+      await fs.promises.mkdir(trashDir, { recursive: true });
+      const trashedPath = path.join(trashDir, path.basename(String(vaultPath)));
+      await fs.promises.rename(cleanupMockAdapter._resolve(vaultPath), trashedPath);
+      localTrashReceived.push(trashedPath);
+    };
+    let localTrashResult;
+    let successfulReplacementVaultTrashGrowth = 0;
+    try {
+      localTrashResult = await cleanupFsPort.removeFileIfUnchanged(
+        localTrashCandidatePath,
+        crypto.createHash("sha256").update(localTrashCandidateBytes).digest("hex")
+      );
+      const repeatedTargetPath = "cache-vault-trash-growth.json";
+      let repeatedTargetBytes = Buffer.from("cache-v0");
+      fs.writeFileSync(path.join(cleanupFinalBoundaryTemp, repeatedTargetPath), repeatedTargetBytes);
+      const trashCountBeforeReplacements = localTrashReceived.length;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const nextBytes = Buffer.from(`cache-v${attempt}`);
+        const stagedPath = `.cache-vault-trash-growth.json.tinylocal-${Date.now()}-${attempt.toString(16).repeat(32)}.tmp`;
+        fs.writeFileSync(path.join(cleanupFinalBoundaryTemp, stagedPath), nextBytes);
+        await cleanupFsPort.replaceFile(stagedPath, repeatedTargetPath, {
+          expectedTargetSha256: crypto.createHash("sha256").update(repeatedTargetBytes).digest("hex"),
+          expectedStagedSha256: crypto.createHash("sha256").update(nextBytes).digest("hex")
+        });
+        repeatedTargetBytes = nextBytes;
+      }
+      successfulReplacementVaultTrashGrowth = localTrashReceived.length - trashCountBeforeReplacements;
+    } finally {
+      desktopTrashItem = originalDesktopTrashItem;
+      delete cleanupMockAdapter.trashLocal;
+    }
+    assert(localTrashResult.removed && localTrashResult.retainedConflictPath === null, "Desktop cleanup did not remove its revision through vault-local trash while OS trash was unavailable");
+    assert(brokenOsTrashCalls === 0, "Desktop cleanup used OS trash although vault-local trash was available");
+    assert(!fs.existsSync(path.join(cleanupFinalBoundaryTemp, localTrashCandidatePath)), "Vault-local trash removal left the source file behind");
+    const localTrashRevision = localTrashReceived.find((trashedPath) => path.basename(trashedPath).startsWith(`${localTrashCandidatePath}.delete-`));
+    assert(localTrashRevision && fs.readFileSync(localTrashRevision).equals(localTrashCandidateBytes), "Vault-local trash did not preserve the detached revision bytes");
+    assert.equal(successfulReplacementVaultTrashGrowth, 0, "Successful internal replacements accumulated transaction files in the user-visible Vault trash");
+
+    const lifecycleTargetPath = "lifecycle-final-target.bin";
+    const lifecycleStagePath = `.lifecycle-final-target.bin.tinylocal-${Date.now()}-${"a".repeat(32)}.tmp`;
+    const lifecycleTargetBytes = Buffer.from("lifecycle-old-target");
+    const lifecycleStageBytes = Buffer.from("lifecycle-new-stage");
+    fs.writeFileSync(path.join(cleanupFinalBoundaryTemp, lifecycleTargetPath), lifecycleTargetBytes);
+    fs.writeFileSync(path.join(cleanupFinalBoundaryTemp, lifecycleStagePath), lifecycleStageBytes);
+    let desktopCanCommitCalls = 0;
+    await assert.rejects(
+      () => cleanupFsPort.replaceFile(lifecycleStagePath, lifecycleTargetPath, {
+        expectedTargetSha256: crypto.createHash("sha256").update(lifecycleTargetBytes).digest("hex"),
+        expectedStagedSha256: crypto.createHash("sha256").update(lifecycleStageBytes).digest("hex"),
+        canCommit: () => ++desktopCanCommitCalls === 1
+      }),
+      /cancelled before publication/
+    );
+    assert(desktopCanCommitCalls === 2, "Desktop replacement did not re-check lifecycle ownership at the final publication boundary");
+    assert(fs.readFileSync(path.join(cleanupFinalBoundaryTemp, lifecycleTargetPath)).equals(lifecycleTargetBytes), "Desktop final lifecycle fence failed to preserve the old target");
+  } finally {
+    restoreCacheTestPaths();
+    fs.rmSync(cleanupFinalBoundaryTemp, { recursive: true, force: true });
   }
 
   const orphanTempCleanupDir = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-temp-orphans-"));
   try {
     setCacheTestFile(path.join(orphanTempCleanupDir, "tinyLocal-cache.json"));
-    const orphanTempFile = path.join(orphanTempCleanupDir, ".tinyLocal-cache-test.tmp");
+    const orphanTempFile = path.join(orphanTempCleanupDir, `.tinyLocal-cache.json.tinylocal-${Date.now() - 6 * 60 * 1000}-${"a".repeat(32)}.tmp`);
+    const freshTempFile = path.join(orphanTempCleanupDir, `.tinyLocal-cache.json.tinylocal-${Date.now()}-${"b".repeat(32)}.tmp`);
+    const orphanRestoreStage = path.join(orphanTempCleanupDir, `tinyLocal-cache.json.tinylocal-recovery-${Date.now() - 6 * 60 * 1000}-${"c".repeat(32)}.tmp`);
+    const freshRestoreStage = path.join(orphanTempCleanupDir, `tinyLocal-cache.json.tinylocal-recovery-${Date.now()}-${"d".repeat(32)}.tmp`);
+    const malformedTempFile = path.join(orphanTempCleanupDir, ".tinyLocal-cache-test.tmp");
     const unrelatedTempFile = path.join(orphanTempCleanupDir, ".other.tmp");
     fs.writeFileSync(orphanTempFile, "orphan");
+    fs.writeFileSync(freshTempFile, "fresh");
+    fs.writeFileSync(orphanRestoreStage, "orphan restore");
+    fs.writeFileSync(freshRestoreStage, "fresh restore");
+    fs.writeFileSync(malformedTempFile, "malformed");
     fs.writeFileSync(unrelatedTempFile, "keep");
     await plugin.cache.cleanupOrphanedTempFiles();
     assert(!fs.existsSync(orphanTempFile), "cleanupOrphanedTempFiles() left a cache temp orphan");
+    assert(fs.existsSync(freshTempFile), "cleanupOrphanedTempFiles() removed a live cache temp file");
+    assert(!fs.existsSync(orphanRestoreStage), "cleanupOrphanedTempFiles() left an interrupted restore stage");
+    assert(fs.existsSync(freshRestoreStage), "cleanupOrphanedTempFiles() removed a live restore stage");
+    assert(fs.existsSync(malformedTempFile), "cleanupOrphanedTempFiles() removed an unowned temp lookalike");
     assert(fs.existsSync(unrelatedTempFile), "cleanupOrphanedTempFiles() removed an unrelated temp file");
   } finally {
     restoreCacheTestPaths();
     fs.rmSync(orphanTempCleanupDir, { recursive: true, force: true });
+  }
+
+  const liveTempCleanupDir = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-temp-live-owner-"));
+  const originalCachePortWriteText = plugin.getPlatformPorts().fs.writeText;
+  let releaseLiveTempWrite = null;
+  try {
+    const CacheClass = plugin.cache.constructor;
+    const liveTempCacheFile = path.join(liveTempCleanupDir, "tinyLocal-cache.json");
+    fs.writeFileSync(liveTempCacheFile, JSON.stringify(plugin.cache.getEmptyCacheData()));
+    setCacheTestFile(liveTempCacheFile);
+    const cacheWriter = new CacheClass(plugin.app, plugin.getBackupStoragePaths().cacheBackups, plugin.getPlatformPorts());
+    const cacheCleaner = new CacheClass(plugin.app, plugin.getBackupStoragePaths().cacheBackups, plugin.getPlatformPorts());
+    cacheWriter.cacheFile = plugin.cache.cacheFile;
+    cacheCleaner.cacheFile = plugin.cache.cacheFile;
+    const originalGetStaleTimestamp = cacheCleaner.getStaleCacheTempTimestamp;
+    let liveTempPath = null;
+    let markLiveTempWritten = null;
+    const liveTempWritten = new Promise((resolve) => {
+      markLiveTempWritten = resolve;
+    });
+    plugin.getPlatformPorts().fs.writeText = async (filePath, data) => {
+      await originalCachePortWriteText.call(plugin.getPlatformPorts().fs, filePath, data);
+      if (!liveTempPath && String(filePath).endsWith(".tmp") && String(filePath).includes("tinylocal-")) {
+        liveTempPath = filePath;
+        markLiveTempWritten();
+        await new Promise((resolve) => {
+          releaseLiveTempWrite = resolve;
+        });
+      }
+    };
+    cacheCleaner.getStaleCacheTempTimestamp = (fileName, now) =>
+      liveTempPath && fileName === path.basename(liveTempPath)
+        ? 1
+        : originalGetStaleTimestamp.call(cacheCleaner, fileName, now);
+    await withRealGlobalTimers(async () => {
+      const writer = cacheWriter.writeCacheFileAtomic(JSON.stringify({
+        version: cacheWriter.CACHE_VERSION,
+        entries: { live: { path: "Images/live-temp.png", timestamp: 1 } }
+      }), () => true, { mergeDiskEntries: false });
+      await liveTempWritten;
+      const cleanup = cacheCleaner.cleanupOrphanedTempFiles();
+      await new Promise((resolve) => originalGlobals.setTimeout(resolve, 25));
+      assert(liveTempPath && fs.existsSync(resolveCacheTestPath(liveTempPath)), "Cache cleanup removed another live owner's staged write");
+      releaseLiveTempWrite();
+      assert(await writer, "Live cache writer did not publish after cleanup contention");
+      await cleanup;
+    });
+    cacheCleaner.getStaleCacheTempTimestamp = originalGetStaleTimestamp;
+    const liveTempCache = JSON.parse(fs.readFileSync(liveTempCacheFile, "utf8"));
+    assert(liveTempCache.entries.live?.path === "Images/live-temp.png", "Cache cleanup contention lost the live writer payload");
+  } finally {
+    releaseLiveTempWrite?.();
+    plugin.getPlatformPorts().fs.writeText = originalCachePortWriteText;
+    restoreCacheTestPaths();
+    fs.rmSync(liveTempCleanupDir, { recursive: true, force: true });
   }
 
   const debounceCacheTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-debounce-"));
@@ -5849,6 +7688,7 @@ try {
       debouncedSavedPayload = data;
       debouncedSavedEntryCount = Object.keys(JSON.parse(data).entries || {}).length;
       await new Promise((resolve) => originalGlobals.setTimeout(resolve, 5));
+      return true;
     };
     await withRealGlobalTimers(() => Promise.all(Array.from({ length: 6 }, (_, index) =>
       plugin.cache.addToCache(
@@ -5891,7 +7731,10 @@ try {
     assert(plugin.cache.saveCacheTimer, "Unload flush setup did not create a pending save timer");
     plugin.onunload();
     await unloadFlushPromise;
-    const persistedAfterUnload = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
+    plugin.isUnloading = false;
+    plugin.cache.acceptingWrites = true;
+    await plugin.cache.loadCache();
+    const persistedAfterUnload = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
     assert(
       Object.values(persistedAfterUnload.entries || {}).some((entry) => entry.path === "Images/unload-flush.png"),
       "onunload() did not flush a pending cache save"
@@ -5899,6 +7742,7 @@ try {
   } finally {
     plugin.compressor.destroy = originalCompressorDestroyForUnloadFlush;
     plugin.isUnloading = false;
+    plugin.pluginGuardService = new plugin.pluginGuardService.constructor(plugin);
     plugin.cache.acceptingWrites = true;
     plugin.cache.saveCacheDelayMs = originalSaveCacheDelayMs;
     await plugin.cache.flushPendingCacheSave?.();
@@ -5926,6 +7770,7 @@ try {
     let lockedWriteSaveCalls = 0;
     plugin.cache.saveCache = async () => {
       lockedWriteSaveCalls += 1;
+      return true;
     };
     plugin.cache.lockWritesForUnload();
     await plugin.cache.renameCacheEntries("Images/write-lock.png", "Images/write-lock-renamed.png");
@@ -5954,7 +7799,9 @@ try {
     const start = Date.now();
     plugin.cache.flushPendingCacheSaveSync();
     assert(Date.now() - start < 100, "flushPendingCacheSaveSync() blocked on activeWritePromise");
-    const persistedHungWrite = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
+    plugin.cache.activeWritePromise = null;
+    await plugin.cache.loadCache();
+    const persistedHungWrite = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
     assert(persistedHungWrite.entries.hung?.path === "Images/hung-write.png", "flushPendingCacheSaveSync() did not write a snapshot during hung write");
   } finally {
     plugin.cache.activeWritePromise = null;
@@ -5981,10 +7828,12 @@ try {
       });
       if (!shouldCommit()) {
         staleWriteSkipped = true;
-        return;
+        return false;
       }
-      fs.mkdirSync(path.dirname(plugin.cache.cacheFile), { recursive: true });
-      fs.writeFileSync(plugin.cache.cacheFile, data);
+      const cacheFile = resolveCacheTestPath(plugin.cache.cacheFile);
+      fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+      fs.writeFileSync(cacheFile, data);
+      return true;
     };
     const staleWrite = plugin.cache.queueCacheWrite(JSON.stringify({
       version: plugin.cache.CACHE_VERSION,
@@ -5995,7 +7844,10 @@ try {
     plugin.cache.flushPendingCacheSaveSync();
     releaseStaleWrite();
     await staleWrite;
-    const persistedLateWrite = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
+    plugin.cache.activeWritePromise = null;
+    plugin.cache.writeCacheFileAtomic = originalWriteCacheFileAtomicForLateWrite;
+    await plugin.cache.loadCache();
+    const persistedLateWrite = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
     assert(staleWriteSkipped, "Late active cache write was not skipped after sync unload flush");
     assert(persistedLateWrite.entries.fresh?.path === "Images/fresh-unload.png" && !persistedLateWrite.entries.stale, "Late active cache write overwrote sync unload snapshot");
   } finally {
@@ -6008,32 +7860,40 @@ try {
   }
 
   const unloadReplayTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-unload-replay-"));
+  const originalGetInFlightReplacementRevisions = plugin.getPlatformPorts().fs.getInFlightReplacementRevisions;
   try {
     setCacheTestFile(path.join(unloadReplayTemp, "tinyLocal-cache.json"));
     plugin.cache.cacheData = plugin.cache.getEmptyCacheData();
     plugin.cache.cacheData.entries.fresh = { path: "Images/replayed-fresh.png" };
+    plugin.cache.pendingSaveMergeDiskEntries = false;
+    plugin.cache.pendingSaveAuthoritative = true;
+    const lateReplacementPayload = JSON.stringify({
+      version: plugin.cache.CACHE_VERSION,
+      entries: { stale: { path: "Images/replayed-stale.png" } }
+    });
+    const lateReplacementRevision = crypto.createHash("sha256").update(lateReplacementPayload).digest("hex");
+    plugin.getPlatformPorts().fs.getInFlightReplacementRevisions = () => [null, lateReplacementRevision];
     let finishActiveRename = null;
     const activeRenamePromise = new Promise((resolve) => {
       finishActiveRename = () => {
-        fs.mkdirSync(path.dirname(plugin.cache.cacheFile), { recursive: true });
-        fs.writeFileSync(plugin.cache.cacheFile, JSON.stringify({
-          version: plugin.cache.CACHE_VERSION,
-          entries: { stale: { path: "Images/replayed-stale.png" } }
-        }, null, 2));
+        const cacheFile = resolveCacheTestPath(plugin.cache.cacheFile);
+        fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+        fs.writeFileSync(cacheFile, lateReplacementPayload);
         resolve();
       };
     });
     plugin.cache.activeWritePromise = activeRenamePromise;
     plugin.cache.flushPendingCacheSaveSync();
-    const replayPromise = plugin.cache.syncFlushReplayPromise;
-    assert(replayPromise, "Sync unload flush did not schedule replay after an active write");
+    assert(fs.readdirSync(unloadReplayTemp).some((name) => name.startsWith(".tinyLocal-cache-pending-")), "Sync unload flush did not publish a durable replay journal");
     finishActiveRename();
     await activeRenamePromise;
-    await replayPromise;
-    const persistedReplay = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
-    assert(persistedReplay.entries.fresh?.path === "Images/replayed-fresh.png" && !persistedReplay.entries.stale, "Sync unload flush was not replayed after a late active rename");
+    plugin.cache.activeWritePromise = null;
+    await plugin.cache.loadCache();
+    const persistedReplay = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
+    assert(persistedReplay.entries.fresh?.path === "Images/replayed-fresh.png" && !persistedReplay.entries.stale, "Sync unload journal did not accept the tracked late replacement revision");
   } finally {
     plugin.cache.activeWritePromise = null;
+    plugin.getPlatformPorts().fs.getInFlightReplacementRevisions = originalGetInFlightReplacementRevisions;
     restoreCacheTestPaths();
     plugin.cache.cacheData = originalCacheData;
     fs.rmSync(unloadReplayTemp, { recursive: true, force: true });
@@ -6061,7 +7921,7 @@ try {
       pendingAdd,
       new Promise((_, reject) => originalGlobals.setTimeout(() => reject(new Error("pending addToCache did not settle after clearCache()")), 250))
     ]);
-    const persistedAfterClear = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
+    const persistedAfterClear = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
     assert(Object.keys(persistedAfterClear.entries || {}).length === 0, "clearCache() allowed a canceled pending save to repopulate the cache");
   } finally {
     plugin.cache.cancelPendingSave?.();
@@ -6120,7 +7980,7 @@ try {
     await pendingRestoreAdd;
     await capturedRestoreTimerCallback();
     await Promise.resolve();
-    const persistedAfterRestoreRace = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
+    const persistedAfterRestoreRace = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
     const restoreRacePaths = Object.values(persistedAfterRestoreRace.entries || {}).map((entry) => entry.path).sort();
     assert(
       JSON.stringify(restoreRacePaths) === JSON.stringify(["Images/restored-race.png"]),
@@ -6139,7 +7999,7 @@ try {
   try {
     setCacheTestFile(path.join(restoreTraversalTemp, "tinyLocal-cache.json"));
     fs.mkdirSync(path.join(restoreTraversalTemp, "cache-backups"), { recursive: true });
-    fs.writeFileSync(plugin.cache.cacheFile, JSON.stringify(plugin.cache.getEmptyCacheData(), null, 2));
+    fs.writeFileSync(resolveCacheTestPath(plugin.cache.cacheFile), JSON.stringify(plugin.cache.getEmptyCacheData(), null, 2));
     const traversalRestored = await plugin.cache.restoreFromBackup("../tinyLocal-cache-backup-2026-05-16T00-00-00-000.json");
     const nestedRestored = await plugin.cache.restoreFromBackup("nested/tinyLocal-cache-backup-2026-05-16T00-00-00-000.json");
     assert(traversalRestored === false && nestedRestored === false, "restoreFromBackup() accepted a path traversal backup filename");
@@ -6158,7 +8018,7 @@ try {
     const restoreRealpathBackupName = "tinyLocal-cache-backup-2026-05-16T00-00-00-deadbeef.json";
     const restoreRealpathBackupPath = path.join(restoreRealpathBackupDir, restoreRealpathBackupName);
     fs.mkdirSync(restoreRealpathBackupDir, { recursive: true });
-    fs.writeFileSync(plugin.cache.cacheFile, JSON.stringify(plugin.cache.getEmptyCacheData(), null, 2));
+    fs.writeFileSync(resolveCacheTestPath(plugin.cache.cacheFile), JSON.stringify(plugin.cache.getEmptyCacheData(), null, 2));
     fs.writeFileSync(restoreRealpathBackupPath, JSON.stringify({
       version: plugin.cache.CACHE_VERSION,
       entries: {
@@ -6177,7 +8037,7 @@ try {
     };
     const realpathRestored = await plugin.cache.restoreFromBackup(restoreRealpathBackupName);
     assert(realpathRestored === false, "restoreFromBackup() accepted a backup whose real path escapes cache-backups");
-    const realpathCache = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
+    const realpathCache = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
     assert(!realpathCache.entries["Images/realpath-escaped.png"], "restoreFromBackup() copied an escaped realpath backup");
   } finally {
     console.error = originalConsoleErrorForRestoreRealpath;
@@ -6196,7 +8056,7 @@ try {
     const restoreSymlinkBackupName = "tinyLocal-cache-backup-2026-05-16T00-00-00-deadbeef.json";
     const restoreSymlinkBackupPath = path.join(restoreSymlinkBackupDir, restoreSymlinkBackupName);
     fs.mkdirSync(restoreSymlinkBackupDir, { recursive: true });
-    fs.writeFileSync(plugin.cache.cacheFile, JSON.stringify(plugin.cache.getEmptyCacheData()));
+    fs.writeFileSync(resolveCacheTestPath(plugin.cache.cacheFile), JSON.stringify(plugin.cache.getEmptyCacheData()));
     fs.writeFileSync(restoreSymlinkBackupPath, JSON.stringify({
       version: plugin.cache.CACHE_VERSION,
       entries: {
@@ -6220,7 +8080,7 @@ try {
     };
     const symlinkRestored = await plugin.cache.restoreFromBackup(restoreSymlinkBackupName);
     assert(symlinkRestored === false, "restoreFromBackup() accepted a symlink-like backup file");
-    const symlinkCache = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
+    const symlinkCache = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
     assert(!symlinkCache.entries["Images/symlink-escaped.png"], "restoreFromBackup() copied a symlink-like backup");
   } finally {
     console.error = originalConsoleErrorForRestoreSymlink;
@@ -6257,8 +8117,9 @@ try {
           releaseFirstWrite = resolve;
         });
       }
-      await originalDebounceWriteCacheFileAtomic.call(plugin.cache, data);
+      const committed = await originalDebounceWriteCacheFileAtomic.call(plugin.cache, data);
       inFlightWrites -= 1;
+      return committed;
     };
     const firstSerializeFile = createMockFile("Images/write-serialize-a.png", 100000, 94);
     const secondSerializeFile = createMockFile("Images/write-serialize-b.png", 100000, 95);
@@ -6281,7 +8142,7 @@ try {
     await Promise.all([firstSerializeAdd, secondSerializeAdd]);
     assert(maxInFlightWrites === 1, `Cache writes overlapped: max in flight ${maxInFlightWrites}`);
     assert(writeCalls === 2, `Serialized cache write test expected two writes, got ${writeCalls}`);
-    const persistedAfterSerializedWrites = JSON.parse(fs.readFileSync(plugin.cache.cacheFile, "utf8"));
+    const persistedAfterSerializedWrites = JSON.parse(fs.readFileSync(resolveCacheTestPath(plugin.cache.cacheFile), "utf8"));
     const serializedPaths = Object.values(persistedAfterSerializedWrites.entries || {}).map((entry) => entry.path).sort();
     assert(
       JSON.stringify(serializedPaths) === JSON.stringify(["Images/write-serialize-a.png", "Images/write-serialize-b.png"]),
@@ -6307,6 +8168,7 @@ try {
     plugin.cache.writeCacheFileAtomic = async (data) => {
       await new Promise((resolve) => originalGlobals.setTimeout(resolve, 2));
       writeOrder.push(JSON.parse(data).order);
+      return true;
     };
     await Promise.all(Array.from({ length: 10 }, (_, index) =>
       plugin.cache.queueCacheWrite(JSON.stringify({ order: index }))
@@ -6323,6 +8185,7 @@ try {
       if (queueWriteCalls === 2) {
         throw new Error("simulated cache write failure");
       }
+      return true;
     };
     await Promise.all([
       plugin.cache.queueCacheWrite('{"a":1}'),
@@ -6345,10 +8208,10 @@ try {
   try {
     const retryCacheFile = path.join(renameRetryTemp, "tinyLocal-cache.json");
     setCacheTestFile(retryCacheFile);
-    const originalRename = fs.promises.rename;
+    const originalLink = fs.promises.link;
     let renameAttempts = 0;
     try {
-      fs.promises.rename = async (sourcePath, targetPath) => {
+      fs.promises.link = async (sourcePath, targetPath) => {
         if (targetPath === retryCacheFile) {
           renameAttempts += 1;
           if (renameAttempts <= 2) {
@@ -6357,7 +8220,7 @@ try {
             throw error;
           }
         }
-        return originalRename.call(fs.promises, sourcePath, targetPath);
+        return originalLink.call(fs.promises, sourcePath, targetPath);
       };
       await withRealGlobalTimers(() => plugin.cache.writeCacheFileAtomic(JSON.stringify({
         version: plugin.cache.CACHE_VERSION,
@@ -6366,45 +8229,12 @@ try {
         }
       }), () => true, { mergeDiskEntries: false }));
     } finally {
-      fs.promises.rename = originalRename;
+      fs.promises.link = originalLink;
     }
     assert(renameAttempts === 3, `Async cache rename retry used wrong attempt count: ${renameAttempts}`);
     const persistedRetryCache = JSON.parse(fs.readFileSync(retryCacheFile, "utf8"));
     assert(persistedRetryCache.entries.retry?.path === "Images/retry.png", "Async cache rename retry did not persist the cache file");
 
-    const originalRenameSync = fs.renameSync;
-    const originalSleepForCacheLockSync = plugin.cache.sleepForCacheLockSync;
-    let syncRenameAttempts = 0;
-    let syncRetrySleeps = 0;
-    try {
-      fs.renameSync = (sourcePath, targetPath) => {
-        if (targetPath === retryCacheFile) {
-          syncRenameAttempts += 1;
-          if (syncRenameAttempts === 1) {
-            const error = new Error("simulated transient Windows sync cache rename failure");
-            error.code = "EACCES";
-            throw error;
-          }
-        }
-        return originalRenameSync.call(fs, sourcePath, targetPath);
-      };
-      plugin.cache.sleepForCacheLockSync = () => {
-        syncRetrySleeps += 1;
-      };
-      plugin.cache.writeCacheFileSyncAtomic(JSON.stringify({
-        version: plugin.cache.CACHE_VERSION,
-        entries: {
-          syncRetry: { path: "Images/sync-retry.png", timestamp: 2 }
-        }
-      }), { mergeDiskEntries: false });
-    } finally {
-      fs.renameSync = originalRenameSync;
-      plugin.cache.sleepForCacheLockSync = originalSleepForCacheLockSync;
-    }
-    assert(syncRenameAttempts === 2, `Sync cache rename retry used wrong attempt count: ${syncRenameAttempts}`);
-    assert(syncRetrySleeps === 1, `Sync cache rename retry used wrong sleep count: ${syncRetrySleeps}`);
-    const persistedSyncRetryCache = JSON.parse(fs.readFileSync(retryCacheFile, "utf8"));
-    assert(persistedSyncRetryCache.entries.syncRetry?.path === "Images/sync-retry.png", "Sync cache rename retry did not persist the cache file");
     const tempLeftovers = fs.readdirSync(renameRetryTemp).filter((name) => name.startsWith(".tinyLocal-cache-") && name.endsWith(".tmp"));
     assert(tempLeftovers.length === 0, `Cache rename retry left temp files: ${tempLeftovers.join(", ")}`);
   } finally {
@@ -6417,10 +8247,11 @@ try {
   try {
     const CacheClass = plugin.cache.constructor;
     const cacheFile = path.join(multiInstanceCacheTemp, "tinyLocal-cache.json");
-    const cacheA = new CacheClass(plugin.app);
-    const cacheB = new CacheClass(plugin.app);
-    cacheA.cacheFile = cacheFile;
-    cacheB.cacheFile = cacheFile;
+    setCacheTestFile(cacheFile);
+    const cacheA = new CacheClass(plugin.app, plugin.getBackupStoragePaths().cacheBackups, plugin.getPlatformPorts());
+    const cacheB = new CacheClass(plugin.app, plugin.getBackupStoragePaths().cacheBackups, plugin.getPlatformPorts());
+    cacheA.cacheFile = plugin.cache.cacheFile;
+    cacheB.cacheFile = plugin.cache.cacheFile;
     await withRealGlobalTimers(() => Promise.all([
       cacheA.queueCacheWrite(JSON.stringify({
         version: cacheA.CACHE_VERSION,
@@ -6438,13 +8269,12 @@ try {
     const mergedCache = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
     assert(mergedCache.entries.fromA?.path === "Images/from-a.png", "Multi-instance cache write lost instance A entry");
     assert(mergedCache.entries.fromB?.path === "Images/from-b.png", "Multi-instance cache write lost instance B entry");
-    assert(!fs.existsSync(`${cacheFile}.lock`), "Multi-instance cache write left a lock file behind");
-
-    fs.writeFileSync(`${cacheFile}.lock`, JSON.stringify({
-      ownerId: "stale-owner",
-      pid: 0,
-      timestamp: Date.now() - 60_000
-    }));
+    const releasedLockPath = fs.readdirSync(multiInstanceCacheTemp)
+      .map((name) => path.join(multiInstanceCacheTemp, name))
+      .find((filePath) => /^tinyLocal-cache\.json\.lock\.device-[a-f0-9]{32}$/i.test(path.basename(filePath)));
+    assert(releasedLockPath, "Multi-instance cache write did not publish a device-scoped lease");
+    const releasedLockPayload = JSON.parse(fs.readFileSync(releasedLockPath, "utf8"));
+    assert(fs.existsSync(resolveCacheTestPath(`${releasedLockPayload.ownerPath}.released`)), "Multi-instance cache write did not mark its exact lock inode as released");
     await withRealGlobalTimers(() => cacheA.queueCacheWrite(JSON.stringify({
       version: cacheA.CACHE_VERSION,
       entries: {
@@ -6452,17 +8282,447 @@ try {
       }
     }), { mergeDiskEntries: true }));
     const staleLockRecoveredCache = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
-    assert(staleLockRecoveredCache.entries.fromC?.path === "Images/from-c.png", "Stale cache lock did not recover for later writes");
-    assert(!fs.existsSync(`${cacheFile}.lock`), "Stale cache lock recovery left a lock file behind");
+    assert(staleLockRecoveredCache.entries.fromC?.path === "Images/from-c.png", "Released cache lock did not recover for a later writer");
 
-    await cacheA.queueCacheWrite(JSON.stringify({
+    const sharedStateKey = "Images/shared-state.jpg:hash:10";
+    fs.writeFileSync(cacheFile, JSON.stringify({
       version: cacheA.CACHE_VERSION,
-      entries: {}
-    }), { mergeDiskEntries: false });
+      entries: {
+        [sharedStateKey]: {
+          path: "Images/shared-state.jpg",
+          state: "pending_move",
+          timestamp: 200,
+          stateUpdatedAt: 200,
+          lastAccessMs: 200,
+          mutationRevision: { counter: 2, ownerId: "disk-owner" }
+        }
+      }
+    }));
+    await withRealGlobalTimers(() => cacheA.queueCacheWrite(JSON.stringify({
+      version: cacheA.CACHE_VERSION,
+      entries: {
+        [sharedStateKey]: {
+          path: "Images/shared-state.jpg",
+          state: "skipped",
+          timestamp: 200,
+          stateUpdatedAt: 200,
+          lastAccessMs: 300,
+          mutationRevision: { counter: 1, ownerId: "stale-owner" }
+        }
+      }
+    }), { mergeDiskEntries: true }));
+    const mergedAccessState = JSON.parse(fs.readFileSync(cacheFile, "utf8")).entries[sharedStateKey];
+    assert(mergedAccessState?.state === "pending_move", "A stale access snapshot replaced a newer cache state");
+    assert(mergedAccessState?.lastAccessMs === 300, "Cache merge did not advance access recency independently of state mutation order");
+
+    await withRealGlobalTimers(() => cacheA.queueCacheWrite(JSON.stringify({
+      version: cacheA.CACHE_VERSION,
+      entries: {},
+      tombstones: {
+        [sharedStateKey]: { counter: 3, ownerId: "delete-owner" }
+      }
+    }), { mergeDiskEntries: false }));
     const authoritativeEmptyCache = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
     assert(Object.keys(authoritativeEmptyCache.entries || {}).length === 0, "Authoritative cache write merged deleted entries back from disk");
+    await withRealGlobalTimers(() => cacheB.queueCacheWrite(JSON.stringify({
+      version: cacheB.CACHE_VERSION,
+      entries: {
+        [sharedStateKey]: {
+          path: "Images/shared-state.jpg",
+          state: "skipped",
+          timestamp: 200,
+          stateUpdatedAt: 200,
+          lastAccessMs: 400,
+          mutationRevision: { counter: 2, ownerId: "stale-owner" }
+        }
+      }
+    }), { mergeDiskEntries: true }));
+    const cacheAfterStaleAccessFlush = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+    assert(!cacheAfterStaleAccessFlush.entries[sharedStateKey], "A stale cache snapshot crossed a newer logical tombstone");
+    assert(cacheAfterStaleAccessFlush.tombstones?.[sharedStateKey]?.counter === 3, "Cache merge lost the logical deletion tombstone");
+
+    const durableConflictKey = cacheA.buildCacheKey("Images/durable-move-conflict.jpg", MOCK_MD5, 10);
+    const localPendingEntry = {
+      path: "Images/durable-move-conflict.jpg",
+      state: "pending_move",
+      timestamp: 500,
+      stateUpdatedAt: 500,
+      lastAccessMs: 500,
+      md5: MOCK_MD5,
+      mtime: 10,
+      sourceMtime: 10,
+      sourceSize: 100,
+      outputPath: "Compressed/Images/durable-move-conflict.jpg",
+      outputMtime: 10,
+      outputSize: 50,
+      mutationRevision: { counter: 1, ownerId: cacheA.cacheLockOwnerId }
+    };
+    cacheA.cacheData = {
+      version: cacheA.CACHE_VERSION,
+      entries: { [durableConflictKey]: localPendingEntry },
+      tombstones: {}
+    };
+    fs.writeFileSync(cacheFile, JSON.stringify({
+      version: cacheA.CACHE_VERSION,
+      entries: {
+        [durableConflictKey]: {
+          ...localPendingEntry,
+          timestamp: 600,
+          stateUpdatedAt: 600,
+          mutationRevision: { counter: 3, ownerId: "concurrent-owner" }
+        }
+      },
+      tombstones: {}
+    }));
+    const originalConflictSleep = cacheA.sleepForCacheLock;
+    cacheA.sleepForCacheLock = async () => {};
+    let durableConflictCommitted;
+    try {
+      durableConflictCommitted = await withRealGlobalTimers(() => cacheA.markProcessedFileMoved(
+        "Images/durable-move-conflict.jpg",
+        { mtimeMs: 20, size: 50 },
+        100,
+        "Compressed/Images/durable-move-conflict.jpg"
+      ));
+    } finally {
+      cacheA.sleepForCacheLock = originalConflictSleep;
+    }
+    assert(durableConflictCommitted === false, "Moved transition acknowledged a cache merge won by a concurrent logical revision");
+    const durableConflictDiskEntry = JSON.parse(fs.readFileSync(cacheFile, "utf8")).entries[durableConflictKey];
+    assert(durableConflictDiskEntry?.state === "pending_move" && durableConflictDiskEntry.mutationRevision?.counter === 3, "Failed moved transition overwrote the concurrent durable cache state");
+    assert(cacheA.cacheData.entries[durableConflictKey]?.state === "pending_move", "Failed moved transition did not roll local state back to pending_move");
   } finally {
+    restoreCacheTestPaths();
     fs.rmSync(multiInstanceCacheTemp, { recursive: true, force: true });
+  }
+
+  const leaseBoundaryTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-lease-boundaries-"));
+  const originalLeaseBoundaryBasePath = plugin.app.vault.adapter.basePath;
+  const originalLeaseBoundaryAbsolutePath = plugin.app.vault.adapter.path.absolute;
+  try {
+    plugin.app.vault.adapter.basePath = leaseBoundaryTemp;
+    plugin.app.vault.adapter.path.absolute = leaseBoundaryTemp;
+    const leasePort = plugin.getPlatformPorts().fs.lease;
+    assert(leasePort, "Desktop cache lease port is unavailable");
+    const isScopedCanonicalLeasePath = (candidatePath, logicalPath) => {
+      const normalizedCandidate = path.resolve(String(candidatePath));
+      const normalizedLogical = path.resolve(leaseBoundaryTemp, String(logicalPath)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`^${normalizedLogical}\\.device-[a-f0-9]{32}$`, "i").test(normalizedCandidate);
+    };
+
+    const publicationLock = "publication.lock";
+    const originalLinkForPublication = fs.promises.link;
+    let publicationLinkStarted = null;
+    let releasePublicationLink = null;
+    const publicationLinkStartedPromise = new Promise((resolve) => {
+      publicationLinkStarted = resolve;
+    });
+    try {
+      let pausedPublication = false;
+      fs.promises.link = async (sourcePath, targetPath) => {
+        if (!pausedPublication && isScopedCanonicalLeasePath(targetPath, publicationLock)) {
+          pausedPublication = true;
+          publicationLinkStarted();
+          await new Promise((resolve) => {
+            releasePublicationLink = resolve;
+          });
+        }
+        return await originalLinkForPublication.call(fs.promises, sourcePath, targetPath);
+      };
+      await withRealGlobalTimers(async () => {
+        const firstAcquire = leasePort.acquire(publicationLock, "publication-a", 250, 5);
+        await publicationLinkStartedPromise;
+        const secondLease = await leasePort.acquire(publicationLock, "publication-b", 250, 5);
+        assert(secondLease, "Complete-owner publication did not allow exactly one contender to claim the empty lock path");
+        releasePublicationLink();
+        const firstLease = await firstAcquire;
+        assert(!firstLease && await leasePort.validate(secondLease), "Paused cache lease publication produced two owners or an invalid winner");
+        await leasePort.release(secondLease);
+      });
+    } finally {
+      releasePublicationLink?.();
+      fs.promises.link = originalLinkForPublication;
+    }
+
+    const takeoverLock = "takeover.lock";
+    const releasedTakeoverLease = await leasePort.acquire(takeoverLock, "takeover-old", 250, 5);
+    assert(releasedTakeoverLease && await leasePort.release(releasedTakeoverLease), "Takeover fixture did not publish a released owner marker");
+    const originalRenameForTakeover = fs.promises.rename;
+    let takeoverRenameStarted = null;
+    let releaseTakeoverRename = null;
+    const takeoverRenameStartedPromise = new Promise((resolve) => {
+      takeoverRenameStarted = resolve;
+    });
+    try {
+      let takeoverRenameCalls = 0;
+      fs.promises.rename = async (sourcePath, targetPath) => {
+        if (isScopedCanonicalLeasePath(sourcePath, takeoverLock)) {
+          takeoverRenameCalls += 1;
+          if (takeoverRenameCalls === 1) {
+            takeoverRenameStarted();
+            await new Promise((resolve) => {
+              releaseTakeoverRename = resolve;
+            });
+          }
+        }
+        return await originalRenameForTakeover.call(fs.promises, sourcePath, targetPath);
+      };
+      await withRealGlobalTimers(async () => {
+        const contenderA = leasePort.acquire(takeoverLock, "takeover-a", 350, 5);
+        await takeoverRenameStartedPromise;
+        const contenderB = leasePort.acquire(takeoverLock, "takeover-b", 350, 5);
+        await new Promise((resolve) => originalGlobals.setTimeout(resolve, 25));
+        assert(takeoverRenameCalls === 1, "Concurrent reclaimers reached the canonical cache lock at the same time");
+        releaseTakeoverRename();
+        const contenders = await Promise.all([contenderA, contenderB]);
+        const winners = contenders.filter(Boolean);
+        assert(winners.length === 1 && await leasePort.validate(winners[0]), "Released-lock takeover did not preserve single-owner mutual exclusion");
+        await leasePort.release(winners[0]);
+      });
+      const reclaimLeftovers = fs.readdirSync(leaseBoundaryTemp).filter((name) => name.startsWith("takeover.lock.reclaim-"));
+      assert(reclaimLeftovers.length === 0, `Cache lease takeover left reclaim artifacts: ${reclaimLeftovers.join(", ")}`);
+    } finally {
+      releaseTakeoverRename?.();
+      fs.promises.rename = originalRenameForTakeover;
+    }
+
+    const releaseLock = "release.lock";
+    const releasingLease = await leasePort.acquire(releaseLock, "release-old", 250, 5);
+    assert(releasingLease, "Release boundary fixture did not acquire its initial lease");
+    const originalLinkForRelease = fs.promises.link;
+    let releaseMarkerStarted = null;
+    let publishReleaseMarker = null;
+    const releaseMarkerStartedPromise = new Promise((resolve) => {
+      releaseMarkerStarted = resolve;
+    });
+    try {
+      fs.promises.link = async (sourcePath, targetPath) => {
+        if (path.resolve(String(targetPath)) === path.resolve(leaseBoundaryTemp, `${releasingLease.ownerPath}.released`)) {
+          releaseMarkerStarted();
+          await new Promise((resolve) => {
+            publishReleaseMarker = resolve;
+          });
+        }
+        return await originalLinkForRelease.call(fs.promises, sourcePath, targetPath);
+      };
+      await withRealGlobalTimers(async () => {
+        const pendingRelease = leasePort.release(releasingLease);
+        await releaseMarkerStartedPromise;
+        const prematureLease = await leasePort.acquire(releaseLock, "release-premature", 50, 5);
+        assert(!prematureLease, "A contender stole a live cache lease while release publication was paused");
+        const canonicalPayload = JSON.parse(fs.readFileSync(path.join(leaseBoundaryTemp, releasingLease.lockPath), "utf8"));
+        assert(canonicalPayload.leaseId === releasingLease.leaseId, "Paused release removed or replaced another owner's canonical lock");
+        publishReleaseMarker();
+        assert(await pendingRelease, "Cache lease release marker did not bind to its exact owner inode");
+        const successorLease = await leasePort.acquire(releaseLock, "release-successor", 250, 5);
+        assert(successorLease && await leasePort.validate(successorLease), "A released cache lease could not be taken over by its successor");
+        await leasePort.release(successorLease);
+      });
+    } finally {
+      publishReleaseMarker?.();
+      fs.promises.link = originalLinkForRelease;
+    }
+  } finally {
+    plugin.app.vault.adapter.basePath = originalLeaseBoundaryBasePath;
+    plugin.app.vault.adapter.path.absolute = originalLeaseBoundaryAbsolutePath;
+    fs.rmSync(leaseBoundaryTemp, { recursive: true, force: true });
+  }
+
+  const leaseOwnerRotationTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-lease-owner-rotation-"));
+  const deviceOwnerStorageKey = "local-image-compress:desktop-device-owner-v1";
+  const previousDeviceOwner = mockLocalStorage.get(deviceOwnerStorageKey);
+  try {
+    const ownerA = "a".repeat(32);
+    const ownerB = "b".repeat(32);
+    const logicalRotationLock = "rotation.lock";
+    const leaseApp = { vault: { adapter: { getBasePath: () => leaseOwnerRotationTemp } } };
+    mockLocalStorage.set(deviceOwnerStorageKey, ownerA);
+    const ownerAModule = compileTsModuleForTest("platform/desktop.ts");
+    const ownerAPort = ownerAModule.createDesktopPorts(leaseApp).fs.lease;
+    const releasedOwnerALease = await withRealGlobalTimers(() => ownerAPort.acquire(logicalRotationLock, "owner-a", 250, 5));
+    assert(releasedOwnerALease && await ownerAPort.release(releasedOwnerALease), "Owner-rotation fixture did not publish owner A's released lease");
+    const ownerACanonicalPath = path.join(leaseOwnerRotationTemp, `${logicalRotationLock}.device-${ownerA}`);
+    assert(fs.existsSync(ownerACanonicalPath), "Owner A's released device-scoped lease was not retained");
+
+    const legacyUnscopedLockPath = path.join(leaseOwnerRotationTemp, logicalRotationLock);
+    fs.writeFileSync(legacyUnscopedLockPath, "legacy-or-synced-lock");
+    mockLocalStorage.set(deviceOwnerStorageKey, ownerB);
+    const ownerBModule = compileTsModuleForTest("platform/desktop.ts");
+    const ownerBPort = ownerBModule.createDesktopPorts(leaseApp).fs.lease;
+    const ownerBLiveLease = await withRealGlobalTimers(() => ownerBPort.acquire(logicalRotationLock, "owner-b-live", 250, 5));
+    assert(ownerBLiveLease && await ownerBPort.validate(ownerBLiveLease), "Rotated owner B could not progress beside owner A's released or legacy unscoped lease");
+    assert(fs.readFileSync(legacyUnscopedLockPath, "utf8") === "legacy-or-synced-lock" && fs.existsSync(ownerACanonicalPath), "Owner rotation mutated a foreign or legacy lease namespace");
+
+    const ownerBContenderModule = compileTsModuleForTest("platform/desktop.ts");
+    const ownerBContenderPort = ownerBContenderModule.createDesktopPorts(leaseApp).fs.lease;
+    const blockedForeignLiveLease = await withRealGlobalTimers(() => ownerBContenderPort.acquire(logicalRotationLock, "owner-b-contender", 60, 5));
+    assert(!blockedForeignLiveLease, "A same-device contender reclaimed a foreign live lease");
+    const blockedForeignLiveSyncLease = ownerBContenderPort.acquireSync(logicalRotationLock, "owner-b-sync-contender", 25, 2);
+    assert(!blockedForeignLiveSyncLease, "The sync lease facet reclaimed a foreign live lease");
+    assert(await ownerBPort.release(ownerBLiveLease), "Owner B live lease did not publish its released marker");
+    const ownerBSyncSuccessor = ownerBContenderPort.acquireSync(logicalRotationLock, "owner-b-sync-successor", 250, 2);
+    assert(ownerBSyncSuccessor && ownerBContenderPort.validateSync(ownerBSyncSuccessor), "Sync lease facet could not reclaim the exact released owner after rotation");
+    assert(ownerBContenderPort.releaseSync(ownerBSyncSuccessor), "Sync lease successor did not publish a valid release marker");
+
+    const createDeadReclaimMarker = (logicalLock, phase) => {
+      const scopedLock = `${logicalLock}.device-${ownerB}`;
+      const markerPath = `${scopedLock}.reclaiming`;
+      const markerId = crypto.randomBytes(16).toString("hex");
+      const markerOwnerPath = `${markerPath}.owner-${markerId}`;
+      const payload = {
+        version: 1,
+        deviceOwnerId: ownerB,
+        markerId,
+        ownerPath: markerOwnerPath,
+        pid: 2147483647,
+        createdAt: Date.now()
+      };
+      const ownerAbsolute = path.join(leaseOwnerRotationTemp, markerOwnerPath);
+      const markerAbsolute = path.join(leaseOwnerRotationTemp, markerPath);
+      fs.writeFileSync(ownerAbsolute, JSON.stringify(payload), { flag: "wx" });
+      fs.linkSync(ownerAbsolute, markerAbsolute);
+      if (phase === "recovery") {
+        fs.linkSync(ownerAbsolute, path.join(leaseOwnerRotationTemp, `${markerPath}.recovery`));
+      }
+      return { markerAbsolute, ownerAbsolute, recoveryAbsolute: path.join(leaseOwnerRotationTemp, `${markerPath}.recovery`) };
+    };
+
+    const crashLogicalLock = "crash-reclaim.lock";
+    const crashSeedLease = await withRealGlobalTimers(() => ownerBPort.acquire(crashLogicalLock, "crash-seed", 250, 5));
+    assert(crashSeedLease && await ownerBPort.release(crashSeedLease), "Crash-reclaim fixture did not publish a released canonical lease");
+    const markerCrash = createDeadReclaimMarker(crashLogicalLock, "marker");
+    const markerCrashSuccessor = await withRealGlobalTimers(() => ownerBContenderPort.acquire(crashLogicalLock, "marker-crash-successor", 250, 5));
+    assert(markerCrashSuccessor && await ownerBContenderPort.validate(markerCrashSuccessor), "Async lease did not recover a dead reclaimer that crashed after marker publication");
+    assert(!fs.existsSync(markerCrash.markerAbsolute) && !fs.existsSync(markerCrash.ownerAbsolute), "Async stale-marker recovery retained dead reclaim artifacts");
+    assert(await ownerBContenderPort.release(markerCrashSuccessor), "Marker-crash successor could not release its lease");
+
+    const recoveryCrash = createDeadReclaimMarker(crashLogicalLock, "recovery");
+    const recoveryCrashSuccessor = ownerBPort.acquireSync(crashLogicalLock, "recovery-crash-sync-successor", 250, 2);
+    assert(recoveryCrashSuccessor && ownerBPort.validateSync(recoveryCrashSuccessor), "Sync lease did not recover a dead reclaimer that crashed after recovery-link publication");
+    assert(!fs.existsSync(recoveryCrash.markerAbsolute) && !fs.existsSync(recoveryCrash.ownerAbsolute) && !fs.existsSync(recoveryCrash.recoveryAbsolute), "Sync stale-recovery cleanup retained dead reclaim artifacts");
+    assert(ownerBPort.releaseSync(recoveryCrashSuccessor), "Recovery-crash sync successor could not release its lease");
+  } finally {
+    if (previousDeviceOwner === undefined) {
+      mockLocalStorage.delete(deviceOwnerStorageKey);
+    } else {
+      mockLocalStorage.set(deviceOwnerStorageKey, previousDeviceOwner);
+    }
+    fs.rmSync(leaseOwnerRotationTemp, { recursive: true, force: true });
+  }
+
+  const isolatedLeaseTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-cache-lease-isolated-realms-"));
+  const isolatedDesktopModulePath = compileTsModuleFileForIsolatedTest("platform/desktop.ts");
+  const { Worker: NodeWorker } = require("worker_threads");
+  const isolatedWorkerSource = [
+    '"use strict";',
+    'const { parentPort, workerData } = require("worker_threads");',
+    'const Module = require("module");',
+    'const fs = require("fs");',
+    'const path = require("path");',
+    'const originalLoad = Module._load;',
+    'Module._load = function(request, parent, isMain) {',
+    '  if (request === "obsidian") return { Platform: { isWin: process.platform === "win32", isMacOS: process.platform === "darwin", isIosApp: false } };',
+    '  if (request === "electron") return { shell: { openPath: async () => "" } };',
+    '  return originalLoad.call(this, request, parent, isMain);',
+    '};',
+    'global.window = {',
+    '  localStorage: { getItem: () => workerData.deviceOwnerId, setItem() {}, removeItem() {} },',
+    '  setTimeout, clearTimeout',
+    '};',
+    'const desktop = require(workerData.modulePath);',
+    'const app = { vault: { adapter: { getBasePath: () => workerData.basePath } } };',
+    'const leasePort = desktop.createDesktopPorts(app).fs.lease;',
+    'let currentLease = null;',
+    'let resumeRename = null;',
+    'parentPort.on("message", async (message) => {',
+    '  if (message.type === "resume") { resumeRename?.(); resumeRename = null; return; }',
+    '  const originalRename = fs.promises.rename;',
+    '  try {',
+    '    if (message.pauseReclaimRename) {',
+    '      let paused = false;',
+    '      fs.promises.rename = async (sourcePath, targetPath) => {',
+    '        if (!paused && path.basename(String(sourcePath)).startsWith("isolated.lock.device-") && String(targetPath).includes(".reclaim-")) {',
+    '          paused = true;',
+    '          parentPort.postMessage({ type: "paused", id: message.id });',
+    '          await new Promise((resolve) => { resumeRename = resolve; });',
+    '        }',
+    '        return await originalRename.call(fs.promises, sourcePath, targetPath);',
+    '      };',
+    '    }',
+    '    let value = false;',
+    '    if (message.type === "acquire") { currentLease = await leasePort.acquire("isolated.lock", message.ownerId, message.timeoutMs, 5); value = Boolean(currentLease); }',
+    '    else if (message.type === "release") { value = Boolean(currentLease && await leasePort.release(currentLease)); currentLease = null; }',
+    '    else if (message.type === "validate") { value = Boolean(currentLease && await leasePort.validate(currentLease)); }',
+    '    else if (message.type === "acquireSync") { currentLease = leasePort.acquireSync("isolated.lock", message.ownerId, message.timeoutMs, 2); value = Boolean(currentLease); }',
+    '    else if (message.type === "releaseSync") { value = Boolean(currentLease && leasePort.releaseSync(currentLease)); currentLease = null; }',
+    '    else if (message.type === "validateSync") { value = Boolean(currentLease && leasePort.validateSync(currentLease)); }',
+    '    parentPort.postMessage({ type: "result", id: message.id, value });',
+    '  } catch (error) {',
+    '    parentPort.postMessage({ type: "result", id: message.id, error: String(error && (error.stack || error.message) || error) });',
+    '  } finally {',
+    '    fs.promises.rename = originalRename;',
+    '  }',
+    '});'
+  ].join("\n");
+  const isolatedWorkers = [];
+  const waitForIsolatedMessage = (worker, predicate, timeoutMs = 3000) => new Promise((resolve, reject) => {
+    const timer = originalGlobals.setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for isolated lease worker"));
+    }, timeoutMs);
+    const onMessage = (message) => {
+      if (!predicate(message)) return;
+      cleanup();
+      if (message.error) reject(new Error(message.error));
+      else resolve(message);
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = () => {
+      originalGlobals.clearTimeout(timer);
+      worker.off("message", onMessage);
+      worker.off("error", onError);
+    };
+    worker.on("message", onMessage);
+    worker.on("error", onError);
+  });
+  const sendIsolatedLeaseCommand = (worker, message) => {
+    const response = waitForIsolatedMessage(worker, (candidate) => candidate.type === "result" && candidate.id === message.id);
+    worker.postMessage(message);
+    return response;
+  };
+  try {
+    const isolatedOwner = "c".repeat(32);
+    for (let index = 0; index < 3; index += 1) {
+      isolatedWorkers.push(new NodeWorker(isolatedWorkerSource, {
+        eval: true,
+        workerData: { modulePath: isolatedDesktopModulePath, basePath: isolatedLeaseTemp, deviceOwnerId: isolatedOwner }
+      }));
+    }
+    const [realmA, realmB, realmC] = isolatedWorkers;
+    assert((await sendIsolatedLeaseCommand(realmA, { type: "acquire", id: "seed-acquire", ownerId: "seed", timeoutMs: 250 })).value, "Isolated lease fixture could not acquire its seed lease");
+    assert((await sendIsolatedLeaseCommand(realmA, { type: "release", id: "seed-release" })).value, "Isolated lease fixture could not release its seed lease");
+
+    const pausedReclaim = waitForIsolatedMessage(realmA, (message) => message.type === "paused" && message.id === "realm-a-reclaim");
+    const realmAReclaim = sendIsolatedLeaseCommand(realmA, { type: "acquire", id: "realm-a-reclaim", ownerId: "realm-a", timeoutMs: 500, pauseReclaimRename: true });
+    await pausedReclaim;
+    const realmBWhileMarkerHeld = await sendIsolatedLeaseCommand(realmB, { type: "acquire", id: "realm-b-marker", ownerId: "realm-b", timeoutMs: 80 });
+    assert(!realmBWhileMarkerHeld.value, "An isolated realm crossed another reclaimer's filesystem-visible marker");
+    realmA.postMessage({ type: "resume" });
+    assert((await realmAReclaim).value, "The marker-owning isolated realm did not acquire after reclaim resumed");
+    assert((await sendIsolatedLeaseCommand(realmA, { type: "validate", id: "realm-a-validate" })).value, "Isolated realm A did not hold a valid lease after reclaim");
+    assert(!(await sendIsolatedLeaseCommand(realmC, { type: "acquire", id: "realm-c-live", ownerId: "realm-c", timeoutMs: 80 })).value, "A third isolated realm acquired beside a live owner");
+    assert(!(await sendIsolatedLeaseCommand(realmB, { type: "acquireSync", id: "realm-b-sync-live", ownerId: "realm-b-sync", timeoutMs: 25 })).value, "Sync lease facet crossed a live owner in another realm");
+    assert((await sendIsolatedLeaseCommand(realmA, { type: "release", id: "realm-a-release" })).value, "Isolated realm A could not release its lease");
+    assert((await sendIsolatedLeaseCommand(realmC, { type: "acquireSync", id: "realm-c-sync-successor", ownerId: "realm-c-sync", timeoutMs: 250 })).value, "Sync successor could not acquire the released isolated-realm lease");
+    assert((await sendIsolatedLeaseCommand(realmC, { type: "validateSync", id: "realm-c-sync-validate" })).value, "Sync successor did not own a valid isolated-realm lease");
+    assert((await sendIsolatedLeaseCommand(realmC, { type: "releaseSync", id: "realm-c-sync-release" })).value, "Sync successor could not release its isolated-realm lease");
+  } finally {
+    await Promise.allSettled(isolatedWorkers.map((worker) => worker.terminate()));
+    fs.rmSync(isolatedLeaseTemp, { recursive: true, force: true });
+    fs.rmSync(isolatedDesktopModulePath, { force: true });
   }
 
   assert(plugin.savingsCalculator.validateSavingsData({
@@ -6597,7 +8857,7 @@ try {
   assert(Object.keys(plugin.cache.cacheData.entries).length === 0, "addToCache() created an entry with an empty path");
 
   plugin.cache.cacheData.entries = {};
-  plugin.cache.saveCache = async () => {};
+  plugin.cache.saveCache = async () => true;
   plugin.cache.createBackup = () => {};
   await setMockFiles(plugin, [createMockFile("Images/a.png", 100000, 1)]);
   plugin.compressor.compress = async () => ({
@@ -6610,10 +8870,29 @@ try {
   assert(skippedEntry && !Object.prototype.hasOwnProperty.call(skippedEntry, "skipped"), "PNG quality failure was not written as a canonical skipped cache entry");
   assert(skippedEntry.skipReason === "pngquant_quality_failed", `Unexpected PNG skip reason: ${skippedEntry && skippedEntry.skipReason}`);
   assert(skippedEntry.compressionSettingsKey === "png:65-80", `PNG skip entry did not record quality settings: ${skippedEntry.compressionSettingsKey}`);
-  const tooLargeSettingsKey = plugin.getCompressionSettingsKey({ extension: "png" }, "too_large");
-  assert(tooLargeSettingsKey === "png:limits:100:100:too_large", `too_large skip entry did not record size/pixel limits: ${tooLargeSettingsKey}`);
-  assert(plugin.cache.isSettingsSensitiveSkipReason("too_large") === true, "too_large skipped entries are not settings-sensitive");
-  assert(plugin.getCompressionSettingsKey({ extension: "webp" }, "future_skip_reason") === "webp:future_skip_reason", "Future skip reasons still get a null compression settings key");
+	  const tooLargeSettingsKey = plugin.getCompressionSettingsKey({ extension: "png" }, "too_large");
+	  assert(tooLargeSettingsKey === "png:limits:100:100:too_large", `too_large skip entry did not record size/pixel limits: ${tooLargeSettingsKey}`);
+	  assert(plugin.cache.isSettingsSensitiveSkipReason("too_large") === true, "too_large skipped entries are not settings-sensitive");
+	  const desktopCacheFile = plugin.app.vault.getAbstractFileByPath("Images/a.png");
+	  const crossDeviceFile = Object.assign(new ObsidianMock.TFile(), createMockFile("Images/cross-device.png", 30 * 1024 * 1024, 2));
+	  await setMockFiles(plugin, [desktopCacheFile, crossDeviceFile]);
+	  const mobileTooLargeKey = plugin.cache.buildCacheKey(crossDeviceFile.path, "", crossDeviceFile.stat.mtime);
+	  plugin.cache.cacheData.entries[mobileTooLargeKey] = {
+	    path: crossDeviceFile.path,
+	    md5: "",
+	    mtime: crossDeviceFile.stat.mtime,
+	    timestamp: 2,
+	    lastAccessMs: 2,
+	    originalSize: crossDeviceFile.stat.size,
+	    sourceMtime: crossDeviceFile.stat.mtime,
+	    sourceSize: crossDeviceFile.stat.size,
+	    state: "skipped",
+	    stateUpdatedAt: 2,
+	    skipReason: "too_large",
+	    compressionSettingsKey: "png:limits:25:50:too_large"
+	  };
+	  assert(await plugin.cache.isFileAlreadyProcessed(crossDeviceFile) === false, "Desktop treated a mobile too_large cache entry as fresh");
+	  assert(plugin.getCompressionSettingsKey({ extension: "webp" }, "future_skip_reason") === "webp:future_skip_reason", "Future skip reasons still get a null compression settings key");
   assert(Object.keys(plugin.cache.cacheData.entries).some((key) => key.startsWith("v2:")), "Skipped cache entry was not written with a v2 key");
 
   const originalNoticeClassForSanitize = ObsidianMock.Notice;
@@ -6685,6 +8964,11 @@ try {
   const originalGetCompressedFilesCountForAutoMove = plugin.moveService.getCompressedFilesCount;
   const originalMoveCompressedToFilesForAutoMove = plugin.moveService.moveCompressedToFiles;
   const originalCompressorCompressForAutoMove = plugin.compressor.compress;
+  const originalAddCompressionArtifactForAutoMove = plugin.cache.addCompressionArtifact;
+  const originalCreateBackupForAutoMove = plugin.cache.createBackup;
+  const originalUpdateImageIndexForAutoMove = plugin.updateImageIndexForFile;
+  const originalStatusBarUpdateForAutoMove = plugin.statusBarController.update;
+  const originalUpdateSavingsForAutoMove = plugin.updateSavingsIndicatorInSettings;
   let autoMoveCalls = 0;
   const autoMoveWorkflowCounts = [];
   try {
@@ -6695,7 +8979,20 @@ try {
       autoMoveWorkflowCounts.push(plugin.compressionWorkflowsInFlight);
       autoMoveCalls += 1;
     };
-    plugin.compressor.compress = async () => ({ success: true, savings: 25 });
+    plugin.cache.addCompressionArtifact = async () => true;
+    plugin.cache.createBackup = async () => {
+      throw new Error("post-commit backup failure");
+    };
+    plugin.updateImageIndexForFile = async () => {
+      throw new Error("post-commit index failure");
+    };
+    plugin.statusBarController.update = async () => {
+      throw new Error("post-commit status failure");
+    };
+    plugin.updateSavingsIndicatorInSettings = async () => {
+      throw new Error("post-commit savings failure");
+    };
+    plugin.compressor.compress = async (file, _settings, operation) => createCompressionSuccess(file, operation);
     plugin.cache.cacheData.entries = {};
     await setMockFiles(plugin, [createMockFile("Images/auto-move.png", 100000, 3)]);
     await plugin.compressFile(plugin.app.vault.getAbstractFileByPath("Images/auto-move.png"));
@@ -6710,6 +9007,11 @@ try {
     plugin.moveService.getCompressedFilesCount = originalGetCompressedFilesCountForAutoMove;
     plugin.moveService.moveCompressedToFiles = originalMoveCompressedToFilesForAutoMove;
     plugin.compressor.compress = originalCompressorCompressForAutoMove;
+    plugin.cache.addCompressionArtifact = originalAddCompressionArtifactForAutoMove;
+    plugin.cache.createBackup = originalCreateBackupForAutoMove;
+    plugin.updateImageIndexForFile = originalUpdateImageIndexForAutoMove;
+    plugin.statusBarController.update = originalStatusBarUpdateForAutoMove;
+    plugin.updateSavingsIndicatorInSettings = originalUpdateSavingsForAutoMove;
   }
 
   const originalCompressorCompressForMoveLock = plugin.compressor.compress;
@@ -6741,19 +9043,35 @@ try {
   }
 
   const originalWaitForCompressionIdle = plugin.waitForCompressionIdle;
+  const originalWithCompressionGuardsForMoveWait = plugin.withCompressionGuards;
   const moveWaitTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-move-wait-"));
   try {
     let waitForIdleCalls = 0;
+    let guardedMoveCalls = 0;
+    plugin.withCompressionGuards = async (task) => {
+      guardedMoveCalls += 1;
+      return await task();
+    };
     plugin.waitForCompressionIdle = async () => {
       waitForIdleCalls += 1;
+      return false;
     };
     plugin.app.vault.adapter.basePath = moveWaitTemp;
     plugin.app.vault.adapter.path.absolute = moveWaitTemp;
     plugin.settings.outputFolder = "Compressed";
     await plugin.moveService.moveCompressedToFiles();
-    assert(waitForIdleCalls === 1, `Move did not wait for active compression jobs before scanning backups: ${waitForIdleCalls}`);
+    assert(waitForIdleCalls === 1, `Move did not evaluate the compression-idle abort result: ${waitForIdleCalls}`);
+    assert(guardedMoveCalls === 0, "Move entered guarded scan after compression-idle timeout");
+
+    plugin.waitForCompressionIdle = async () => {
+      waitForIdleCalls += 1;
+      return true;
+    };
+    await plugin.moveService.moveCompressedToFiles();
+    assert(waitForIdleCalls === 2 && guardedMoveCalls === 1, "Move did not continue exactly once after compression became idle");
   } finally {
     plugin.waitForCompressionIdle = originalWaitForCompressionIdle;
+    plugin.withCompressionGuards = originalWithCompressionGuardsForMoveWait;
     plugin.moveService.moveOperationInProgress = false;
     plugin.app.vault.adapter.basePath = root;
     plugin.app.vault.adapter.path.absolute = root;
@@ -6792,7 +9110,8 @@ try {
     };
     plugin.compressionWorkflowsInFlight = 0;
     plugin.compressionJobsInFlight = 1;
-    await plugin.waitForCompressionIdle(0);
+    const idleTimeoutResult = await plugin.waitForCompressionIdle(0);
+    assert(idleTimeoutResult === false, "waitForCompressionIdle timeout did not return an abort result");
     assert(idleTimeoutTicks === 0, "waitForCompressionIdle did not stop before ticking when maxWaitMs elapsed");
     assert(idleTimeoutWarnings.messages.some((message) => message.includes("waitForCompressionIdle giving up after 0ms")), "waitForCompressionIdle timeout did not log stuck counters");
   } finally {
@@ -6894,60 +9213,49 @@ try {
 
   const originalCompressorCompressForSnapshot = plugin.compressor.compress;
   const originalCacheIsProcessedForSnapshot = plugin.cache.isFileAlreadyProcessed;
-  const originalCacheGetKeyForSnapshot = plugin.cache.getCacheKey;
-  const originalCacheAddToCacheForSnapshot = plugin.cache.addToCache;
+  const originalCacheAddArtifactForSnapshot = plugin.cache.addCompressionArtifact;
   const originalUpdateImageIndexForSnapshot = plugin.updateImageIndexForFile;
   try {
     const snapshotFile = createMockFile("Images/snapshot.png", 100000, 123);
-    let compressorPathOverride = null;
-    let cacheKeyPathOverride = null;
-    let addToCachePathOverride = null;
-    let addToCacheOutputPath = null;
+    let compressorOperation = null;
+    let committedArtifact = null;
     plugin.cache.isFileAlreadyProcessed = async () => false;
-    plugin.cache.getCacheKey = async (_file, pathOverride) => {
-      cacheKeyPathOverride = pathOverride;
-      return "snapshot-key";
-    };
-    plugin.cache.addToCache = async (_key, _size, _file, outputPath, pathOverride) => {
-      addToCacheOutputPath = outputPath;
-      addToCachePathOverride = pathOverride;
+    plugin.cache.addCompressionArtifact = async (artifact) => {
+      committedArtifact = artifact;
+      return true;
     };
     plugin.updateImageIndexForFile = async () => {};
-    plugin.compressor.compress = async (file, _settings, pathOverride) => {
-      compressorPathOverride = pathOverride;
+    plugin.compressor.compress = async (file, _settings, operation) => {
+      compressorOperation = operation;
       file.path = "Images/renamed-mid-flight.png";
-      return { success: true, savings: 10 };
+      return createCompressionSuccess(file, operation, 10, "Compressed/Images/snapshot.png");
     };
     await plugin.runCompressionBatch([snapshotFile]);
-    assert(compressorPathOverride === "Images/snapshot.png", `Batch compression did not pass path snapshot to compressor: ${compressorPathOverride}`);
-    assert(cacheKeyPathOverride === "Images/snapshot.png", `Batch compression did not pass path snapshot to cache key: ${cacheKeyPathOverride}`);
-    assert(addToCachePathOverride === "Images/snapshot.png", `Batch compression did not pass path snapshot to cache entry: ${addToCachePathOverride}`);
-    assert(String(addToCacheOutputPath).includes(path.join("Compressed", "Images", "snapshot.png")), `Batch compression used live renamed path for output metadata: ${addToCacheOutputPath}`);
+    assert(compressorOperation?.sourcePath === "Images/snapshot.png" && compressorOperation?.sourceMtime === 123, `Batch compression did not pass immutable source identity: ${JSON.stringify(compressorOperation)}`);
+    assert(committedArtifact?.sourcePath === "Images/snapshot.png", `Batch cache commit used live renamed path: ${committedArtifact?.sourcePath}`);
+    assert(committedArtifact?.outputPath === "Compressed/Images/snapshot.png", `Batch cache commit used a recomputed output path: ${committedArtifact?.outputPath}`);
   } finally {
     plugin.compressor.compress = originalCompressorCompressForSnapshot;
     plugin.cache.isFileAlreadyProcessed = originalCacheIsProcessedForSnapshot;
-    plugin.cache.getCacheKey = originalCacheGetKeyForSnapshot;
-    plugin.cache.addToCache = originalCacheAddToCacheForSnapshot;
+    plugin.cache.addCompressionArtifact = originalCacheAddArtifactForSnapshot;
     plugin.updateImageIndexForFile = originalUpdateImageIndexForSnapshot;
   }
 
   const originalCompressorCompressForSettingsSnapshot = plugin.compressor.compress;
   const originalCacheIsProcessedForSettingsSnapshot = plugin.cache.isFileAlreadyProcessed;
-  const originalCacheGetKeyForSettingsSnapshot = plugin.cache.getCacheKey;
-  const originalCacheAddToCacheForSettingsSnapshot = plugin.cache.addToCache;
+  const originalCacheAddArtifactForSettingsSnapshot = plugin.cache.addCompressionArtifact;
   const originalUpdateImageIndexForSettingsSnapshot = plugin.updateImageIndexForFile;
   const originalSettingsForSettingsSnapshot = plugin.settings;
   try {
     plugin.settings = { ...plugin.settings, pngQuality: { min: 30, max: 40 }, jpegQuality: 70 };
     const capturedPngQualities = [];
     plugin.cache.isFileAlreadyProcessed = async () => false;
-    plugin.cache.getCacheKey = async (file) => `settings-snapshot:${file.path}`;
-    plugin.cache.addToCache = async () => {};
+    plugin.cache.addCompressionArtifact = async () => true;
     plugin.updateImageIndexForFile = async () => {};
-    plugin.compressor.compress = async (_file, settings) => {
+    plugin.compressor.compress = async (file, settings, operation) => {
       capturedPngQualities.push({ ...settings.pngQuality });
       plugin.settings.pngQuality = { min: 80, max: 90 };
-      return { success: true, savings: 10 };
+      return createCompressionSuccess(file, operation, 10);
     };
     await plugin.runCompressionBatch([
       createMockFile("Images/settings-a.png", 100000, 1),
@@ -6959,8 +9267,7 @@ try {
   } finally {
     plugin.compressor.compress = originalCompressorCompressForSettingsSnapshot;
     plugin.cache.isFileAlreadyProcessed = originalCacheIsProcessedForSettingsSnapshot;
-    plugin.cache.getCacheKey = originalCacheGetKeyForSettingsSnapshot;
-    plugin.cache.addToCache = originalCacheAddToCacheForSettingsSnapshot;
+    plugin.cache.addCompressionArtifact = originalCacheAddArtifactForSettingsSnapshot;
     plugin.updateImageIndexForFile = originalUpdateImageIndexForSettingsSnapshot;
     plugin.settings = originalSettingsForSettingsSnapshot;
   }
@@ -7039,9 +9346,10 @@ try {
     }
   });
   counts = await plugin.getImageCompressionCounts();
-  assert(counts.uncompressedImages === 1, "Legacy original-size cache entry still hid an original from compression");
+  assert(counts.uncompressedImages === 0, "Legacy original-size cache entry was not migrated to processed moved state");
 
-  await setMockFiles(plugin, [createMockFile("Images/legacy-mtime-only.jpg", 100000, 9)]);
+  const legacyMtimeOnlyFile = createMockFile("Images/legacy-mtime-only.jpg", 100000, 9);
+  await setMockFiles(plugin, [legacyMtimeOnlyFile]);
   await setCacheEntries(plugin, {
     [`Images/legacy-mtime-only.jpg:${MOCK_MD5}:9`]: {
       md5: MOCK_MD5,
@@ -7050,7 +9358,10 @@ try {
     }
   });
   counts = await plugin.getImageCompressionCounts();
-  assert(counts.uncompressedImages === 1, "Legacy mtime-only cache entry still hid an original from compression");
+  assert(counts.uncompressedImages === 0, "Legacy processed cache entry without originalSize was not migrated to processed moved state");
+  const legacyEstimatedSavings = await plugin.savingsCalculator.collectImageStats([legacyMtimeOnlyFile]);
+  assert(legacyEstimatedSavings.savings.processedFiles === 1, "Legacy processed cache entry without originalSize was not counted as processed");
+  assert(legacyEstimatedSavings.savings.estimatedFiles === 1, "Legacy processed cache entry without originalSize did not use estimated savings");
 
   await setMockFiles(plugin, [createMockFile("Images/legacy-path-only.jpg", 120000, 99)]);
   await setCacheEntries(plugin, {
@@ -7062,8 +9373,8 @@ try {
     }
   });
   counts = await plugin.getImageCompressionCounts();
-  assert(counts.uncompressedImages === 1, "Legacy path-only cache entry still hid an original from compression");
-  assert(plugin.cache.getEntriesForPath("Images/legacy-path-only.jpg").length === 1, "Legacy path-only cache entry was deleted instead of being ignored");
+  assert(counts.uncompressedImages === 0, "Legacy processed cache entry with stale source mtime was not migrated to processed moved state");
+  assert(plugin.cache.getEntriesForPath("Images/legacy-path-only.jpg").length === 1, "Legacy processed cache entry was deleted instead of migrated");
 
   await setMockFiles(plugin, [createMockFile("Images/future-moved.jpg", 70000, 9)]);
   await setCacheEntries(plugin, {
@@ -7104,9 +9415,13 @@ try {
   const pendingTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-pending-"));
   const originalSetSaveCacheTimeoutForPending = plugin.cache.setSaveCacheTimeout;
   const originalClearSaveCacheTimeoutForPending = plugin.cache.clearSaveCacheTimeout;
+  const originalSaveCacheForPending = plugin.cache.saveCache;
+  const originalAcceptingWritesForPending = plugin.cache.acceptingWrites;
   try {
     plugin.cache.setSaveCacheTimeout = (callback, delay) => originalGlobals.setTimeout(callback, delay);
     plugin.cache.clearSaveCacheTimeout = (timer) => originalGlobals.clearTimeout(timer);
+    plugin.cache.acceptingWrites = true;
+    plugin.cache.saveCache = async () => true;
     plugin.settings.outputFolder = "Compressed";
     plugin.app.vault.adapter.basePath = pendingTemp;
     plugin.app.vault.adapter.path.absolute = pendingTemp;
@@ -7182,22 +9497,23 @@ try {
     });
     const lastAccessSaveEntry = plugin.cache.getEntriesForPath("Images/last-access.jpg")[0]?.[1];
     assert(lastAccessSaveEntry, "lastAccess smoke setup did not retain the normalized cache entry");
-    const originalSaveCacheForLastAccess = plugin.cache.saveCache;
+    const originalQueueCacheWriteForLastAccess = plugin.cache.queueCacheWrite;
     let lastAccessSaveOptions = null;
     try {
       lastAccessSaveEntry.lastAccessMs = 1;
       plugin.cache.lastAccessSaveAt = 0;
       plugin.cache.lastAccessSavePromise = null;
-      plugin.cache.saveCache = async (options) => {
+      plugin.cache.queueCacheWrite = async (_data, options) => {
         lastAccessSaveOptions = options;
+        return true;
       };
       const freshLastAccess = await plugin.cache.getFreshEntryForFile(createMockFile("Images/last-access.jpg", 100000, 10));
       await plugin.cache.lastAccessSavePromise;
       assert(freshLastAccess, "lastAccess smoke setup did not find the cache entry");
       assert(lastAccessSaveEntry.lastAccessMs > 1, "Cache hit did not bump lastAccessMs");
-      assert(lastAccessSaveOptions?.mergeDiskEntries === true, "Cache hit did not schedule a merge-safe lastAccessMs save");
+      assert(lastAccessSaveOptions?.mergeDiskEntries === true && lastAccessSaveOptions?.existingEntriesOnly === true, "Cache hit did not schedule an existing-only lastAccessMs delta");
     } finally {
-      plugin.cache.saveCache = originalSaveCacheForLastAccess;
+      plugin.cache.queueCacheWrite = originalQueueCacheWriteForLastAccess;
       plugin.cache.lastAccessSavePromise = null;
     }
 
@@ -7287,6 +9603,38 @@ try {
     const invalidMovedEntry = plugin.cache.getEntriesForPath("Images/invalid-moved.jpg")[0]?.[1];
     assert(invalidMovedEntry?.state === "pending_move", "markProcessedFileMoved() wrote a moved entry without processed size");
 
+    const failedCommitKey = `Images/failed-cache-transition.jpg:${MOCK_MD5}:10`;
+    await setCacheEntries(plugin, {
+      [failedCommitKey]: {
+        path: "Images/failed-cache-transition.jpg",
+        state: "pending_move",
+        md5: MOCK_MD5,
+        mtime: 10,
+        timestamp: 10,
+        lastAccessMs: 10,
+        originalSize: 100000,
+        sourceMtime: 10,
+        sourceSize: 100000,
+        outputPath: "Compressed/Images/failed-cache-transition.jpg"
+      }
+    });
+    const originalSaveCacheForFailedTransition = plugin.cache.saveCache;
+    try {
+      plugin.cache.saveCache = async () => false;
+      const failedMovedCommit = await plugin.cache.markProcessedFileMoved("Images/failed-cache-transition.jpg", { mtimeMs: 20, size: 50000 }, 100000);
+      assert(failedMovedCommit === false, "markProcessedFileMoved() acknowledged a failed durable cache commit");
+      const rolledBackMovedEntry = plugin.cache.getEntriesForPath("Images/failed-cache-transition.jpg")[0]?.[1];
+      assert(rolledBackMovedEntry?.state === "pending_move", "Failed moved commit left a non-durable moved state in memory");
+      rolledBackMovedEntry.lastAccessMs = 30;
+      const failedIdenticalCommit = await plugin.cache.markProcessedFileSkippedIdentical("Images/failed-cache-transition.jpg", { mtimeMs: 10, size: 100000 }, 100000);
+      assert(failedIdenticalCommit === false, "markProcessedFileSkippedIdentical() acknowledged a failed durable cache commit");
+      const rolledBackIdenticalEntry = plugin.cache.getEntriesForPath("Images/failed-cache-transition.jpg")[0]?.[1];
+      assert(rolledBackIdenticalEntry?.state === "pending_move", "Failed identical transition left a non-durable skipped state in memory");
+      assert(rolledBackIdenticalEntry?.lastAccessMs >= 30, "Failed cache transition rollback lost a concurrent access touch");
+    } finally {
+      plugin.cache.saveCache = originalSaveCacheForFailedTransition;
+    }
+
     await setMockFiles(plugin, [createMockFile("Images/select-pending.jpg", 50000, 20)]);
     const selectPendingKey = `Images/select-pending.jpg:${MOCK_MD5}:10`;
     const selectLegacyKey = `Images/select-pending.jpg:${MOCK_MD5_ALT}:1`;
@@ -7312,7 +9660,7 @@ try {
     await plugin.cache.markProcessedFileMoved("Images/select-pending.jpg", { mtimeMs: 20, size: 50000 }, 100000);
     const selectPendingEntries = plugin.cache.getEntriesForPath("Images/select-pending.jpg").map(([, entry]) => entry);
     assert(selectPendingEntries.find((entry) => entry.md5 === MOCK_MD5)?.state === "moved", "markProcessedFileMoved() did not prefer pending_move entry");
-    assert(selectPendingEntries.find((entry) => entry.md5 === MOCK_MD5_ALT)?.state !== "moved", "markProcessedFileMoved() updated legacy entry instead of pending_move");
+    assert(selectPendingEntries.find((entry) => entry.md5 === MOCK_MD5_ALT)?.timestamp === 999, "markProcessedFileMoved() updated migrated legacy entry instead of pending_move");
 
     await setMockFiles(plugin, [createMockFile("Images/select-output.jpg", 50000, 25)]);
     const selectCurrentOutputKey = `Images/select-output.jpg:${MOCK_MD5}:10`;
@@ -7345,6 +9693,60 @@ try {
     const selectOutputEntries = plugin.cache.getEntriesForPath("Images/select-output.jpg").map(([, entry]) => entry);
     assert(selectOutputEntries.find((entry) => entry.outputPath === "Compressed/Images/current-output.jpg")?.state === "moved", "markProcessedFileMoved() did not prefer the entry for the moved compressed output");
     assert(selectOutputEntries.find((entry) => entry.outputPath === "Compressed/Images/stale-output.jpg")?.state === "pending_move", "markProcessedFileMoved() updated a newer timestamp entry with a different compressed output");
+
+    const exactPendingPath = "Images/exact-pending.jpg";
+    const sharedOutputPath = "Compressed/Images/shared-output.jpg";
+    const exactPendingBytes = Buffer.from("exact pending output bytes");
+    const exactPendingNativePath = path.join(pendingTemp, ...exactPendingPath.split("/"));
+    fs.mkdirSync(path.dirname(exactPendingNativePath), { recursive: true });
+    fs.writeFileSync(exactPendingNativePath, exactPendingBytes);
+    const exactPendingStats = fs.statSync(exactPendingNativePath);
+    const exactPendingOutputSha256 = crypto.createHash("sha256").update(exactPendingBytes).digest("hex");
+    const oldMovedKey = plugin.cache.buildCacheKey(exactPendingPath, MOCK_MD5_ALT, 9);
+    const exactPendingKey = plugin.cache.buildCacheKey(exactPendingPath, MOCK_MD5, 10);
+    await setMockFiles(plugin, [createMockFile(exactPendingPath, exactPendingStats.size, exactPendingStats.mtimeMs)]);
+    await setCacheEntries(plugin, {
+      [oldMovedKey]: {
+        path: exactPendingPath,
+        state: "moved",
+        md5: MOCK_MD5_ALT,
+        mtime: 9,
+        timestamp: Date.now() + 365 * 24 * 60 * 60 * 1000,
+        originalSize: 100,
+        processedMtime: exactPendingStats.mtimeMs,
+        processedSize: exactPendingStats.size,
+        outputPath: sharedOutputPath,
+        outputSha256: "f".repeat(64)
+      },
+      [exactPendingKey]: {
+        path: exactPendingPath,
+        state: "pending_move",
+        md5: MOCK_MD5,
+        mtime: 10,
+        timestamp: 1,
+        originalSize: 100,
+        sourceMtime: 10,
+        sourceSize: 100,
+        sourceSha256: "a".repeat(64),
+        outputPath: sharedOutputPath,
+        outputMtime: exactPendingStats.mtimeMs,
+        outputSize: exactPendingStats.size,
+        outputSha256: exactPendingOutputSha256
+      }
+    });
+    const oldMovedBeforeTerminalTransition = JSON.stringify(plugin.cache.cacheData.entries[oldMovedKey]);
+    const exactPendingTransition = await plugin.cache.markProcessedFileMoved(
+      exactPendingPath,
+      { mtimeMs: exactPendingStats.mtimeMs, size: exactPendingStats.size },
+      100,
+      sharedOutputPath,
+      { cacheKey: exactPendingKey, outputSha256: exactPendingOutputSha256 }
+    );
+    assert.equal(exactPendingTransition, true, "Exact pending_move identity was not durably transitioned");
+    const transitionedExactPending = plugin.cache.cacheData.entries[exactPendingKey];
+    assert(transitionedExactPending?.state === "moved", "Future-dated moved history won over the exact pending_move identity");
+    assert(transitionedExactPending.sourceMtime === 10 && transitionedExactPending.sourceSize === 100, "Terminal pending_move transition rewrote its cache-key source identity");
+    assert.equal(JSON.stringify(plugin.cache.cacheData.entries[oldMovedKey]), oldMovedBeforeTerminalTransition, "Terminal transition mutated the old future-dated moved identity");
 
     const originalMalformedCacheData = plugin.cache.cacheData;
     try {
@@ -7386,6 +9788,8 @@ try {
   } finally {
     plugin.cache.setSaveCacheTimeout = originalSetSaveCacheTimeoutForPending;
     plugin.cache.clearSaveCacheTimeout = originalClearSaveCacheTimeoutForPending;
+    plugin.cache.saveCache = originalSaveCacheForPending;
+    plugin.cache.acceptingWrites = originalAcceptingWritesForPending;
     fs.rmSync(pendingTemp, { recursive: true, force: true });
     plugin.app.vault.adapter.basePath = root;
     plugin.app.vault.adapter.path.absolute = root;
@@ -7404,14 +9808,14 @@ try {
       return originalGetAbstractFileByPathForFolder(filePath);
     };
     const folderOriginal = await plugin.moveService.findOriginalFileForCompressed({
-      compressedPath: path.join(root, "Compressed", folderLikePath),
+      compressedPath: `Compressed/${folderLikePath}`,
       relativePath: folderLikePath,
       name: folderLikePath,
       size: 50
     });
     assert(folderOriginal === null, "findOriginalFileForCompressed() treated a TFolder as an image file");
     const noCandidateRecord = {
-      compressedPath: path.join(root, "Compressed", "missing-original.png"),
+      compressedPath: "Compressed/missing-original.png",
       relativePath: "",
       name: "missing-original.png",
       size: 50
@@ -7424,9 +9828,14 @@ try {
   }
 
   const moveLookupTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-move-lookup-"));
+  const originalSetSaveCacheTimeoutForMoveLookup = plugin.cache.setSaveCacheTimeout;
+  const originalClearSaveCacheTimeoutForMoveLookup = plugin.cache.clearSaveCacheTimeout;
   try {
-    plugin.app.vault.adapter.basePath = moveLookupTemp;
-    plugin.app.vault.adapter.path.absolute = moveLookupTemp;
+    setCacheTestFile(path.join(moveLookupTemp, "tinyLocal-cache.json"), path.join(moveLookupTemp, "cache-backups"));
+    const toMoveLookupPath = (filePath) => path.relative(moveLookupTemp, filePath).replace(/\\/g, "/");
+    plugin.cache.setSaveCacheTimeout = (callback, delay) => originalGlobals.setTimeout(callback, delay);
+    plugin.cache.clearSaveCacheTimeout = (timer) => originalGlobals.clearTimeout(timer);
+    plugin.cache.acceptingWrites = true;
     for (const corruptWorkerPoolSize of [NaN, Infinity, -Infinity, "not-a-number"]) {
       plugin.settings.workerPoolSize = corruptWorkerPoolSize;
       assert(plugin.moveService.getIOConcurrency() === Math.max(1, Math.min(plugin.compressor.activeWorkerCount * 2, 16)), `MoveService getIOConcurrency() did not ignore corrupt legacy workerPoolSize: ${String(corruptWorkerPoolSize)}`);
@@ -7484,61 +9893,77 @@ try {
     const renameCacheMigrationStarted = new Promise((resolve) => {
       markRenameCacheMigrationStarted = resolve;
     });
+    let renameHandlerPromise = null;
     try {
       plugin.cache.renameCacheEntries = async (...args) => {
         markRenameCacheMigrationStarted();
         await renameCacheMigrationGate;
         return await originalRenameCacheEntriesForMoveRace.apply(plugin.cache, args);
       };
-      const renameHandlerPromise = plugin.handleVaultRename(renamedFile, renamedOldRelativePath);
+      renameHandlerPromise = plugin.handleVaultRename(renamedFile, renamedOldRelativePath);
       await renameCacheMigrationStarted;
       const originalLookupDuringRename = plugin.moveService.buildOriginalFileLookup();
       const resolvedDuringRename = await plugin.moveService.findOriginalFileForCompressed({
-        compressedPath: renamedCompressedPath,
+        compressedPath: toMoveLookupPath(renamedCompressedPath),
         relativePath: renamedOldRelativePath,
         name: "photo.jpg",
         size: 50
       }, originalLookupDuringRename);
-      assert(resolvedDuringRename === renamedNewAbsolutePath, `Move lookup used a stale pre-rename path during cache migration: ${resolvedDuringRename}`);
+      assert(resolvedDuringRename === renamedNewRelativePath, `Move lookup used a stale pre-rename path during cache migration: ${resolvedDuringRename}`);
       releaseRenameCacheMigration();
       await renameHandlerPromise;
+      renameHandlerPromise = null;
     } finally {
       releaseRenameCacheMigration?.();
+      await renameHandlerPromise;
       plugin.cache.renameCacheEntries = originalRenameCacheEntriesForMoveRace;
     }
     assert(plugin.cache.getEntriesForPath(renamedOldRelativePath).length === 0, "Rename-to-move integration left the old cache path behind");
     assert(plugin.cache.getEntriesForPath(renamedNewRelativePath).length === 1, "Rename-to-move integration did not migrate the cache entry to the new path");
     const originalRenameForMoveRace = fs.promises.rename;
-    const moveRaceRenameTargets = [];
+    const originalCopyForMoveRace = fs.promises.copyFile;
+    const originalLinkForMoveRace = fs.promises.link;
+    const moveRaceReplacementTargets = [];
     try {
       fs.promises.rename = async (sourcePath, targetPath) => {
-        moveRaceRenameTargets.push(path.resolve(targetPath));
+        moveRaceReplacementTargets.push(path.resolve(targetPath));
         return await originalRenameForMoveRace.call(fs.promises, sourcePath, targetPath);
       };
-      await plugin.moveService.moveSingleFile({
-        compressedPath: renamedCompressedPath,
-        relativePath: renamedOldRelativePath,
-        name: "photo.jpg",
-        size: 50
-      });
+      fs.promises.copyFile = async (sourcePath, targetPath, mode) => {
+        moveRaceReplacementTargets.push(path.resolve(targetPath));
+        return await originalCopyForMoveRace.call(fs.promises, sourcePath, targetPath, mode);
+      };
+      fs.promises.link = async (sourcePath, targetPath) => {
+        moveRaceReplacementTargets.push(path.resolve(targetPath));
+        return await originalLinkForMoveRace.call(fs.promises, sourcePath, targetPath);
+      };
+	      await plugin.moveService.moveSingleFile(prepareVerifiedMoveRecord({
+	        compressedPath: renamedCompressedPath,
+	        relativePath: renamedOldRelativePath,
+	        name: "photo.jpg",
+	        size: 50
+	      }, renamedNewAbsolutePath, moveLookupTemp));
     } finally {
       fs.promises.rename = originalRenameForMoveRace;
+      fs.promises.copyFile = originalCopyForMoveRace;
+      fs.promises.link = originalLinkForMoveRace;
     }
-    assert(moveRaceRenameTargets.includes(path.resolve(renamedNewAbsolutePath)), "Move after rename did not replace the current Vault path");
-    assert(!moveRaceRenameTargets.includes(path.resolve(renamedOldAbsolutePath)), "Move after rename targeted the stale pre-rename path");
+    assert(moveRaceReplacementTargets.includes(path.resolve(renamedNewAbsolutePath)), "Move after rename did not replace the current Vault path");
+    assert(!moveRaceReplacementTargets.includes(path.resolve(renamedOldAbsolutePath)), "Move after rename targeted the stale pre-rename path");
     assert(!fs.existsSync(renamedOldAbsolutePath), "Move after rename recreated the stale pre-rename path");
 
     let duplicateMovedCalls = 0;
     const originalMarkProcessedFileMoved = plugin.cache.markProcessedFileMoved;
     plugin.cache.markProcessedFileMoved = async () => {
       duplicateMovedCalls += 1;
+      return true;
     };
     let duplicateFailed = false;
     const originalConsoleError = console.error;
     try {
       console.error = () => {};
       await plugin.moveService.moveSingleFile({
-        compressedPath: duplicateCompressed,
+        compressedPath: toMoveLookupPath(duplicateCompressed),
         relativePath: "missing/icon.png",
         name: "icon.png",
         size: 50
@@ -7553,12 +9978,12 @@ try {
     assert(duplicateMovedCalls === 0, "Duplicate basename move marked cache moved");
     assert(fs.statSync(duplicateA).size === 100 && fs.statSync(duplicateB).size === 100, "Duplicate basename move changed an original file");
     const backslashOriginalResult = await plugin.moveService.findOriginalFileForCompressed({
-      compressedPath: path.join(moveLookupTemp, "Compressed", "Images", "slash", "photo.jpg"),
+      compressedPath: "Compressed/Images/slash/photo.jpg",
       relativePath: "Images\\slash\\photo.jpg",
       name: "photo.jpg",
       size: 50
     });
-    assert(backslashOriginalResult === backslashOriginal, `MoveService did not normalize backslash relative paths through shared path normalization: ${backslashOriginalResult}`);
+    assert(backslashOriginalResult === "Images/slash/photo.jpg", `MoveService did not normalize backslash relative paths through shared path normalization: ${backslashOriginalResult}`);
 
     const uniqueOriginal = path.join(moveLookupTemp, "Images", "unique", "photo.jpg");
     const uniqueCompressed = path.join(moveLookupTemp, "Compressed", "lost", "photo.jpg");
@@ -7570,12 +9995,12 @@ try {
       Object.assign(new ObsidianMock.TFile(), createMockFile("Images/unique/photo.jpg", 100, 2))
     ]);
     plugin.cache.cacheData.entries = {};
-    await plugin.moveService.moveSingleFile({
-      compressedPath: uniqueCompressed,
-      relativePath: "missing/photo.jpg",
-      name: "photo.jpg",
-      size: 50
-    });
+	    await plugin.moveService.moveSingleFile(prepareVerifiedMoveRecord({
+	      compressedPath: uniqueCompressed,
+	      relativePath: "missing/photo.jpg",
+	      name: "photo.jpg",
+	      size: 50
+	    }, uniqueOriginal, moveLookupTemp));
     assert(fs.statSync(uniqueOriginal).size === 50, "Unique basename fallback did not replace the original");
     assert(!fs.existsSync(uniqueCompressed), "Unique basename fallback did not remove compressed output");
     const movedUniqueEntry = plugin.cache.getEntriesForPath("Images/unique/photo.jpg").find(([, entry]) => entry.state === "moved");
@@ -7589,8 +10014,8 @@ try {
     fs.writeFileSync(deletedCompressed, Buffer.alloc(50));
     fs.unlinkSync(deletedOriginal);
     const deletedRecord = {
-      compressedPath: deletedCompressed,
-      originalPath: deletedOriginal,
+      compressedPath: toMoveLookupPath(deletedCompressed),
+      originalPath: toMoveLookupPath(deletedOriginal),
       relativePath: "Images/deleted/gone.jpg",
       name: "gone.jpg",
       size: 50
@@ -7605,8 +10030,8 @@ try {
     fs.writeFileSync(unloadOriginal, Buffer.alloc(100));
     fs.writeFileSync(unloadCompressed, Buffer.alloc(50));
     const unloadRecord = {
-      compressedPath: unloadCompressed,
-      originalPath: unloadOriginal,
+      compressedPath: toMoveLookupPath(unloadCompressed),
+      originalPath: toMoveLookupPath(unloadOriginal),
       relativePath: "Images/unload/stop.jpg",
       name: "stop.jpg",
       size: 50
@@ -7634,8 +10059,8 @@ try {
         return await originalCopyFileForSelfMove.call(fs.promises, ...args);
       };
       const selfMoveRecord = {
-        compressedPath: selfMovePath,
-        originalPath: selfMovePath,
+        compressedPath: toMoveLookupPath(selfMovePath),
+        originalPath: toMoveLookupPath(selfMovePath),
         relativePath: "Images/self-move.jpg",
         name: "self-move.jpg",
         size: 100
@@ -7646,8 +10071,8 @@ try {
       assert(fs.statSync(selfMovePath).size === 100, "Self-move changed the original file");
 
       const backupSelfMoveRecord = {
-        compressedPath: selfMovePath,
-        originalPath: selfMovePath,
+        compressedPath: toMoveLookupPath(selfMovePath),
+        originalPath: toMoveLookupPath(selfMovePath),
         relativePath: "Images/self-move.jpg",
         name: "self-move.jpg",
         size: 100
@@ -7687,8 +10112,8 @@ try {
         }
       };
       const pendingConflictRecord = {
-        compressedPath: pendingConflictCompressed,
-        originalPath: pendingConflictOriginal,
+        compressedPath: toMoveLookupPath(pendingConflictCompressed),
+        originalPath: toMoveLookupPath(pendingConflictOriginal),
         relativePath: "Images/pending-conflict.jpg",
         name: "pending-conflict.jpg",
         size: pendingConflictCompressedStats.size
@@ -7706,14 +10131,18 @@ try {
       const postBackupStats = fs.statSync(postBackupOriginal);
       plugin.app._files = [Object.assign(new ObsidianMock.TFile(), createMockFile("Images/post-backup-change.jpg", postBackupStats.size, postBackupStats.mtimeMs))];
       const postBackupRecord = {
-        compressedPath: postBackupCompressed,
-        originalPath: postBackupOriginal,
+        compressedPath: toMoveLookupPath(postBackupCompressed),
+        originalPath: toMoveLookupPath(postBackupOriginal),
         relativePath: "Images/post-backup-change.jpg",
         name: "post-backup-change.jpg",
         size: 50
       };
+      const untrackedPostBackupResult = await plugin.moveService.createBackupBeforeMove([postBackupRecord]);
+      assert(untrackedPostBackupResult.files.length === 0 && postBackupRecord.moveSkipReason === plugin.moveService.getMoveText("move.skip.externalModification"), "Untracked output was allowed into a destructive move");
+      delete postBackupRecord.moveSkipReason;
+      seedPendingMoveArtifact(plugin, "Images/post-backup-change.jpg", "Compressed/Images/post-backup-change.jpg", postBackupOriginal, postBackupCompressed);
       const postBackupResult = await plugin.moveService.createBackupBeforeMove([postBackupRecord]);
-      assert(postBackupResult.files.length === 1, "No-record fallback did not produce a backup-verified move task");
+      assert(postBackupResult.files.length === 1, "Hash-owned pending artifact did not produce a backup-verified move task");
       const verifiedPostBackupRecord = postBackupResult.files[0];
       fs.writeFileSync(postBackupOriginal, Buffer.alloc(100, 0x55));
       verifiedPostBackupRecord.originalMtimeMsBeforeMove = fs.statSync(postBackupOriginal).mtimeMs;
@@ -7731,6 +10160,7 @@ try {
     fs.mkdirSync(path.dirname(backupRaceCompressed), { recursive: true });
     fs.writeFileSync(backupRaceOriginal, Buffer.alloc(100));
     fs.writeFileSync(backupRaceCompressed, Buffer.alloc(50));
+    seedPendingMoveArtifact(plugin, "Images/backup-race.jpg", "Compressed/Images/backup-race.jpg", backupRaceOriginal, backupRaceCompressed);
     const originalStatForBackupRace = fs.promises.stat;
     let backupRaceOriginalStatCount = 0;
     try {
@@ -7739,14 +10169,14 @@ try {
         if (filePath === backupRaceOriginal) {
           backupRaceOriginalStatCount += 1;
           if (backupRaceOriginalStatCount >= 2) {
-            return { ...stats, size: stats.size + 1 };
+            return { ...stats, size: stats.size + 1, isDirectory: () => false };
           }
         }
         return stats;
       };
       const backupRaceRecord = {
-        compressedPath: backupRaceCompressed,
-        originalPath: backupRaceOriginal,
+        compressedPath: toMoveLookupPath(backupRaceCompressed),
+        originalPath: toMoveLookupPath(backupRaceOriginal),
         relativePath: "Images/backup-race.jpg",
         name: "backup-race.jpg",
         size: 50
@@ -7765,6 +10195,7 @@ try {
     fs.mkdirSync(path.dirname(backupHashRaceCompressed), { recursive: true });
     fs.writeFileSync(backupHashRaceOriginal, Buffer.alloc(100, 0xaa));
     fs.writeFileSync(backupHashRaceCompressed, Buffer.alloc(50, 0xbb));
+    seedPendingMoveArtifact(plugin, "Images/backup-hash-race.jpg", "Compressed/Images/backup-hash-race.jpg", backupHashRaceOriginal, backupHashRaceCompressed);
     const originalStatForBackupHashRace = fs.promises.stat;
     let backupHashRaceOriginalStatCount = 0;
     try {
@@ -7775,14 +10206,14 @@ try {
           if (backupHashRaceOriginalStatCount === 2) {
             fs.writeFileSync(backupHashRaceOriginal, Buffer.alloc(100, 0xcc));
             const changedStats = await originalStatForBackupHashRace.call(fs.promises, filePath, ...args);
-            return { ...changedStats, size: stats.size, mtimeMs: stats.mtimeMs };
+            return { ...changedStats, size: stats.size, mtimeMs: stats.mtimeMs, isDirectory: () => false };
           }
         }
         return stats;
       };
       const backupHashRaceRecord = {
-        compressedPath: backupHashRaceCompressed,
-        originalPath: backupHashRaceOriginal,
+        compressedPath: toMoveLookupPath(backupHashRaceCompressed),
+        originalPath: toMoveLookupPath(backupHashRaceOriginal),
         relativePath: "Images/backup-hash-race.jpg",
         name: "backup-hash-race.jpg",
         size: 50
@@ -7807,6 +10238,7 @@ try {
     fs.mkdirSync(path.dirname(backupCompressedHashCompressed), { recursive: true });
     fs.writeFileSync(backupCompressedHashOriginal, Buffer.alloc(100, 0xaa));
     fs.writeFileSync(backupCompressedHashCompressed, Buffer.alloc(50, 0xbb));
+    seedPendingMoveArtifact(plugin, "Images/backup-compressed-hash.jpg", "Compressed/Images/backup-compressed-hash.jpg", backupCompressedHashOriginal, backupCompressedHashCompressed);
     const originalStatForCompressedHashRace = fs.promises.stat;
     let backupCompressedHashStatCount = 0;
     try {
@@ -7817,14 +10249,14 @@ try {
           if (backupCompressedHashStatCount === 2) {
             fs.writeFileSync(backupCompressedHashCompressed, Buffer.alloc(50, 0xdd));
             const changedStats = await originalStatForCompressedHashRace.call(fs.promises, filePath, ...args);
-            return { ...changedStats, size: stats.size, mtimeMs: stats.mtimeMs };
+            return { ...changedStats, size: stats.size, mtimeMs: stats.mtimeMs, isDirectory: () => false };
           }
         }
         return stats;
       };
       const backupCompressedHashRecord = {
-        compressedPath: backupCompressedHashCompressed,
-        originalPath: backupCompressedHashOriginal,
+        compressedPath: toMoveLookupPath(backupCompressedHashCompressed),
+        originalPath: toMoveLookupPath(backupCompressedHashOriginal),
         relativePath: "Images/backup-compressed-hash.jpg",
         name: "backup-compressed-hash.jpg",
         size: 50
@@ -7850,6 +10282,7 @@ try {
     fs.mkdirSync(path.dirname(backupPostCopyCompressed), { recursive: true });
     fs.writeFileSync(backupPostCopyOriginal, Buffer.alloc(100, 0xaa));
     fs.writeFileSync(backupPostCopyCompressed, Buffer.alloc(50, 0xbb));
+    seedPendingMoveArtifact(plugin, "Images/backup-postcopy.jpg", "Compressed/Images/backup-postcopy.jpg", backupPostCopyOriginal, backupPostCopyCompressed);
     const originalCopyFileForPostCopy = fs.promises.copyFile;
     let postCopyTamperApplied = false;
     try {
@@ -7867,8 +10300,8 @@ try {
         return await originalCopyFileForPostCopy.call(fs.promises, src, dest, ...args);
       };
       const backupPostCopyRecord = {
-        compressedPath: backupPostCopyCompressed,
-        originalPath: backupPostCopyOriginal,
+        compressedPath: toMoveLookupPath(backupPostCopyCompressed),
+        originalPath: toMoveLookupPath(backupPostCopyOriginal),
         relativePath: "Images/backup-postcopy.jpg",
         name: "backup-postcopy.jpg",
         size: 50
@@ -7892,39 +10325,41 @@ try {
     fs.writeFileSync(externalOriginal, Buffer.alloc(100));
     fs.writeFileSync(externalCompressed, Buffer.alloc(50));
     const originalStatForExternalMove = fs.promises.stat;
-    const originalNoticeForExternalMove = ObsidianMock.Notice;
-    const externalMoveNotices = [];
-    let externalOriginalStatCount = 0;
-    try {
-      ObsidianMock.Notice = class {
-        constructor(message, duration) {
-          externalMoveNotices.push({ message, duration });
-        }
-      };
-      fs.promises.stat = async (filePath, ...args) => {
+    const originalMarkProcessedFileMovedForStaleStat = plugin.cache.markProcessedFileMoved;
+	    let externalOriginalStatCount = 0;
+	    let committedProcessedSize = null;
+	    try {
+	      plugin.cache.markProcessedFileMoved = async (_filePath, processedStats) => {
+	        committedProcessedSize = processedStats.size;
+	        return true;
+	      };
+	      fs.promises.stat = async (filePath, ...args) => {
         const stats = await originalStatForExternalMove.call(fs.promises, filePath, ...args);
         if (filePath === externalOriginal) {
           externalOriginalStatCount += 1;
           if (externalOriginalStatCount >= 2) {
-            return { ...stats, size: stats.size + 1 };
+            return { ...stats, size: stats.size + 1, isDirectory: () => false };
           }
         }
         return stats;
       };
-      const externalRecord = {
-        compressedPath: externalCompressed,
-        originalPath: externalOriginal,
-        relativePath: "Images/external.jpg",
-        name: "external.jpg",
-        size: 50
-      };
-      await plugin.moveService.moveSingleFile(externalRecord);
-      assert(externalRecord.moveSkipReason === plugin.moveService.getMoveText("move.skip.externalModification"), `External modification used wrong skip reason: ${externalRecord.moveSkipReason}`);
-      assert(externalMoveNotices.some((notice) => String(notice.message).includes("external.jpg") && notice.duration === 10000), "External modification did not create a user-visible Notice");
-    } finally {
-      fs.promises.stat = originalStatForExternalMove;
-      ObsidianMock.Notice = originalNoticeForExternalMove;
-    }
+	      const externalRecord = prepareVerifiedMoveRecord({
+	        compressedPath: externalCompressed,
+	        originalPath: externalOriginal,
+	        relativePath: "Images/external.jpg",
+	        name: "external.jpg",
+	        size: 50
+	      }, externalOriginal, moveLookupTemp);
+	      await plugin.moveService.moveSingleFile(externalRecord);
+	      assert(
+	        fs.statSync(externalOriginal).size === 50 && !fs.existsSync(externalCompressed),
+	        "Exact post-replacement bytes were rejected because of stale stat metadata"
+	      );
+	      assert(committedProcessedSize === 50, "Stale post-replacement size leaked into the moved cache transition");
+	    } finally {
+	      fs.promises.stat = originalStatForExternalMove;
+	      plugin.cache.markProcessedFileMoved = originalMarkProcessedFileMovedForStaleStat;
+	    }
 
     const originalModalForMoveResult = ObsidianMock.Modal;
     let moveResultModal = null;
@@ -7957,9 +10392,10 @@ try {
       ObsidianMock.Modal = originalModalForMoveResult;
     }
   } finally {
+    plugin.cache.setSaveCacheTimeout = originalSetSaveCacheTimeoutForMoveLookup;
+    plugin.cache.clearSaveCacheTimeout = originalClearSaveCacheTimeoutForMoveLookup;
+    restoreCacheTestPaths();
     fs.rmSync(moveLookupTemp, { recursive: true, force: true });
-    plugin.app.vault.adapter.basePath = root;
-    plugin.app.vault.adapter.path.absolute = root;
   }
 
   const moveFailTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-move-fail-"));
@@ -7981,17 +10417,18 @@ try {
     };
     plugin.cache.markProcessedFileMoved = async () => {
       markMovedCalls += 1;
+      return true;
     };
     let failedAsExpected = false;
     try {
       console.error = () => {};
-      await plugin.moveService.moveSingleFile({
-        compressedPath,
-        originalPath,
-        relativePath: "Images/move-fail.jpg",
-        name: "move-fail.jpg",
-        size: 50
-      });
+	      await plugin.moveService.moveSingleFile(prepareVerifiedMoveRecord({
+	        compressedPath,
+	        originalPath,
+	        relativePath: "Images/move-fail.jpg",
+	        name: "move-fail.jpg",
+	        size: 50
+	      }, originalPath, moveFailTemp));
     } catch (_) {
       failedAsExpected = true;
     } finally {
@@ -8004,7 +10441,13 @@ try {
     assert(fs.statSync(originalPath).size === 100, "Failed staged replace changed original file size");
     assert(fs.existsSync(compressedPath), "Failed staged replace deleted compressed output");
     const tempLeftovers = fs.readdirSync(path.dirname(originalPath)).filter((name) => name.includes(".tinylocal-"));
-    assert(tempLeftovers.length === 0, `Failed staged replace left temp files: ${tempLeftovers.join(", ")}`);
+    assert(tempLeftovers.length === 1, `Failed staged replace did not retain exactly one verified recovery temp: ${tempLeftovers.join(", ")}`);
+    const retainedMoveTemp = path.join(path.dirname(originalPath), tempLeftovers[0]);
+    assert(
+      crypto.createHash("sha256").update(fs.readFileSync(retainedMoveTemp)).digest("hex")
+        === crypto.createHash("sha256").update(fs.readFileSync(compressedPath)).digest("hex"),
+      "Failed staged replace retained bytes other than the verified compressed revision"
+    );
   } finally {
     fs.rmSync(moveFailTemp, { recursive: true, force: true });
     plugin.app.vault.adapter.basePath = root;
@@ -8026,24 +10469,25 @@ try {
     const originalConsoleError = console.error;
     let markMovedCalls = 0;
     fs.promises.unlink = async (filePath) => {
-      if (filePath === compressedPath) {
+      if (path.basename(String(filePath)).startsWith("cleanup-fail.jpg.delete-") && String(filePath).includes(".tinylocal-quarantine-")) {
         throw new Error("simulated compressed cleanup failure");
       }
       return originalUnlink.call(fs.promises, filePath);
     };
     plugin.cache.markProcessedFileMoved = async () => {
       markMovedCalls += 1;
+      return true;
     };
     let failedAsExpected = false;
     try {
       console.error = () => {};
-      await plugin.moveService.moveSingleFile({
-        compressedPath,
-        originalPath,
-        relativePath: "Images/cleanup-fail.jpg",
-        name: "cleanup-fail.jpg",
-        size: 50
-      });
+	      await plugin.moveService.moveSingleFile(prepareVerifiedMoveRecord({
+	        compressedPath,
+	        originalPath,
+	        relativePath: "Images/cleanup-fail.jpg",
+	        name: "cleanup-fail.jpg",
+	        size: 50
+	      }, originalPath, moveCleanupFailTemp));
     } catch (_) {
       failedAsExpected = true;
     } finally {
@@ -8054,9 +10498,306 @@ try {
     assert(!failedAsExpected, "moveSingleFile() surfaced a non-fatal compressed cleanup failure");
     assert(markMovedCalls === 1, "moveSingleFile() did not mark cache moved before non-fatal compressed cleanup");
     assert(fs.statSync(originalPath).size === 50, "Compressed cleanup failure did not happen after staged replace");
-    assert(fs.existsSync(compressedPath), "Compressed cleanup failure unexpectedly deleted compressed output");
+    const retainedCleanupOutputs = fs.readdirSync(moveCleanupFailTemp, { recursive: true })
+      .map(String)
+      .filter((filePath) => path.basename(filePath).startsWith("cleanup-fail.jpg.delete-") && filePath.includes(".tinylocal-quarantine-"));
+    assert(retainedCleanupOutputs.length === 1, "Compressed cleanup failure did not retain the exact output in its recovery quarantine");
+    assert(fs.statSync(path.join(moveCleanupFailTemp, retainedCleanupOutputs[0])).size === 50, "Compressed cleanup quarantine did not preserve the output bytes");
+    assert(
+      fs.readdirSync(path.join(moveCleanupFailTemp, ".local-image-compress", "recovery")).some((name) => name.startsWith("desktop-cleanup-journal-v1-")),
+      "Compressed cleanup failure did not retain its durable recovery journal"
+    );
   } finally {
     fs.rmSync(moveCleanupFailTemp, { recursive: true, force: true });
+    plugin.app.vault.adapter.basePath = root;
+    plugin.app.vault.adapter.path.absolute = root;
+  }
+
+  const moveCleanupReplacementTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-move-cleanup-replacement-"));
+  try {
+    const originalPath = path.join(moveCleanupReplacementTemp, "Images", "cleanup-replacement.jpg");
+    const compressedPath = path.join(moveCleanupReplacementTemp, "Compressed", "Images", "cleanup-replacement.jpg");
+    const replacementBytes = Buffer.alloc(50, 0x7f);
+    fs.mkdirSync(path.dirname(originalPath), { recursive: true });
+    fs.mkdirSync(path.dirname(compressedPath), { recursive: true });
+    fs.writeFileSync(originalPath, Buffer.alloc(100));
+    fs.writeFileSync(compressedPath, Buffer.alloc(50, 0x22));
+    plugin.app.vault.adapter.basePath = moveCleanupReplacementTemp;
+    plugin.app.vault.adapter.path.absolute = moveCleanupReplacementTemp;
+    const verifiedRecord = prepareVerifiedMoveRecord({
+      compressedPath,
+      originalPath,
+      relativePath: "Images/cleanup-replacement.jpg",
+      name: "cleanup-replacement.jpg",
+      size: 50
+    }, originalPath, moveCleanupReplacementTemp);
+    const originalMarkProcessedFileMoved = plugin.cache.markProcessedFileMoved;
+    let markMovedCalls = 0;
+    try {
+      plugin.cache.markProcessedFileMoved = async () => {
+        markMovedCalls += 1;
+        fs.writeFileSync(compressedPath, replacementBytes);
+        return true;
+      };
+      await plugin.moveService.moveSingleFile(verifiedRecord);
+    } finally {
+      plugin.cache.markProcessedFileMoved = originalMarkProcessedFileMoved;
+    }
+    assert(markMovedCalls === 1 && fs.statSync(originalPath).size === 50, "Move cleanup replacement test did not reach the post-replacement cache boundary");
+    assert(fs.readFileSync(compressedPath).equals(replacementBytes), "Move cleanup deleted a newer same-path compressed output written during the cache await");
+  } finally {
+    fs.rmSync(moveCleanupReplacementTemp, { recursive: true, force: true });
+    plugin.app.vault.adapter.basePath = root;
+    plugin.app.vault.adapter.path.absolute = root;
+  }
+
+  const moveCacheCommitFailureTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-move-cache-commit-"));
+  try {
+    plugin.app.vault.adapter.basePath = moveCacheCommitFailureTemp;
+    plugin.app.vault.adapter.path.absolute = moveCacheCommitFailureTemp;
+    const movedOriginalPath = path.join(moveCacheCommitFailureTemp, "Images", "commit-fail.jpg");
+    const movedOutputPath = path.join(moveCacheCommitFailureTemp, "Compressed", "Images", "commit-fail.jpg");
+    fs.mkdirSync(path.dirname(movedOriginalPath), { recursive: true });
+    fs.mkdirSync(path.dirname(movedOutputPath), { recursive: true });
+    fs.writeFileSync(movedOriginalPath, Buffer.alloc(100, 0x11));
+    fs.writeFileSync(movedOutputPath, Buffer.alloc(50, 0x22));
+    const originalMarkMovedForCommitFailure = plugin.cache.markProcessedFileMoved;
+    try {
+      plugin.cache.markProcessedFileMoved = async () => false;
+      await assert.rejects(() => plugin.moveService.moveSingleFile(prepareVerifiedMoveRecord({
+        compressedPath: movedOutputPath,
+        originalPath: movedOriginalPath,
+        relativePath: "Images/commit-fail.jpg",
+        name: "commit-fail.jpg",
+        size: 50
+      }, movedOriginalPath, moveCacheCommitFailureTemp)), /cache transition was not durably committed/);
+    } finally {
+      plugin.cache.markProcessedFileMoved = originalMarkMovedForCommitFailure;
+    }
+    assert(fs.statSync(movedOriginalPath).size === 50, "Move cache-commit failure did not preserve the landed replacement");
+    assert(fs.existsSync(movedOutputPath), "Move cache-commit failure deleted the reconciliation output");
+
+    const identicalOriginalPath = path.join(moveCacheCommitFailureTemp, "Images", "identical-commit-fail.jpg");
+    const identicalOutputPath = path.join(moveCacheCommitFailureTemp, "Compressed", "Images", "identical-commit-fail.jpg");
+    fs.writeFileSync(identicalOriginalPath, Buffer.alloc(50, 0x33));
+    fs.writeFileSync(identicalOutputPath, Buffer.alloc(50, 0x33));
+    const originalMarkIdenticalForCommitFailure = plugin.cache.markProcessedFileSkippedIdentical;
+    try {
+      plugin.cache.markProcessedFileSkippedIdentical = async () => false;
+      await assert.rejects(() => plugin.moveService.moveSingleFile({
+        compressedPath: "Compressed/Images/identical-commit-fail.jpg",
+        originalPath: "Images/identical-commit-fail.jpg",
+        relativePath: "Images/identical-commit-fail.jpg",
+        name: "identical-commit-fail.jpg",
+        size: 50,
+        compressedSha256: crypto.createHash("sha256").update(fs.readFileSync(identicalOutputPath)).digest("hex")
+      }), /cache transition was not durably committed/);
+    } finally {
+      plugin.cache.markProcessedFileSkippedIdentical = originalMarkIdenticalForCommitFailure;
+    }
+    assert(fs.existsSync(identicalOutputPath), "Identical-output cache-commit failure deleted the reconciliation output");
+
+    const retryOriginalPath = path.join(moveCacheCommitFailureTemp, "Images", "retry-commit-fail.jpg");
+    const retryOutputPath = path.join(moveCacheCommitFailureTemp, "Compressed", "Images", "retry-commit-fail.jpg");
+    const retrySourceRelativePath = "Images/retry-commit-fail.jpg";
+    const retryOutputRelativePath = "Compressed/Images/retry-commit-fail.jpg";
+    const retrySourceBytes = Buffer.alloc(100, 0x44);
+    const retryOutputBytes = Buffer.alloc(50, 0x55);
+    fs.writeFileSync(retryOriginalPath, retrySourceBytes);
+    fs.writeFileSync(retryOutputPath, retryOutputBytes);
+    const retryOutputStat = fs.statSync(retryOutputPath);
+    const retrySourceTime = new Date(Date.now() - 60_000);
+    fs.utimesSync(retryOriginalPath, retrySourceTime, retrySourceTime);
+    const retrySourceStat = fs.statSync(retryOriginalPath);
+    const retrySourceSha256 = crypto.createHash("sha256").update(retrySourceBytes).digest("hex");
+    const retryOutputSha256 = crypto.createHash("sha256").update(retryOutputBytes).digest("hex");
+    const retryCacheKey = `${retrySourceRelativePath}:${MOCK_MD5}:${retrySourceStat.mtimeMs}`;
+    const retryPendingEntry = {
+      path: retrySourceRelativePath,
+      state: "pending_move",
+      timestamp: 500,
+      stateUpdatedAt: 500,
+      lastAccessMs: 500,
+      md5: MOCK_MD5,
+      mtime: retrySourceStat.mtimeMs,
+      sourceMtime: retrySourceStat.mtimeMs,
+      sourceSize: retrySourceBytes.byteLength,
+      sourceSha256: retrySourceSha256,
+      outputPath: retryOutputRelativePath,
+      outputMtime: Math.round(retryOutputStat.mtimeMs),
+      outputSize: retryOutputBytes.byteLength,
+      outputSha256: retryOutputSha256,
+      compressionSettingsKey: "jpeg:50"
+    };
+    const originalRetryCacheFile = plugin.cache.cacheFile;
+    const originalRetryBackupsDir = plugin.cache.cacheBackupsDir;
+    const originalRetryCacheData = plugin.cache.cacheData;
+    const originalRetrySetTimeout = plugin.cache.setSaveCacheTimeout;
+    const originalRetryClearTimeout = plugin.cache.clearSaveCacheTimeout;
+    const originalRetrySaveDelay = plugin.cache.saveCacheDelayMs;
+    const originalRetryWriteAtomic = plugin.cache.writeCacheFileAtomic;
+    const originalRetrySleep = plugin.cache.sleepForCacheLock;
+    const originalRetrySaveCache = plugin.cache.saveCache;
+    const originalRetryVaultFiles = plugin.app._files;
+    const retryCacheFile = path.join(moveCacheCommitFailureTemp, "tinyLocal-cache.json");
+    let retryWriteAttempts = 0;
+    try {
+      plugin.cache.cancelPendingSave();
+      await withRealGlobalTimers(async () => await plugin.cache.activeWritePromise);
+      plugin.cache.cacheFile = "tinyLocal-cache.json";
+      plugin.cache.cacheBackupsDir = "cache-backups";
+      plugin.cache.cacheData = { version: plugin.cache.CACHE_VERSION, entries: { [retryCacheKey]: retryPendingEntry } };
+      fs.writeFileSync(retryCacheFile, plugin.cache.serializeForDisk());
+      plugin.cache.saveCacheDelayMs = 0;
+      plugin.cache.setSaveCacheTimeout = (callback, delay) => originalGlobals.setTimeout(callback, delay);
+      plugin.cache.clearSaveCacheTimeout = (timer) => originalGlobals.clearTimeout(timer);
+      plugin.cache.sleepForCacheLock = async () => {};
+      plugin.cache.saveCache = plugin.cache.constructor.prototype.saveCache;
+      plugin.cache.writeCacheFileAtomic = async () => {
+        retryWriteAttempts += 1;
+        return false;
+      };
+      let retryMoveError = null;
+      const retryMoveRecord = prepareVerifiedMoveRecord({
+        compressedPath: retryOutputPath,
+        originalPath: retryOriginalPath,
+        relativePath: retrySourceRelativePath,
+        name: "retry-commit-fail.jpg",
+        size: retryOutputBytes.byteLength
+      }, retryOriginalPath, moveCacheCommitFailureTemp);
+      try {
+        await plugin.moveService.moveSingleFile(retryMoveRecord);
+      } catch (error) {
+        retryMoveError = error;
+      }
+      assert(
+        retryMoveError && String(retryMoveError.message || retryMoveError).includes("cache transition was not durably committed"),
+        `Three-attempt cache failure returned without the expected durability error; attempts=${retryWriteAttempts}, skip=${retryMoveRecord.moveSkipReason || "none"}, originalSize=${fs.statSync(retryOriginalPath).size}, outputExists=${fs.existsSync(retryOutputPath)}`
+      );
+      assert(retryWriteAttempts === 3, `Move cache transition used ${retryWriteAttempts} conditional commit attempts instead of three`);
+      assert(fs.readFileSync(retryOriginalPath).equals(retryOutputBytes), "Three-attempt cache failure did not preserve the landed replacement");
+      assert(fs.existsSync(retryOutputPath), "Three-attempt cache failure deleted the reconciliation output");
+      const retryLandedStat = fs.statSync(retryOriginalPath);
+      plugin.app._files = [createMockFile(retrySourceRelativePath, retryLandedStat.size, retryLandedStat.mtimeMs)];
+
+      plugin.cache.writeCacheFileAtomic = originalRetryWriteAtomic;
+      const ReloadedCacheClass = plugin.cache.constructor;
+      const reloadedCache = new ReloadedCacheClass(plugin.app, "cache-backups", plugin.getPlatformPorts());
+      reloadedCache.cacheFile = "tinyLocal-cache.json";
+      reloadedCache.cacheBackupsDir = "cache-backups";
+      reloadedCache.saveCacheDelayMs = 0;
+      reloadedCache.setSaveCacheTimeout = (callback, delay) => originalGlobals.setTimeout(callback, delay);
+      reloadedCache.clearSaveCacheTimeout = (timer) => originalGlobals.clearTimeout(timer);
+      const retryLeasePort = plugin.getPlatformPorts().fs.lease;
+      const originalRetryLeaseAcquire = retryLeasePort.acquire;
+      let retryLeaseObservedRealTimers = false;
+      retryLeasePort.acquire = async function(...args) {
+        retryLeaseObservedRealTimers = retryLeaseObservedRealTimers || global.setTimeout === originalGlobals.setTimeout;
+        return await originalRetryLeaseAcquire.apply(this, args);
+      };
+      try {
+        await withRealGlobalTimers(() => reloadedCache.loadCache());
+      } finally {
+        retryLeasePort.acquire = originalRetryLeaseAcquire;
+      }
+      assert(retryLeaseObservedRealTimers, "Reloaded cache lease ran under the non-firing smoke timer stub");
+      assert(reloadedCache.getPendingMoveArtifacts().some((artifact) => artifact.sourcePath === retrySourceRelativePath && artifact.outputPath === retryOutputRelativePath), "Reloaded cache lost the pending_move reconciliation artifact after commit failure");
+      const ownedCache = plugin.cache;
+      plugin.cache = reloadedCache;
+      const retryFsPort = plugin.getPlatformPorts().fs;
+      const originalRetryReplaceFile = retryFsPort.replaceFile;
+      const originalReloadedPointCompaction = reloadedCache.compaction.compactPath;
+      const originalRetryShowMoveResult = plugin.moveService.showMoveResult;
+      const originalRetryRebuildImageIndex = plugin.rebuildImageIndex;
+      const originalRetryStatusUpdate = plugin.statusBarController.update;
+      let retryReplaceCalls = 0;
+      let retryPointCompactionCalls = 0;
+      reloadedCache.compaction.compactPath = async () => {
+        retryPointCompactionCalls += 1;
+        throw new Error("post-commit landed-move compaction failure");
+      };
+      retryFsPort.replaceFile = async (...args) => {
+        if (String(args[1] || "").replace(/\\/g, "/") === retrySourceRelativePath) {
+          retryReplaceCalls += 1;
+        }
+        return await originalRetryReplaceFile.apply(retryFsPort, args);
+      };
+      plugin.moveService.showMoveResult = () => {
+        throw new Error("post-reconciliation result presentation failure");
+      };
+      plugin.rebuildImageIndex = async () => {
+        throw new Error("post-reconciliation index failure");
+      };
+      plugin.statusBarController.update = async () => {
+        throw new Error("post-reconciliation status failure");
+      };
+      try {
+        await withRealGlobalTimers(() => plugin.moveService.moveCompressedToFiles());
+      } finally {
+        retryFsPort.replaceFile = originalRetryReplaceFile;
+        reloadedCache.compaction.compactPath = originalReloadedPointCompaction;
+        plugin.moveService.showMoveResult = originalRetryShowMoveResult;
+        plugin.rebuildImageIndex = originalRetryRebuildImageIndex;
+        plugin.statusBarController.update = originalRetryStatusUpdate;
+        plugin.cache = ownedCache;
+      }
+      assert(retryReplaceCalls === 0, `Public landed-move reconciliation replaced the target again ${retryReplaceCalls} time(s)`);
+      assert(retryPointCompactionCalls > 0, "Public landed-move reconciliation did not exercise best-effort point compaction");
+      assert(!fs.existsSync(retryOutputPath), "Reload reconciliation did not remove output after its cache transition became durable");
+      assert(!reloadedCache.getPendingMoveArtifacts().some((artifact) => artifact.sourcePath === retrySourceRelativePath), "Reload reconciliation left the pending_move artifact active after its durable landed-move transition");
+      const reconciledRetryDisk = JSON.parse(fs.readFileSync(retryCacheFile, "utf8"));
+      assert(!Object.values(reconciledRetryDisk.entries || {}).some((entry) => entry.path === retrySourceRelativePath && entry.state === "pending_move"), "Reload reconciliation left pending_move on disk after deleting its output evidence");
+      const reconciledRetryEntry = Object.values(reconciledRetryDisk.entries || {}).find((entry) => entry.path === retrySourceRelativePath);
+      const reconciledTargetStat = fs.statSync(retryOriginalPath);
+      assert(
+        reconciledRetryEntry?.state === "moved",
+        `Reload reconciliation misclassified a landed move as an originally identical output: ${JSON.stringify(reconciledRetryEntry || null)}`
+      );
+      assert(reconciledRetryEntry.processedMtime === Math.round(reconciledTargetStat.mtimeMs) && reconciledRetryEntry.processedSize === reconciledTargetStat.size, "Reload reconciliation did not persist the landed target metadata");
+    } finally {
+      plugin.cache.writeCacheFileAtomic = originalRetryWriteAtomic;
+      plugin.cache.sleepForCacheLock = originalRetrySleep;
+      plugin.cache.saveCache = originalRetrySaveCache;
+      plugin.cache.setSaveCacheTimeout = originalRetrySetTimeout;
+      plugin.cache.clearSaveCacheTimeout = originalRetryClearTimeout;
+      plugin.cache.saveCacheDelayMs = originalRetrySaveDelay;
+      plugin.cache.cacheFile = originalRetryCacheFile;
+      plugin.cache.cacheBackupsDir = originalRetryBackupsDir;
+      plugin.cache.cacheData = originalRetryCacheData;
+      plugin.app._files = originalRetryVaultFiles;
+      plugin.cache.cancelPendingSave();
+    }
+
+    const unloadOriginalPath = path.join(moveCacheCommitFailureTemp, "Images", "unload-after-replace.jpg");
+    const unloadOutputPath = path.join(moveCacheCommitFailureTemp, "Compressed", "Images", "unload-after-replace.jpg");
+    const unloadOutputBytes = Buffer.alloc(50, 0x66);
+    fs.writeFileSync(unloadOriginalPath, Buffer.alloc(100, 0x77));
+    fs.writeFileSync(unloadOutputPath, unloadOutputBytes);
+    const moveFsPort = plugin.getPlatformPorts().fs;
+    const originalReplaceForUnloadAfterLanded = moveFsPort.replaceFile;
+    let unloadReplacementLanded = false;
+    try {
+      moveFsPort.replaceFile = async function(...args) {
+        const result = await originalReplaceForUnloadAfterLanded.apply(this, args);
+        unloadReplacementLanded = true;
+        plugin.isUnloading = true;
+        return result;
+      };
+      await assert.rejects(() => plugin.moveService.moveSingleFile(prepareVerifiedMoveRecord({
+        compressedPath: unloadOutputPath,
+        originalPath: unloadOriginalPath,
+        relativePath: "Images/unload-after-replace.jpg",
+        name: "unload-after-replace.jpg",
+        size: unloadOutputBytes.byteLength
+      }, unloadOriginalPath, moveCacheCommitFailureTemp)), /cache transition was not durably committed/);
+    } finally {
+      moveFsPort.replaceFile = originalReplaceForUnloadAfterLanded;
+      plugin.isUnloading = false;
+    }
+    assert(unloadReplacementLanded && fs.readFileSync(unloadOriginalPath).equals(unloadOutputBytes), "Unload-after-replacement test did not reach and preserve the landed replacement");
+    assert(fs.existsSync(unloadOutputPath), "Unload after landed replacement deleted the reconciliation output");
+  } finally {
+    fs.rmSync(moveCacheCommitFailureTemp, { recursive: true, force: true });
     plugin.app.vault.adapter.basePath = root;
     plugin.app.vault.adapter.path.absolute = root;
   }
@@ -8071,41 +10812,98 @@ try {
     fs.writeFileSync(compressedPath, Buffer.alloc(50));
     plugin.app.vault.adapter.basePath = moveExternalEditTemp;
     plugin.app.vault.adapter.path.absolute = moveExternalEditTemp;
-    const originalRename = fs.promises.rename;
+    const originalRenameForExternalEdit = fs.promises.rename;
     const originalMarkProcessedFileMoved = plugin.cache.markProcessedFileMoved;
-    const externalEditWarnings = captureConsoleWarn();
-    let markMovedCalls = 0;
-    try {
+	    let markMovedCalls = 0;
+	    let externalEditFailed = false;
+	    let injectedExternalEdit = false;
+	    const concurrentContent = Buffer.alloc(50, 0x7f);
+	    try {
       fs.promises.rename = async (sourcePath, destPath) => {
-        await originalRename.call(fs.promises, sourcePath, destPath);
-        fs.writeFileSync(destPath, Buffer.alloc(200));
+        if (!injectedExternalEdit
+          && path.resolve(String(sourcePath)) === path.resolve(originalPath)
+          && String(destPath).includes("tinylocal-rollback")) {
+          injectedExternalEdit = true;
+          fs.writeFileSync(originalPath, concurrentContent);
+        }
+        return await originalRenameForExternalEdit.call(fs.promises, sourcePath, destPath);
       };
-      plugin.cache.markProcessedFileMoved = async () => {
-        markMovedCalls += 1;
-      };
-      await plugin.moveService.moveSingleFile({
-        compressedPath,
-        originalPath,
-        relativePath: "Images/external-edit.jpg",
-        name: "external-edit.jpg",
-        size: 50
-      });
-    } finally {
-      fs.promises.rename = originalRename;
-      plugin.cache.markProcessedFileMoved = originalMarkProcessedFileMoved;
-      externalEditWarnings.restore();
-    }
-    assert(markMovedCalls === 0, "External edit during move was written to cache as moved");
-    assert(fs.existsSync(compressedPath), "External edit during move removed compressed output");
-    assert(externalEditWarnings.messages.some((message) => message.includes("External modification detected during move")), "External edit during move did not emit the expected warning");
+	      plugin.cache.markProcessedFileMoved = async () => {
+	        markMovedCalls += 1;
+	        return true;
+	      };
+	      await plugin.moveService.moveSingleFile(prepareVerifiedMoveRecord({
+	        compressedPath,
+	        originalPath,
+	        relativePath: "Images/external-edit.jpg",
+	        name: "external-edit.jpg",
+	        size: 50
+	      }, originalPath, moveExternalEditTemp));
+	    } catch (_) {
+	      externalEditFailed = true;
+	    } finally {
+	      fs.promises.rename = originalRenameForExternalEdit;
+	      plugin.cache.markProcessedFileMoved = originalMarkProcessedFileMoved;
+	    }
+	    assert(externalEditFailed, "External edit during move did not fail the replacement");
+	    assert(markMovedCalls === 0, "External edit during move was written to cache as moved");
+	    assert(fs.existsSync(compressedPath), "External edit during move removed compressed output");
+	    assert(fs.readFileSync(originalPath).equals(concurrentContent), "External edit after replace was overwritten by rollback");
   } finally {
     fs.rmSync(moveExternalEditTemp, { recursive: true, force: true });
     plugin.app.vault.adapter.basePath = root;
     plugin.app.vault.adapter.path.absolute = root;
   }
 
+  const moveBeforeCaptureTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-move-before-capture-"));
+  try {
+    const originalPath = path.join(moveBeforeCaptureTemp, "Images", "before-capture.jpg");
+    const compressedPath = path.join(moveBeforeCaptureTemp, "Compressed", "Images", "before-capture.jpg");
+    fs.mkdirSync(path.dirname(originalPath), { recursive: true });
+    fs.mkdirSync(path.dirname(compressedPath), { recursive: true });
+    fs.writeFileSync(originalPath, Buffer.alloc(100));
+    fs.writeFileSync(compressedPath, Buffer.alloc(50));
+    plugin.app.vault.adapter.basePath = moveBeforeCaptureTemp;
+    plugin.app.vault.adapter.path.absolute = moveBeforeCaptureTemp;
+    const originalRename = fs.promises.rename;
+    const concurrentContent = Buffer.alloc(100, 0x3c);
+    let injectedConcurrentEdit = false;
+    let moveFailed = false;
+    try {
+      fs.promises.rename = async (sourcePath, destPath) => {
+        if (!injectedConcurrentEdit
+          && path.resolve(sourcePath) === path.resolve(originalPath)
+          && String(destPath).includes("tinylocal-rollback")) {
+          injectedConcurrentEdit = true;
+          fs.writeFileSync(sourcePath, concurrentContent);
+        }
+        return await originalRename.call(fs.promises, sourcePath, destPath);
+      };
+      await plugin.moveService.moveSingleFile(prepareVerifiedMoveRecord({
+        compressedPath,
+        originalPath,
+        relativePath: "Images/before-capture.jpg",
+        name: "before-capture.jpg",
+        size: 50
+      }, originalPath, moveBeforeCaptureTemp));
+    } catch (_) {
+      moveFailed = true;
+    } finally {
+      fs.promises.rename = originalRename;
+    }
+    assert(injectedConcurrentEdit, "Concurrent edit immediately before target capture was not injected");
+    assert(moveFailed, "Concurrent edit immediately before target capture did not reject the move");
+    assert(fs.readFileSync(originalPath).equals(concurrentContent), "Concurrent edit immediately before target capture was deleted");
+    assert(fs.existsSync(compressedPath), "Rejected conditional replacement deleted compressed output");
+  } finally {
+    fs.rmSync(moveBeforeCaptureTemp, { recursive: true, force: true });
+    plugin.app.vault.adapter.basePath = root;
+    plugin.app.vault.adapter.path.absolute = root;
+  }
+
   const orphanMoveTemp = fs.mkdtempSync(path.join(os.tmpdir(), "local-image-compress-orphan-move-"));
   try {
+    const toOrphanMovePath = (filePath) => path.relative(orphanMoveTemp, filePath).replace(/\\/g, "/");
     const originalPath = path.join(orphanMoveTemp, "Images", "orphan.jpg");
     const compressedPath = path.join(orphanMoveTemp, "Compressed", "Images", "orphan.jpg");
     fs.mkdirSync(path.dirname(originalPath), { recursive: true });
@@ -8120,8 +10918,8 @@ try {
     ]);
     plugin.cache.cacheData.entries = {};
     await plugin.moveService.moveSingleFile({
-      compressedPath,
-      originalPath,
+      compressedPath: toOrphanMovePath(compressedPath),
+      originalPath: toOrphanMovePath(originalPath),
       relativePath: "Images/orphan.jpg",
       name: "orphan.jpg",
       size: sharedContent.length
@@ -8142,9 +10940,9 @@ try {
         }
         return originalReadFileSyncForStreamCompare(filePath, ...args);
       };
-      assert(await plugin.moveService.filesHaveSameContent(streamCompareA, streamCompareB), "Streaming same-content comparison returned false for identical files");
+      assert(await plugin.moveService.filesHaveSameContent(toOrphanMovePath(streamCompareA), toOrphanMovePath(streamCompareB)), "Streaming same-content comparison returned false for identical files");
       fs.writeFileSync(streamCompareB, Buffer.concat([Buffer.from([8]), Buffer.alloc(256 * 1024 - 1, 7)]));
-      assert(!await plugin.moveService.filesHaveSameContent(streamCompareA, streamCompareB), "Streaming same-content comparison returned true for early mismatch");
+      assert(!await plugin.moveService.filesHaveSameContent(toOrphanMovePath(streamCompareA), toOrphanMovePath(streamCompareB)), "Streaming same-content comparison returned true for early mismatch");
     } finally {
       fs.readFileSync = originalReadFileSyncForStreamCompare;
     }
@@ -8163,9 +10961,9 @@ try {
     };
     writeSparseCompareFile(bigCompareA, 9);
     writeSparseCompareFile(bigCompareB, 9);
-    assert(await plugin.moveService.filesHaveSameContent(bigCompareA, bigCompareB), "filesHaveSameContent failed on identical 200MB sparse files");
+    assert(await plugin.moveService.filesHaveSameContent(toOrphanMovePath(bigCompareA), toOrphanMovePath(bigCompareB)), "filesHaveSameContent failed on identical 200MB sparse files");
     writeSparseCompareFile(bigCompareB, 10);
-    assert(!await plugin.moveService.filesHaveSameContent(bigCompareA, bigCompareB), "filesHaveSameContent missed a 200MB tail mismatch");
+    assert(!await plugin.moveService.filesHaveSameContent(toOrphanMovePath(bigCompareA), toOrphanMovePath(bigCompareB)), "filesHaveSameContent missed a 200MB tail mismatch");
 
     const differentOriginal = path.join(orphanMoveTemp, "Images", "different.jpg");
     const differentCompressed = path.join(orphanMoveTemp, "Compressed", "Images", "different.jpg");
@@ -8176,8 +10974,8 @@ try {
     try {
       console.error = () => {};
       await plugin.moveService.moveSingleFile({
-        compressedPath: differentCompressed,
-        originalPath: differentOriginal,
+        compressedPath: toOrphanMovePath(differentCompressed),
+        originalPath: toOrphanMovePath(differentOriginal),
         relativePath: "Images/different.jpg",
         name: "different.jpg",
         size: fs.statSync(differentCompressed).size
@@ -8215,15 +11013,15 @@ try {
     let unlinkFailed = false;
     try {
       fs.promises.unlink = async (filePath) => {
-        if (filePath === unlinkFailCompressed) {
+        if (path.basename(String(filePath)).startsWith("unlink-fail.jpg.delete-") && String(filePath).includes(".tinylocal-quarantine-")) {
           throw new Error("simulated orphan unlink failure");
         }
         return originalUnlink.call(fs.promises, filePath);
       };
       console.error = () => {};
       await plugin.moveService.moveSingleFile({
-        compressedPath: unlinkFailCompressed,
-        originalPath: unlinkFailOriginal,
+        compressedPath: toOrphanMovePath(unlinkFailCompressed),
+        originalPath: toOrphanMovePath(unlinkFailOriginal),
         relativePath: "Images/unlink-fail.jpg",
         name: "unlink-fail.jpg",
         size: sharedContent.length
@@ -8235,7 +11033,11 @@ try {
       console.error = originalConsoleError;
     }
     assert(!unlinkFailed, "Orphan unlink failure was surfaced even though cleanup is non-fatal");
-    assert(fs.existsSync(unlinkFailCompressed), "Orphan unlink failure unexpectedly removed compressed output");
+    const retainedOrphanOutputs = fs.readdirSync(orphanMoveTemp, { recursive: true })
+      .map(String)
+      .filter((filePath) => path.basename(filePath).startsWith("unlink-fail.jpg.delete-") && filePath.includes(".tinylocal-quarantine-"));
+    assert(retainedOrphanOutputs.length === 1, "Orphan unlink failure did not retain the exact output in its recovery quarantine");
+    assert(fs.readFileSync(path.join(orphanMoveTemp, retainedOrphanOutputs[0])).equals(sharedContent), "Orphan cleanup quarantine changed the output bytes");
     assert(plugin.cache.getEntriesForPath("Images/unlink-fail.jpg").some(([, entry]) => entry.state === "skipped_identical"), "Orphan unlink failure did not preserve the processed cache state before non-fatal cleanup");
   } finally {
     fs.rmSync(orphanMoveTemp, { recursive: true, force: true });
@@ -8263,9 +11065,13 @@ try {
       Object.assign(new ObsidianMock.TFile(), createMockFile("Images/ok.jpg", 100, 1)),
       Object.assign(new ObsidianMock.TFile(), createMockFile("Images/fail.jpg", 100, 1))
     ]);
+    plugin.cache.cacheData.entries = {};
+    seedPendingMoveArtifact(plugin, "Images/ok.jpg", "Compressed/Images/ok.jpg", okOriginal, okCompressed);
+    seedPendingMoveArtifact(plugin, "Images/fail.jpg", "Compressed/Images/fail.jpg", failOriginal, failCompressed);
     const originalCopyFile = fs.promises.copyFile;
-    const originalConsoleError = console.error;
-    const backupFailureErrors = [];
+	    const originalConsoleError = console.error;
+	    const backupFailureErrors = [];
+	    let delayedSiblingCopyFinished = false;
     try {
       console.error = (...args) => {
         backupFailureErrors.push(args.map((value) => value instanceof Error ? value.message : String(value)).join(" "));
@@ -8274,10 +11080,20 @@ try {
         if (
           sourcePath === failOriginal
           && String(destPath).includes(path.join(".local-image-compress", "backups", "originals"))
-        ) {
-          throw new Error("simulated backup failure");
-        }
-        return originalCopyFile.call(fs.promises, sourcePath, destPath);
+	        ) {
+	          fs.mkdirSync(path.dirname(destPath), { recursive: true });
+	          fs.writeFileSync(destPath, "pre-existing-backup");
+	          const error = new Error("simulated pre-existing backup collision");
+	          error.code = "EEXIST";
+	          throw error;
+	        }
+	        if (sourcePath === failCompressed && String(destPath).includes(path.join(".local-image-compress", "backups", "originals"))) {
+	          await new Promise((resolve) => originalGlobals.setTimeout(resolve, 50));
+	          await originalCopyFile.call(fs.promises, sourcePath, destPath);
+	          delayedSiblingCopyFinished = true;
+	          return;
+	        }
+	        return await originalCopyFile.call(fs.promises, sourcePath, destPath);
       };
       await withRealGlobalTimers(() => plugin.moveService.moveCompressedToFiles());
     } finally {
@@ -8287,7 +11103,14 @@ try {
     assert(fs.statSync(okOriginal).size === 50, `Move flow did not move the file with a complete backup: ${backupFailureErrors.join(" | ")}`);
     assert(fs.statSync(failOriginal).size === 100, "Move flow replaced a file whose backup failed");
     assert(!fs.existsSync(okCompressed), "Move flow did not remove moved compressed output");
-    assert(fs.existsSync(failCompressed), "Move flow removed compressed output for a file whose backup failed");
+	    assert(fs.existsSync(failCompressed), "Move flow removed compressed output for a file whose backup failed");
+	    assert(delayedSiblingCopyFinished, "Backup failure path did not await the delayed sibling copy before cleanup");
+	    const failedBackupRoot = path.join(backupFailureMoveTemp, ".local-image-compress", "backups", "originals");
+	    const failedBackupFiles = fs.existsSync(failedBackupRoot)
+	      ? fs.readdirSync(failedBackupRoot, { recursive: true }).map(String).filter((filePath) => filePath.endsWith("fail.jpg"))
+	      : [];
+	    assert(failedBackupFiles.length === 1, `Failed backup cleanup did not preserve exactly the pre-existing collision: ${failedBackupFiles.join(", ")}`);
+	    assert(fs.readFileSync(path.join(failedBackupRoot, failedBackupFiles[0]), "utf8") === "pre-existing-backup", "Failed backup cleanup removed or changed a pre-existing collision");
   } finally {
     fs.rmSync(backupFailureMoveTemp, { recursive: true, force: true });
     plugin.app.vault.adapter.basePath = root;
@@ -8304,6 +11127,7 @@ try {
     fs.writeFileSync(compressedPath, Buffer.alloc(50));
     plugin.app.vault.adapter.basePath = backupTemp;
     plugin.app.vault.adapter.path.absolute = backupTemp;
+    seedPendingMoveArtifact(plugin, "Images/move-original.jpg", "Compressed/Images/move-original.jpg", originalPath, compressedPath);
     plugin.settings.autoBackupsRetentionEnabled = false;
     const originalApplyBackupsRetention = plugin.moveService.applyBackupsRetention;
     let retentionCalls = 0;
@@ -8312,8 +11136,8 @@ try {
     };
     await plugin.moveService.createBackupBeforeMove([
       {
-        compressedPath,
-        originalPath,
+        compressedPath: "Compressed/Images/move-original.jpg",
+        originalPath: "Images/move-original.jpg",
         relativePath: "Images/move-original.jpg",
         name: "move-original.jpg",
         size: 50
@@ -8324,8 +11148,8 @@ try {
     plugin.settings.autoBackupsRetentionEnabled = true;
     await plugin.moveService.createBackupBeforeMove([
       {
-        compressedPath,
-        originalPath,
+        compressedPath: "Compressed/Images/move-original.jpg",
+        originalPath: "Images/move-original.jpg",
         relativePath: "Images/move-original.jpg",
         name: "move-original.jpg",
         size: 50
@@ -8334,40 +11158,42 @@ try {
     assert(retentionCalls === 1, "Image backup retention did not run while autoBackupsRetentionEnabled was true");
 
     plugin.moveService.applyBackupsRetention = originalApplyBackupsRetention;
-    const originalDeleteDirectoryRecursiveAsync = plugin.moveService.deleteDirectoryRecursiveAsync;
+    const originalDeleteDirectoryForClear = plugin.moveService.deleteDirectoryRecursiveAsync;
     try {
       const clearBackupsRoot = plugin.getBackupStoragePaths().originalFilesBackups;
       const backupDirs = [
-        path.join(clearBackupsRoot, "backup-a"),
-        path.join(clearBackupsRoot, "backup-b"),
-        path.join(clearBackupsRoot, "backup-c")
+        plugin.getPlatformPorts().fs.joinPath(clearBackupsRoot, "backup-a"),
+        plugin.getPlatformPorts().fs.joinPath(clearBackupsRoot, "backup-b"),
+        plugin.getPlatformPorts().fs.joinPath(clearBackupsRoot, "backup-c")
       ];
-      for (const backupDir of backupDirs) {
+      const nativeBackupDirs = backupDirs.map((backupDir) => path.join(backupTemp, ...backupDir.split("/")));
+      for (const backupDir of nativeBackupDirs) {
         fs.mkdirSync(path.join(backupDir, "nested"), { recursive: true });
         fs.writeFileSync(path.join(backupDir, "nested", "image.jpg"), "backup");
       }
-      const backupMarkerFile = path.join(clearBackupsRoot, "not-a-directory.txt");
+      const backupMarkerFile = path.join(backupTemp, ...plugin.getPlatformPorts().fs.joinPath(clearBackupsRoot, "not-a-directory.txt").split("/"));
       fs.writeFileSync(backupMarkerFile, "keep");
       let activeBackupDeletes = 0;
       let maxActiveBackupDeletes = 0;
-      plugin.moveService.deleteDirectoryRecursiveAsync = async (directoryPath) => {
+      plugin.moveService.deleteDirectoryRecursiveAsync = async function (dirPath) {
         activeBackupDeletes += 1;
         maxActiveBackupDeletes = Math.max(maxActiveBackupDeletes, activeBackupDeletes);
         try {
           await Promise.resolve();
-          await fs.promises.rm(directoryPath, { recursive: true, force: true });
+          return await originalDeleteDirectoryForClear.call(this, dirPath);
         } finally {
           activeBackupDeletes -= 1;
         }
       };
       await plugin.clearOriginalFilesBackups();
       assert(maxActiveBackupDeletes > 1, "Original-files backup cleanup did not delete directories concurrently");
-      assert(backupDirs.every((backupDir) => !fs.existsSync(backupDir)), "Original-files backup cleanup left backup directories behind");
+      assert(nativeBackupDirs.every((backupDir) => !fs.existsSync(backupDir)), "Original-files backup cleanup left backup directories behind");
       assert(!fs.existsSync(backupMarkerFile), "Original-files backup cleanup left an orphan file in backupDir");
     } finally {
-      plugin.moveService.deleteDirectoryRecursiveAsync = originalDeleteDirectoryRecursiveAsync;
+      plugin.moveService.deleteDirectoryRecursiveAsync = originalDeleteDirectoryForClear;
     }
-    const retentionRoot = path.join(backupTemp, "original-files-backups-retention");
+    const retentionRootPath = "original-files-backups-retention";
+    const retentionRoot = path.join(backupTemp, retentionRootPath);
     const expiredBackup = path.join(retentionRoot, "backup-expired");
     const freshBackup = path.join(retentionRoot, "backup-fresh");
     fs.mkdirSync(path.join(expiredBackup, "nested"), { recursive: true });
@@ -8378,16 +11204,1614 @@ try {
     fs.utimesSync(path.join(expiredBackup, "nested"), oldTime, oldTime);
     fs.utimesSync(expiredBackup, oldTime, oldTime);
     plugin.settings.autoBackupsRetentionDays = 0.001;
-    await plugin.moveService.applyBackupsRetention(retentionRoot);
+    await plugin.moveService.applyBackupsRetention(retentionRootPath);
     assert(fs.existsSync(expiredBackup), "Fractional image backup retention days deleted backups");
     assert(fs.existsSync(freshBackup), "Fractional image backup retention days removed a fresh backup");
     plugin.settings.autoBackupsRetentionDays = 1;
-    await plugin.moveService.applyBackupsRetention(retentionRoot);
+    await plugin.moveService.applyBackupsRetention(retentionRootPath);
     assert(!fs.existsSync(expiredBackup), "Expired image backup directory was not removed");
     assert(fs.existsSync(freshBackup), "Fresh image backup directory was removed by retention");
+
+    const concurrentCleanupDir = path.join(retentionRoot, "concurrent-cleanup");
+    const concurrentCleanupPath = `${retentionRootPath}/concurrent-cleanup`;
+    fs.mkdirSync(concurrentCleanupDir, { recursive: true });
+    fs.writeFileSync(path.join(concurrentCleanupDir, "snapshot.txt"), "snapshot");
+    const backupFsPortForConcurrentCleanup = plugin.getPlatformPorts().fs;
+    const originalListEntriesForConcurrentCleanup = backupFsPortForConcurrentCleanup.listEntries;
+    let injectedConcurrentChild = false;
+    try {
+      backupFsPortForConcurrentCleanup.listEntries = async function(dirPath) {
+        const entries = await originalListEntriesForConcurrentCleanup.call(this, dirPath);
+        if (!injectedConcurrentChild && path.resolve(backupFsPortForConcurrentCleanup.resolvePath(String(dirPath))) === path.resolve(concurrentCleanupDir)) {
+          injectedConcurrentChild = true;
+          fs.writeFileSync(path.join(concurrentCleanupDir, "sync-child.txt"), "sync");
+        }
+        return entries;
+      };
+      const concurrentCleanupRemoved = await plugin.moveService.deleteDirectoryRecursiveAsync(concurrentCleanupPath);
+      assert(concurrentCleanupRemoved === false, "Directory cleanup reported success after Sync created a child outside its snapshot");
+    } finally {
+      backupFsPortForConcurrentCleanup.listEntries = originalListEntriesForConcurrentCleanup;
+    }
+    assert(fs.existsSync(path.join(concurrentCleanupDir, "sync-child.txt")), "Directory cleanup deleted a Sync-created child");
+    assert(fs.existsSync(concurrentCleanupDir), "Directory cleanup recursively removed a directory that gained a new child");
+
+    const replacementCleanupDir = path.join(retentionRoot, "replacement-cleanup");
+    const replacementCleanupPath = `${retentionRootPath}/replacement-cleanup`;
+    const replacementCleanupFile = path.join(replacementCleanupDir, "snapshot.txt");
+    fs.mkdirSync(replacementCleanupDir, { recursive: true });
+    fs.writeFileSync(replacementCleanupFile, "snapshot-old");
+    const originalRemoveMatchingVersion = plugin.moveService.removeFileVersionIfContentMatches;
+    let replacementCleanupInjected = false;
+    try {
+      plugin.moveService.removeFileVersionIfContentMatches = async function(filePath, expectedSha256) {
+        if (!replacementCleanupInjected && path.resolve(backupFsPortForConcurrentCleanup.resolvePath(String(filePath))) === path.resolve(replacementCleanupFile)) {
+          replacementCleanupInjected = true;
+          fs.writeFileSync(replacementCleanupFile, "sync-same-name-replacement");
+        }
+        return await originalRemoveMatchingVersion.call(this, filePath, expectedSha256);
+      };
+      const replacementCleanupRemoved = await plugin.moveService.deleteDirectoryRecursiveAsync(replacementCleanupPath);
+      assert(replacementCleanupRemoved === false, "Directory cleanup reported success after a same-name file replacement");
+    } finally {
+      plugin.moveService.removeFileVersionIfContentMatches = originalRemoveMatchingVersion;
+    }
+    assert(replacementCleanupInjected, "Directory cleanup replacement test did not reach the conditional deletion boundary");
+    assert(fs.existsSync(replacementCleanupFile) && fs.readFileSync(replacementCleanupFile, "utf8") === "sync-same-name-replacement", "Directory cleanup deleted the same-name replacement published after its hash snapshot");
   } finally {
     fs.rmSync(backupTemp, { recursive: true, force: true });
   }
+
+  // ==== Mobile platform profile ====
+  // Re-evaluates the built bundle with every Node/Electron module banned and a
+  // DataAdapter-only fake app, then drives init -> compress -> cache ->
+  // move+backup -> validated restore/rollback -> async unload flush. Cache keys must stay
+  // byte-identical to Node crypto (desktop) output.
+  await withTestTimeout("mobile platform profile", (async () => {
+    const MobileObsidianMock = require("obsidian");
+    const originalPlatformState = { ...MobileObsidianMock.Platform };
+	    const previousMobileWorker = global.Worker;
+    const stubbedSetTimeout = global.setTimeout;
+    const stubbedClearTimeout = global.clearTimeout;
+    const artifactPath = require.resolve(artifact);
+    const mobileTemp = fs.mkdtempSync(path.join(os.tmpdir(), "lic-mobile-"));
+	    const originalConsoleErrorForMobile = console.error;
+	    try {
+	      const mobileJournalDir = ".local-image-compress/recovery";
+	      const mobileLegacyJournalPath = `${mobileJournalDir}/mobile-replacement-journal-v1.json`;
+	      const mobileJournalFilePattern = /^mobile-replacement-journal-v2-[a-f0-9]{32}-[a-f0-9]{32}\.json$/i;
+	      const serializeMobileJournal = (journal) => {
+	        const payload = {
+	          version: 2,
+	          ownerId: journal.ownerId,
+	          transactionId: journal.transactionId,
+	          stagedPath: journal.stagedPath,
+	          targetPath: journal.targetPath,
+	          rollbackPath: journal.rollbackPath,
+	          stagedSha256: journal.stagedSha256,
+	          expectedTargetSha256: journal.expectedTargetSha256,
+	          rollbackSha256: journal.rollbackSha256,
+	          phase: journal.phase
+	        };
+	        return JSON.stringify({ ...payload, checksum: crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex") });
+	      };
+	      const getMobileJournalPath = (journal) => {
+	        return `${mobileJournalDir}/mobile-replacement-journal-v2-${journal.ownerId}-${journal.transactionId}.json`;
+	      };
+	      const isMobileJournalPath = (vaultPath) => {
+	        const normalized = String(vaultPath || "").replace(/\\/g, "/");
+	        return normalized === mobileLegacyJournalPath
+	          || (path.posix.dirname(normalized) === mobileJournalDir && mobileJournalFilePattern.test(path.posix.basename(normalized)));
+	      };
+      // The bundled js-md5/js-sha256 must take their pure-JS path like on a
+      // real mobile webview, not their Node crypto fast path.
+      global.window.JS_SHA256_NO_NODE_JS = true;
+      global.window.JS_MD5_NO_NODE_JS = true;
+      global.setTimeout = originalGlobals.setTimeout;
+      global.clearTimeout = originalGlobals.clearTimeout;
+      Object.assign(MobileObsidianMock.Platform, {
+        isDesktopApp: false,
+        isMobile: true,
+        isMobileApp: true,
+        isWin: false,
+        isMacOS: false,
+        isLinux: false,
+        isIosApp: true,
+        isAndroidApp: false
+      });
+      global.Worker = class MobileFakeWorker {
+        constructor() {
+          this.onmessage = null;
+          this.onerror = null;
+        }
+        postMessage(message) {
+          const reply = message && message.type === "init"
+            ? { id: message.id, type: "ready" }
+            : { id: message && message.id, type: "result", ok: true, output: createValidEncodedOutput("jpeg") };
+          queueMicrotask(() => {
+            this.onmessage?.({ data: reply });
+          });
+        }
+        terminate() {}
+      };
+
+	      const resolveMobilePath = (vaultPath) => path.join(mobileTemp, ...String(vaultPath || "").split("/").filter(Boolean));
+	      let mobileReadBinaryCalls = 0;
+	      let mobileBytesInFlight = 0;
+	      let mobilePeakBytesInFlight = 0;
+	      let mobileRenameFailure = null;
+	      let mobileTrashFailure = null;
+	      let mobileProcessBarrier = null;
+	      const mobileLocalTrash = [];
+	      const mobileAdapter = {
+	        // Adversarial capability shape: mobile host must win even when an
+	        // adapter happens to expose a desktop-looking method.
+	        getBasePath() {
+	          return mobileTemp;
+	        },
+        async exists(vaultPath) {
+          return fs.existsSync(resolveMobilePath(vaultPath));
+        },
+        async stat(vaultPath) {
+          try {
+            const stats = fs.statSync(resolveMobilePath(vaultPath));
+            return { type: stats.isDirectory() ? "folder" : "file", ctime: stats.ctimeMs, mtime: stats.mtimeMs, size: stats.size };
+          } catch {
+            return null;
+          }
+        },
+        async list(vaultPath) {
+          const prefix = String(vaultPath || "").replace(/\/+$/, "");
+          const listedFiles = [];
+          const listedFolders = [];
+          for (const entry of fs.readdirSync(resolveMobilePath(vaultPath), { withFileTypes: true })) {
+            (entry.isDirectory() ? listedFolders : listedFiles).push(prefix ? `${prefix}/${entry.name}` : entry.name);
+          }
+          return { files: listedFiles, folders: listedFolders };
+        },
+        async read(vaultPath) {
+          return fs.readFileSync(resolveMobilePath(vaultPath), "utf8");
+        },
+	        async readBinary(vaultPath) {
+	          const buffer = fs.readFileSync(resolveMobilePath(vaultPath));
+	          mobileReadBinaryCalls += 1;
+	          mobileBytesInFlight += buffer.byteLength;
+	          mobilePeakBytesInFlight = Math.max(mobilePeakBytesInFlight, mobileBytesInFlight);
+	          await new Promise((resolve) => setImmediate(resolve));
+	          mobileBytesInFlight -= buffer.byteLength;
+	          return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+        },
+	        async write(vaultPath, text) {
+	          fs.mkdirSync(path.dirname(resolveMobilePath(vaultPath)), { recursive: true });
+          fs.writeFileSync(resolveMobilePath(vaultPath), text);
+        },
+        async writeBinary(vaultPath, data) {
+          fs.mkdirSync(path.dirname(resolveMobilePath(vaultPath)), { recursive: true });
+          fs.writeFileSync(resolveMobilePath(vaultPath), Buffer.from(new Uint8Array(data)));
+        },
+        async mkdir(vaultPath) {
+          fs.mkdirSync(resolveMobilePath(vaultPath), { recursive: true });
+        },
+        async rmdir(vaultPath, recursive) {
+          if (recursive) {
+            fs.rmSync(resolveMobilePath(vaultPath), { recursive: true, force: false });
+          } else {
+            fs.rmdirSync(resolveMobilePath(vaultPath));
+          }
+	        },
+	        async remove(vaultPath) {
+	          fs.unlinkSync(resolveMobilePath(vaultPath));
+	        },
+	        async trashLocal(vaultPath) {
+	          if (mobileTrashFailure && mobileTrashFailure(String(vaultPath))) {
+	            throw new Error(`Injected mobile trash failure: ${vaultPath}`);
+	          }
+	          const sourcePath = resolveMobilePath(vaultPath);
+	          const trashPath = `.trash-local/${Date.now()}-${mobileLocalTrash.length}-${path.posix.basename(String(vaultPath))}`;
+	          fs.mkdirSync(path.dirname(resolveMobilePath(trashPath)), { recursive: true });
+	          fs.renameSync(sourcePath, resolveMobilePath(trashPath));
+	          mobileLocalTrash.push({ sourcePath: String(vaultPath), trashPath });
+	        },
+	        async rename(fromPath, toPath) {
+	          const renameFailureMode = mobileRenameFailure && mobileRenameFailure(String(fromPath), String(toPath));
+	          if (renameFailureMode === "before") {
+	            throw new Error(`Injected mobile rename failure: ${fromPath} -> ${toPath}`);
+	          }
+	          if (fs.existsSync(resolveMobilePath(toPath))) {
+	            throw new Error(`Destination file already exists! ${toPath}`);
+	          }
+	          fs.mkdirSync(path.dirname(resolveMobilePath(toPath)), { recursive: true });
+	          fs.renameSync(resolveMobilePath(fromPath), resolveMobilePath(toPath));
+	          if (renameFailureMode === "after") {
+	            throw new Error(`Injected mobile rename after-effect failure: ${fromPath} -> ${toPath}`);
+	          }
+	        },
+	        async copy(fromPath, toPath) {
+	          fs.mkdirSync(path.dirname(resolveMobilePath(toPath)), { recursive: true });
+	          fs.copyFileSync(resolveMobilePath(fromPath), resolveMobilePath(toPath));
+	        },
+	        async process(vaultPath, update) {
+	          if (mobileProcessBarrier) {
+	            await mobileProcessBarrier(String(vaultPath));
+	          }
+	          const filePath = resolveMobilePath(vaultPath);
+	          const current = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
+	          const next = update(current);
+	          fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	          fs.writeFileSync(filePath, next);
+	          return next;
+	        }
+	      };
+	      const listMobileJournalPaths = async () => {
+	        if (!await mobileAdapter.exists(mobileJournalDir)) return [];
+	        const listing = await mobileAdapter.list(mobileJournalDir);
+	        return listing.files.filter(isMobileJournalPath).sort();
+	      };
+	      const writeMobileJournal = async (journal, journalPath = getMobileJournalPath(journal)) => {
+	        const serialized = serializeMobileJournal(journal);
+	        if (await mobileAdapter.exists(journalPath)) {
+	          await mobileAdapter.process(journalPath, () => serialized);
+	        } else {
+	          await mobileAdapter.write(journalPath, serialized);
+	        }
+	      };
+      const mobileFiles = [];
+      const mobileLayoutCallbacks = [];
+      const mobileApp = {
+        vault: {
+          configDir: ".obsidian",
+          adapter: mobileAdapter,
+          getFiles: () => mobileFiles,
+          getAllLoadedFiles: () => [],
+          on: (name) => ({ scope: "vault", name }),
+          getFileByPath: (filePath) => mobileFiles.find((file) => file.path === filePath) || null,
+          getAbstractFileByPath: (filePath) => mobileFiles.find((file) => file.path === filePath) || null,
+          createBinary: async (filePath, data) => {
+            const resolvedPath = resolveMobilePath(filePath);
+            fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+            fs.writeFileSync(resolvedPath, Buffer.from(new Uint8Array(data)), { flag: "wx" });
+          },
+          readBinary: async (file) => await mobileAdapter.readBinary(file.path),
+          cachedRead: async () => ""
+        },
+        workspace: {
+          activeWindow: global.window,
+          onLayoutReady: (callback) => mobileLayoutCallbacks.push(callback),
+          on: (name) => ({ scope: "workspace", name }),
+          iterateAllLeaves: () => {},
+          getActiveFile: () => null
+        },
+        plugins: {
+          enabledPlugins: new Set(),
+          disablePlugin: async () => {},
+          enablePlugin: async () => {}
+        }
+      };
+
+      mobileNodeModuleBan = true;
+      delete require.cache[artifactPath];
+      const mobileModule = require(artifact);
+      const MobilePluginClass = mobileModule.default || mobileModule;
+      assert(typeof MobilePluginClass === "function", "Mobile bundle evaluation did not expose the plugin class");
+
+      const mobilePlugin = new MobilePluginClass();
+      mobilePlugin.app = mobileApp;
+      mobilePlugin.manifest = {
+        id: "local-image-compress",
+        name: "Local Image Compress",
+        dir: ".obsidian/plugins/local-image-compress"
+      };
+      const ribbonRegistrations = [];
+	      mobilePlugin.addRibbonIcon = (icon, title, callback) => {
+	        ribbonRegistrations.push({ icon, title, callback });
+        return createMockElement();
+      };
+      mobilePlugin.onload();
+      for (const callback of mobileLayoutCallbacks) {
+        callback();
+      }
+      await mobilePlugin.initializationPromise;
+      assert(mobilePlugin.isInitialized === true, `Mobile plugin initialization failed: ${mobilePlugin.initializationError}`);
+      assert(mobilePlugin.cache.ports.fs.sync === null, "Mobile profile did not select the adapter fs port");
+      assert(mobilePlugin.cache.ports.fs.restoreProbe === null, "Mobile profile unexpectedly exposes a restore probe");
+	      assert(ribbonRegistrations.length === 1, "Mobile profile did not register the ribbon menu trigger");
+	      const originalMobileShowMenu = mobilePlugin.statusBarController.showMenu;
+	      let mobileRibbonMenuCalls = 0;
+	      mobilePlugin.statusBarController.showMenu = async () => {
+	        mobileRibbonMenuCalls += 1;
+	      };
+	      await ribbonRegistrations[0].callback({ preventDefault() {} });
+	      mobilePlugin.statusBarController.showMenu = originalMobileShowMenu;
+	      assert(mobileRibbonMenuCalls === 1, "Mobile ribbon action did not open the status menu");
+	      assert(await mobileAdapter.exists(".obsidian/plugins/local-image-compress/tinyLocal-cache.json"), "Mobile cache file was not created through the adapter");
+	      assert(mobilePlugin.compressor.activeWorkerCount === 1, `Mobile worker pool must stay at 1, got ${mobilePlugin.compressor.activeWorkerCount}`);
+	      assert(mobilePlugin.cache.ports.fs.writeExclusive === null, "Mobile profile still exposes a false exclusive-create capability");
+	      assert(typeof mobilePlugin.cache.ports.fs.processTextAtomically === "function", "Mobile profile does not expose atomic text processing");
+	      const originalMobileMkdir = mobileAdapter.mkdir;
+	      mobileAdapter.mkdir = async (vaultPath) => {
+	        await originalMobileMkdir(vaultPath);
+	        if (vaultPath === "Race/Nested") {
+	          throw new Error("simulated duplicate mkdir race");
+	        }
+	      };
+	      try {
+	        await mobilePlugin.getPlatformPorts().fs.mkdir("Race/Nested");
+	      } finally {
+	        mobileAdapter.mkdir = originalMobileMkdir;
+	      }
+	      assert(await mobileAdapter.exists("Race/Nested"), "Mobile FsPort did not tolerate a duplicate mkdir race");
+
+	      const budgetFs = mobilePlugin.getPlatformPorts().fs;
+	      const budgetFile = Object.assign(new MobileObsidianMock.TFile(), createMockFile("Budget/shared.bin", 16, 1));
+	      await mobileAdapter.writeBinary(budgetFile.path, toArrayBuffer(Buffer.alloc(16, 0x5a)));
+	      mobileFiles.push(budgetFile);
+	      let releaseHeldBudget = null;
+	      let markBudgetEntered = null;
+	      const budgetEntered = new Promise((resolve) => { markBudgetEntered = resolve; });
+	      const heldBudget = budgetFs.runBufferedOperation(async () => {
+	        markBudgetEntered();
+	        await new Promise((resolve) => { releaseHeldBudget = resolve; });
+	      });
+	      await budgetEntered;
+	      const readsBeforeQueuedBudgetWork = mobileReadBinaryCalls;
+	      const queuedHash = mobilePlugin.getPlatformPorts().hash.fileSha256Hex(budgetFile.path);
+	      const queuedCacheFingerprint = mobilePlugin.cache.getFileMd5(budgetFile);
+	      await new Promise((resolve) => setImmediate(resolve));
+	      assert(mobileReadBinaryCalls === readsBeforeQueuedBudgetWork, "Hash/cache full-buffer reads started while another mobile budget owner was active");
+	      releaseHeldBudget();
+	      await heldBudget;
+	      const [budgetHash, budgetMd5] = await Promise.all([queuedHash, queuedCacheFingerprint]);
+	      assert(budgetHash === crypto.createHash("sha256").update(Buffer.alloc(16, 0x5a)).digest("hex") && budgetMd5 === crypto.createHash("md5").update(Buffer.alloc(16, 0x5a)).digest("hex"), "Queued mobile budget operations returned incorrect hashes");
+
+	      const originalBudgetStat = mobileAdapter.stat;
+	      const originalBudgetReadBinary = mobileAdapter.readBinary;
+	      const growthPath = "Budget/growth.bin";
+	      const mobileBufferedLimit = mobilePlugin.getPlatformPorts().runtime.maxBufferedFileBytes;
+	      assert(typeof mobileBufferedLimit === "number", "Mobile profile is missing its buffered byte limit");
+	      try {
+	        mobileAdapter.stat = async (vaultPath) => String(vaultPath) === growthPath
+	          ? { type: "file", ctime: 1, mtime: 1, size: 1 }
+	          : await originalBudgetStat.call(mobileAdapter, vaultPath);
+	        mobileAdapter.readBinary = async (vaultPath) => String(vaultPath) === growthPath
+	          ? new ArrayBuffer(mobileBufferedLimit + 1)
+	          : await originalBudgetReadBinary.call(mobileAdapter, vaultPath);
+	        await assert.rejects(() => mobilePlugin.getPlatformPorts().hash.fileSha256Hex(growthPath), /maintenance limit after read/);
+	      } finally {
+	        mobileAdapter.stat = originalBudgetStat;
+	        mobileAdapter.readBinary = originalBudgetReadBinary;
+	      }
+
+	      const growthTextPath = "Budget/growth.txt";
+	      const oversizedStatTextPath = "Budget/oversized-stat.txt";
+	      const originalBudgetReadText = mobileAdapter.read;
+	      let oversizedTextRead = false;
+	      let oversizedStatTextReads = 0;
+	      try {
+	        mobileAdapter.stat = async (vaultPath) => {
+	          if (String(vaultPath) === growthTextPath) return { type: "file", ctime: 1, mtime: 1, size: 1 };
+	          if (String(vaultPath) === oversizedStatTextPath) return { type: "file", ctime: 1, mtime: 1, size: mobileBufferedLimit + 1 };
+	          return await originalBudgetStat.call(mobileAdapter, vaultPath);
+	        };
+	        mobileAdapter.read = async (vaultPath) => {
+	          if (String(vaultPath) === growthTextPath) {
+	            oversizedTextRead = true;
+	            return "x".repeat(mobileBufferedLimit + 1);
+	          }
+	          if (String(vaultPath) === oversizedStatTextPath) {
+	            oversizedStatTextReads += 1;
+	            return "must-not-be-read";
+	          }
+	          return await originalBudgetReadText.call(mobileAdapter, vaultPath);
+	        };
+	        await assert.rejects(() => budgetFs.readText(oversizedStatTextPath), /maintenance limit:/);
+	        assert(oversizedStatTextReads === 0, "Mobile readText ignored its pre-read stat limit");
+	        await assert.rejects(() => budgetFs.readText(growthTextPath), /maintenance limit after read/);
+	      } finally {
+	        mobileAdapter.stat = originalBudgetStat;
+	        mobileAdapter.read = originalBudgetReadText;
+	      }
+	      assert(oversizedTextRead, "Mobile readText did not exercise its post-read UTF-8 byte limit after stale stat");
+
+	      const serializedTextPath = "Budget/serialized.txt";
+	      const serializedBinaryPath = "Budget/serialized.bin";
+	      await mobileAdapter.write(serializedTextPath, "serialized-text");
+	      await mobileAdapter.writeBinary(serializedBinaryPath, toArrayBuffer(Buffer.from("serialized-binary")));
+	      const serializedReadText = mobileAdapter.read;
+	      const serializedReadBinary = mobileAdapter.readBinary;
+	      let activeBufferedAdapterReads = 0;
+	      let peakBufferedAdapterReads = 0;
+	      let serializedBinaryReadCalls = 0;
+	      let releaseSerializedTextRead = null;
+	      let markSerializedTextRead = null;
+	      let holdSerializedTextRead = true;
+	      const serializedTextReadEntered = new Promise((resolve) => { markSerializedTextRead = resolve; });
+	      const trackBufferedAdapterRead = async (operation) => {
+	        activeBufferedAdapterReads += 1;
+	        peakBufferedAdapterReads = Math.max(peakBufferedAdapterReads, activeBufferedAdapterReads);
+	        try {
+	          return await operation();
+	        } finally {
+	          activeBufferedAdapterReads -= 1;
+	        }
+	      };
+	      try {
+	        mobileAdapter.read = async (vaultPath) => await trackBufferedAdapterRead(async () => {
+	          if (holdSerializedTextRead && String(vaultPath) === serializedTextPath) {
+	            markSerializedTextRead();
+	            await new Promise((resolve) => { releaseSerializedTextRead = resolve; });
+	          }
+	          return await serializedReadText.call(mobileAdapter, vaultPath);
+	        });
+	        mobileAdapter.readBinary = async (vaultPath) => await trackBufferedAdapterRead(async () => {
+	          if (String(vaultPath) === serializedBinaryPath) {
+	            serializedBinaryReadCalls += 1;
+	          }
+	          return await serializedReadBinary.call(mobileAdapter, vaultPath);
+	        });
+	        const serializedTextPromise = budgetFs.readText(serializedTextPath);
+	        await serializedTextReadEntered;
+	        const serializedBinaryPromise = budgetFs.readBinary(serializedBinaryPath);
+	        await new Promise((resolve) => setImmediate(resolve));
+	        assert(serializedBinaryReadCalls === 0 && peakBufferedAdapterReads === 1, "Mobile binary read overlapped an active text full-buffer read");
+	        holdSerializedTextRead = false;
+	        releaseSerializedTextRead();
+	        const [serializedText, serializedBinary] = await Promise.all([serializedTextPromise, serializedBinaryPromise]);
+	        assert(serializedText === "serialized-text" && Buffer.from(serializedBinary).toString("utf8") === "serialized-binary", "Serialized mobile text/binary reads returned incorrect data");
+	        await withTestTimeout("nested mobile buffered-operation token", budgetFs.runBufferedOperation(async (token) => {
+	          await budgetFs.runBufferedOperation(async (nestedToken) => {
+	            assert(nestedToken === token, "Nested mobile buffered operation changed its ownership token");
+	            assert(await budgetFs.readText(serializedTextPath, nestedToken) === "serialized-text", "Nested-token mobile text read returned incorrect data");
+	            assert(Buffer.from(await budgetFs.readBinary(serializedBinaryPath, nestedToken)).toString("utf8") === "serialized-binary", "Nested-token mobile binary read returned incorrect data");
+	            assert(
+	              await mobilePlugin.getPlatformPorts().hash.fileSha256Hex(serializedBinaryPath, nestedToken) === crypto.createHash("sha256").update(Buffer.from("serialized-binary")).digest("hex"),
+	              "Nested-token mobile hash returned incorrect data"
+	            );
+	          }, token);
+	        }), 1000);
+	        assert(peakBufferedAdapterReads === 1, `Mobile full-buffer adapter reads overlapped: ${peakBufferedAdapterReads}`);
+	      } finally {
+	        if (holdSerializedTextRead && releaseSerializedTextRead) {
+	          releaseSerializedTextRead();
+	        }
+	        mobileAdapter.read = serializedReadText;
+	        mobileAdapter.readBinary = serializedReadBinary;
+	      }
+
+	      const originalMobileSetting = MobileObsidianMock.Setting;
+	      const originalMobileNotice = MobileObsidianMock.Notice;
+	      const originalMobileBackups = mobilePlugin.cache.getAvailableBackups;
+	      const originalMobileRestore = mobilePlugin.cache.restoreFromBackup;
+	      const originalMobileRebuild = mobilePlugin.rebuildImageIndex;
+	      const originalMobileStatusUpdate = mobilePlugin.statusBarController.update;
+	      const mobileNotices = [];
+	      let restoreDropdownChange = null;
+	      let restoreRebuildCalls = 0;
+	      let restoreStatusCalls = 0;
+	      try {
+	        MobileObsidianMock.Setting = class {
+	          constructor() {}
+	          setName() { return this; }
+	          setDesc() { return this; }
+	          setHeading() { return this; }
+	          setDisabled() { return this; }
+	          addButton(callback) {
+	            const button = { setButtonText() { return button; }, onClick() { return button; } };
+	            callback(button);
+	            return this;
+	          }
+	          addDropdown(callback) {
+	            const dropdown = {
+	              addOption() { return dropdown; },
+	              onChange(handler) { restoreDropdownChange = handler; return dropdown; }
+	            };
+	            callback(dropdown);
+	            return this;
+	          }
+	        };
+	        MobileObsidianMock.Notice = class {
+	          constructor(message) { mobileNotices.push(String(message)); }
+	        };
+	        mobilePlugin.cache.getAvailableBackups = async () => ["tinyLocal-cache-backup-2026-01-01T00-00-00-000.json"];
+	        mobilePlugin.cache.restoreFromBackup = async () => false;
+	        mobilePlugin.rebuildImageIndex = async () => { restoreRebuildCalls += 1; };
+	        mobilePlugin.statusBarController.update = async () => { restoreStatusCalls += 1; };
+	        await mobilePlugin.settingsTab.renderCacheBackupsSection(createMockElement());
+	        assert(typeof restoreDropdownChange === "function", "Mobile restore-capable settings did not wire the dropdown action");
+	        await restoreDropdownChange("tinyLocal-cache-backup-2026-01-01T00-00-00-000.json");
+	        assert(restoreRebuildCalls === 0 && restoreStatusCalls === 0, "Failed restore still rebuilt the index or updated status");
+	        assert(mobileNotices.some((message) => message.includes("Operation failed")) && !mobileNotices.some((message) => message.includes("Cache cleared")), "Failed restore emitted a success-like Notice");
+	      } finally {
+	        MobileObsidianMock.Setting = originalMobileSetting;
+	        MobileObsidianMock.Notice = originalMobileNotice;
+	        mobilePlugin.cache.getAvailableBackups = originalMobileBackups;
+	        mobilePlugin.cache.restoreFromBackup = originalMobileRestore;
+	        mobilePlugin.rebuildImageIndex = originalMobileRebuild;
+	        mobilePlugin.statusBarController.update = originalMobileStatusUpdate;
+	      }
+
+	      const mobileCachePath = ".obsidian/plugins/local-image-compress/tinyLocal-cache.json";
+	      await mobileAdapter.remove(mobileCachePath);
+	      const emptyMobileCache = JSON.stringify({ entries: {}, version: "2.0.0" });
+	      const concurrentEntry = (pathValue, timestamp) => ({
+	        path: pathValue,
+	        md5: "",
+	        mtime: timestamp,
+	        timestamp,
+	        lastAccessMs: timestamp,
+	        originalSize: 1,
+	        sourceMtime: timestamp,
+	        sourceSize: 1,
+	        state: "skipped",
+	        stateUpdatedAt: timestamp,
+	        skipReason: "too_large",
+	        compressionSettingsKey: "png:limits:25:50:too_large"
+	      });
+	      const concurrentPayloadA = JSON.stringify({ entries: { "v2:mobile-a": concurrentEntry("Images/mobile-a.png", 101) }, version: "2.0.0" });
+	      const concurrentPayloadB = JSON.stringify({ entries: { "v2:mobile-b": concurrentEntry("Images/mobile-b.png", 102) }, version: "2.0.0" });
+	      await Promise.all([
+	        mobilePlugin.cache.ports.fs.processTextAtomically(mobileCachePath, emptyMobileCache, (current) => mobilePlugin.cache.buildMergedCachePayload(concurrentPayloadA, current)),
+	        mobilePlugin.cache.ports.fs.processTextAtomically(mobileCachePath, emptyMobileCache, (current) => mobilePlugin.cache.buildMergedCachePayload(concurrentPayloadB, current))
+	      ]);
+	      const concurrentCache = JSON.parse(await mobileAdapter.read(mobileCachePath));
+	      const concurrentCachePaths = new Set(Object.values(concurrentCache.entries).map((entry) => entry.path));
+	      assert(concurrentCachePaths.has("Images/mobile-a.png") && concurrentCachePaths.has("Images/mobile-b.png"), "Concurrent initial mobile cache writes lost an entry");
+
+	      await mobileAdapter.remove(mobileCachePath);
+	      const originalCreateBinaryForExternalCacheCreate = mobileApp.vault.createBinary;
+	      let externalCacheCreateInjected = false;
+	      mobileApp.vault.createBinary = async (filePath, data) => {
+	        if (!externalCacheCreateInjected && String(filePath) === mobileCachePath) {
+	          externalCacheCreateInjected = true;
+	          await mobileAdapter.write(mobileCachePath, concurrentPayloadB);
+	        }
+	        return await originalCreateBinaryForExternalCacheCreate.call(mobileApp.vault, filePath, data);
+	      };
+	      try {
+	        await mobilePlugin.cache.ports.fs.processTextAtomically(
+	          mobileCachePath,
+	          emptyMobileCache,
+	          (current) => mobilePlugin.cache.buildMergedCachePayload(concurrentPayloadA, current)
+	        );
+	      } finally {
+	        mobileApp.vault.createBinary = originalCreateBinaryForExternalCacheCreate;
+	      }
+	      const externallyCreatedCache = JSON.parse(await mobileAdapter.read(mobileCachePath));
+	      const externallyCreatedPaths = new Set(Object.values(externallyCreatedCache.entries).map((entry) => entry.path));
+	      assert(externalCacheCreateInjected && externallyCreatedPaths.has("Images/mobile-a.png") && externallyCreatedPaths.has("Images/mobile-b.png"), "Mobile cache initialization overwrote a cache created concurrently by Sync");
+	      const mobilePluginDirListing = await mobileAdapter.list(".obsidian/plugins/local-image-compress");
+	      assert(!mobilePluginDirListing.files.some((filePath) => String(filePath).includes(".tinylocal-init-")), "Mobile cache initialization left an owned temp file");
+
+	      const mobileFs = mobilePlugin.getPlatformPorts().fs;
+	      for (const invalidMobilePath of ["/tmp/absolute-mobile.bin", "C:\\Vault\\absolute-mobile.bin", "../mobile-traversal.bin"]) {
+	        await assert.rejects(
+	          () => mobileFs.readText(invalidMobilePath),
+	          /requires a vault-relative path/,
+	          `Mobile FsPort accepted a non-vault-relative path: ${invalidMobilePath}`
+	        );
+	        await assert.rejects(
+	          () => mobileFs.fsyncBestEffort(invalidMobilePath),
+	          /requires a vault-relative path/,
+	          `Mobile FsPort.fsyncBestEffort hid a non-vault-relative path: ${invalidMobilePath}`
+	        );
+	      }
+	      const exclusiveCopySource = "Exclusive/source.bin";
+	      const exclusiveCopyTarget = "Exclusive/target.bin";
+	      await mobileAdapter.writeBinary(exclusiveCopySource, toArrayBuffer(Buffer.from("exclusive-source")));
+	      const originalCreateBinaryForExclusiveCopy = mobileApp.vault.createBinary;
+	      let concurrentExclusiveTargetInjected = false;
+	      mobileApp.vault.createBinary = async (filePath, data) => {
+	        if (!concurrentExclusiveTargetInjected && String(filePath) === exclusiveCopyTarget) {
+	          concurrentExclusiveTargetInjected = true;
+	          await mobileAdapter.writeBinary(exclusiveCopyTarget, toArrayBuffer(Buffer.from("sync-winner")));
+	        }
+	        return await originalCreateBinaryForExclusiveCopy.call(mobileApp.vault, filePath, data);
+	      };
+	      try {
+	        await assert.rejects(() => mobileFs.copyFile(exclusiveCopySource, exclusiveCopyTarget, { exclusive: true }));
+	      } finally {
+	        mobileApp.vault.createBinary = originalCreateBinaryForExclusiveCopy;
+	      }
+	      assert(concurrentExclusiveTargetInjected, "Mobile exclusive-copy race did not inject a concurrent destination");
+	      assert.equal(await mobileAdapter.read(exclusiveCopyTarget), "sync-winner", "Mobile exclusive copy overwrote the concurrently published destination");
+
+	      const mobileCleanupBoundaryPath = "Cleanup/final-boundary.bin";
+	      const mobileCleanupBoundaryBytes = Buffer.from("mobile-cleanup-owned-revision");
+	      const mobileCleanupReplacementBytes = Buffer.from("mobile-sync-replacement-at-trash-boundary");
+	      await mobileAdapter.writeBinary(mobileCleanupBoundaryPath, toArrayBuffer(mobileCleanupBoundaryBytes));
+	      const originalTrashLocalForCleanupBoundary = mobileAdapter.trashLocal;
+	      let mobileCleanupBoundaryInjected = false;
+	      mobileAdapter.trashLocal = async (vaultPath) => {
+	        if (!mobileCleanupBoundaryInjected && path.posix.basename(String(vaultPath)).startsWith("final-boundary.bin.delete-")) {
+	          mobileCleanupBoundaryInjected = true;
+	          await mobileAdapter.writeBinary(vaultPath, toArrayBuffer(mobileCleanupReplacementBytes));
+	        }
+	        await originalTrashLocalForCleanupBoundary.call(mobileAdapter, vaultPath);
+	      };
+	      let mobileCleanupBoundaryResult;
+	      try {
+	        mobileCleanupBoundaryResult = await mobileFs.removeFileIfUnchanged(
+	          mobileCleanupBoundaryPath,
+	          crypto.createHash("sha256").update(mobileCleanupBoundaryBytes).digest("hex")
+	        );
+	      } finally {
+	        mobileAdapter.trashLocal = originalTrashLocalForCleanupBoundary;
+	      }
+	      const mobileCleanupTrashEntry = mobileLocalTrash.find((entry) => path.posix.basename(entry.sourcePath).startsWith("final-boundary.bin.delete-"));
+	      assert(mobileCleanupBoundaryResult.removed && mobileCleanupBoundaryResult.retainedConflictPath === null, "Mobile conditional cleanup did not logically remove its verified revision");
+	      assert(mobileCleanupBoundaryInjected && mobileCleanupTrashEntry, "Mobile cleanup regression did not inject at the final trash boundary");
+	      assert.equal(await mobileAdapter.read(mobileCleanupTrashEntry.trashPath), mobileCleanupReplacementBytes.toString(), "Mobile cleanup destroyed a Sync replacement published after its final hash check");
+
+	      const mobileTrashFailurePath = "Cleanup/trash-failure.bin";
+	      const mobileTrashFailureBytes = Buffer.from("mobile-cleanup-trash-failure-owned-revision");
+	      await mobileAdapter.writeBinary(mobileTrashFailurePath, toArrayBuffer(mobileTrashFailureBytes));
+	      const originalTrashLocalForFailure = mobileAdapter.trashLocal;
+	      let mobileTrashFailureCalls = 0;
+	      mobileAdapter.trashLocal = async (vaultPath) => {
+	        if (path.posix.basename(String(vaultPath)).startsWith("trash-failure.bin.delete-")) {
+	          mobileTrashFailureCalls += 1;
+	          throw new Error("simulated unavailable local trash");
+	        }
+	        await originalTrashLocalForFailure.call(mobileAdapter, vaultPath);
+	      };
+	      let mobileTrashFailureResult;
+	      try {
+	        mobileTrashFailureResult = await mobileFs.removeFileIfUnchanged(
+	          mobileTrashFailurePath,
+	          crypto.createHash("sha256").update(mobileTrashFailureBytes).digest("hex")
+	        );
+	      } finally {
+	        mobileAdapter.trashLocal = originalTrashLocalForFailure;
+	      }
+	      assert(!mobileTrashFailureResult.removed && mobileTrashFailureResult.retainedConflictPath, "Mobile cleanup did not report its single retained revision when local trash failed");
+	      assert(!await mobileAdapter.exists(mobileTrashFailurePath), "Mobile cleanup restored a failed-trash revision to the recovery journal path");
+	      assert(await mobileAdapter.exists(mobileTrashFailureResult.retainedConflictPath), "Mobile cleanup lost the detached revision after local trash failed");
+	      const mobileTrashFailureDirectory = path.posix.dirname(mobileTrashFailureResult.retainedConflictPath);
+	      const countMobileTrashFailureCopies = async () => (await mobileAdapter.list(mobileTrashFailureDirectory)).files
+	        .filter((filePath) => path.posix.basename(String(filePath)).startsWith("trash-failure.bin.delete-")).length;
+	      const retainedMobileTrashFailureCopies = await countMobileTrashFailureCopies();
+	      await mobileFs.recoverInterruptedReplacement();
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert(mobileTrashFailureCalls === 1 && retainedMobileTrashFailureCopies === 1 && await countMobileTrashFailureCopies() === 1, "Repeated mobile recovery amplified a retained failed-trash revision");
+
+	      const mobileLifecycleTarget = "Replacement/lifecycle-final-target.bin";
+	      const mobileLifecycleStage = `Replacement/.lifecycle-final-target.bin.tinylocal-${Date.now()}-${"a".repeat(32)}.tmp`;
+	      const mobileLifecycleTargetBytes = Buffer.from("mobile-lifecycle-old-target");
+	      const mobileLifecycleStageBytes = Buffer.from("mobile-lifecycle-new-stage");
+	      await mobileAdapter.writeBinary(mobileLifecycleTarget, toArrayBuffer(mobileLifecycleTargetBytes));
+	      await mobileAdapter.writeBinary(mobileLifecycleStage, toArrayBuffer(mobileLifecycleStageBytes));
+	      const originalReadBinaryForLifecycleFence = mobileAdapter.readBinary;
+	      let lifecycleStageReads = 0;
+	      let mobileLifecycleCanCommit = true;
+	      let mobileCanCommitCalls = 0;
+	      let lifecycleStageReadsAtCommit = 0;
+	      mobileAdapter.readBinary = async (vaultPath) => {
+	        const data = await originalReadBinaryForLifecycleFence.call(mobileAdapter, vaultPath);
+	        if (String(vaultPath) === mobileLifecycleStage && ++lifecycleStageReads === 2) {
+	          mobileLifecycleCanCommit = false;
+	        }
+	        return data;
+	      };
+	      try {
+	        await assert.rejects(
+	          () => mobileFs.replaceFile(mobileLifecycleStage, mobileLifecycleTarget, {
+	            expectedTargetSha256: crypto.createHash("sha256").update(mobileLifecycleTargetBytes).digest("hex"),
+	            expectedStagedSha256: crypto.createHash("sha256").update(mobileLifecycleStageBytes).digest("hex"),
+	            canCommit: () => {
+	              mobileCanCommitCalls += 1;
+	              lifecycleStageReadsAtCommit = lifecycleStageReads;
+	              return mobileLifecycleCanCommit;
+	            }
+	          }),
+	          /cancelled before publication/
+	        );
+	      } finally {
+	        mobileAdapter.readBinary = originalReadBinaryForLifecycleFence;
+	      }
+	      assert(lifecycleStageReadsAtCommit === 2 && mobileCanCommitCalls === 1, "Mobile replacement did not evaluate lifecycle ownership after the final staged read");
+	      assert.equal(await mobileAdapter.read(mobileLifecycleTarget), mobileLifecycleTargetBytes.toString(), "Mobile final lifecycle fence failed to preserve the old target");
+
+	      await mobileAdapter.writeBinary("Replacement/target.bin", toArrayBuffer(Buffer.from("old")));
+	      const stagedReplacementPath = "Replacement/target.bin.tinylocal-1-0123456789abcdef.tmp";
+	      await mobileAdapter.writeBinary(stagedReplacementPath, toArrayBuffer(Buffer.from("new")));
+	      const originalCreateBinaryForReplacementFailure = mobileApp.vault.createBinary;
+	      let replacementCreateFailureInjected = false;
+	      mobileApp.vault.createBinary = async (filePath, data) => {
+	        if (!replacementCreateFailureInjected && String(filePath) === "Replacement/target.bin") {
+	          replacementCreateFailureInjected = true;
+	          throw new Error(`Injected mobile createBinary failure: ${filePath}`);
+	        }
+	        return await originalCreateBinaryForReplacementFailure.call(mobileApp.vault, filePath, data);
+	      };
+	      try {
+	        await assert.rejects(() => mobileFs.replaceFile(stagedReplacementPath, "Replacement/target.bin"), /Injected mobile createBinary failure/);
+	      } finally {
+	        mobileApp.vault.createBinary = originalCreateBinaryForReplacementFailure;
+	      }
+	      assert.equal(await mobileAdapter.read("Replacement/target.bin"), "old", "Mobile replacement failure did not restore the original target");
+
+	      const afterEffectPath = "Replacement/target.bin.tinylocal-2-0123456789abcdef.tmp";
+	      await mobileAdapter.writeBinary(afterEffectPath, toArrayBuffer(Buffer.from("after")));
+	      const originalCreateBinaryForAfterEffect = mobileApp.vault.createBinary;
+	      let replacementAfterEffectInjected = false;
+	      mobileApp.vault.createBinary = async (filePath, data) => {
+	        const result = await originalCreateBinaryForAfterEffect.call(mobileApp.vault, filePath, data);
+	        if (!replacementAfterEffectInjected && String(filePath) === "Replacement/target.bin") {
+	          replacementAfterEffectInjected = true;
+	          throw new Error(`Injected mobile createBinary after-effect failure: ${filePath}`);
+	        }
+	        return result;
+	      };
+	      try {
+	        await mobileFs.replaceFile(afterEffectPath, "Replacement/target.bin");
+	      } finally {
+	        mobileApp.vault.createBinary = originalCreateBinaryForAfterEffect;
+	      }
+	      assert.equal(await mobileAdapter.read("Replacement/target.bin"), "after", "Mobile replacement rejected a createBinary operation that had already landed");
+
+	      const cleanupPath = "Replacement/target.bin.tinylocal-3-0123456789abcdef.tmp";
+	      await mobileAdapter.writeBinary(cleanupPath, toArrayBuffer(Buffer.from("clean")));
+	      const originalRemoveForReplacementCleanup = mobileAdapter.remove;
+	      mobileAdapter.remove = async (vaultPath) => {
+	        if (String(vaultPath).includes("tinylocal-rollback")) {
+	          throw new Error(`Injected mobile transaction cleanup failure: ${vaultPath}`);
+	        }
+	        await originalRemoveForReplacementCleanup.call(mobileAdapter, vaultPath);
+	      };
+	      let cleanupReplacement;
+	      try {
+	        cleanupReplacement = await mobileFs.replaceFile(cleanupPath, "Replacement/target.bin");
+	      } finally {
+	        mobileAdapter.remove = originalRemoveForReplacementCleanup;
+	      }
+	      assert(cleanupReplacement.leftoverRollbackPath && await mobileAdapter.exists(cleanupReplacement.leftoverRollbackPath), "Mobile replacement did not report a leftover rollback file");
+	      const cleanupJournalPaths = await listMobileJournalPaths();
+	      assert(cleanupJournalPaths.length === 0, "Resolved mobile replacement retained a stale recovery journal");
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert(await mobileAdapter.exists(cleanupReplacement.leftoverRollbackPath), "Startup maintenance deleted the exact rollback safety copy using mutable canonical proof");
+
+	      const noTrashTarget = "Replacement/no-vault-trash.bin";
+	      const noTrashStage = "Replacement/no-vault-trash.bin.tinylocal-4-0123456789abcdef.tmp";
+	      await mobileAdapter.writeBinary(noTrashTarget, toArrayBuffer(Buffer.from("old")));
+	      await mobileAdapter.writeBinary(noTrashStage, toArrayBuffer(Buffer.from("new")));
+	      const mobileTrashCountBeforeReplacement = mobileLocalTrash.length;
+	      await mobileFs.replaceFile(noTrashStage, noTrashTarget);
+	      assert.equal(mobileLocalTrash.length, mobileTrashCountBeforeReplacement, "Successful mobile replacement accumulated transaction files in the user-visible Vault trash");
+
+	      const originalJournalWrite = mobileAdapter.write;
+	      const journalWriteTarget = "Replacement/journal-write.bin";
+	      const journalWriteStage = "Replacement/journal-write.bin.tinylocal-8-0123456789abcdef.tmp";
+	      await mobileAdapter.writeBinary(journalWriteTarget, toArrayBuffer(Buffer.from("journal-write-old")));
+	      await mobileAdapter.writeBinary(journalWriteStage, toArrayBuffer(Buffer.from("journal-write-new")));
+	      mobileAdapter.write = async (vaultPath, value) => {
+	        if (isMobileJournalPath(vaultPath)) throw new Error("Injected journal write failure");
+	        await originalJournalWrite(vaultPath, value);
+	      };
+	      await assert.rejects(() => mobileFs.replaceFile(journalWriteStage, journalWriteTarget), /Injected journal write failure/);
+	      mobileAdapter.write = originalJournalWrite;
+	      assert.equal(await mobileAdapter.read(journalWriteTarget), "journal-write-old", "Journal write failure changed the replacement target");
+	      assert(await mobileAdapter.exists(journalWriteStage), "Journal write failure removed the staged file");
+
+	      const journalRemoveTarget = "Replacement/journal-remove.bin";
+	      const journalRemoveStage = "Replacement/journal-remove.bin.tinylocal-9-0123456789abcdef.tmp";
+	      await mobileAdapter.writeBinary(journalRemoveTarget, toArrayBuffer(Buffer.from("journal-remove-old")));
+	      await mobileAdapter.writeBinary(journalRemoveStage, toArrayBuffer(Buffer.from("journal-remove-new")));
+	      mobileAdapter.remove = async (vaultPath) => {
+	        if (String(vaultPath).includes("mobile-replacement-journal-v2-")) {
+	          throw new Error(`Injected mobile journal cleanup failure: ${vaultPath}`);
+	        }
+	        await originalRemoveForReplacementCleanup.call(mobileAdapter, vaultPath);
+	      };
+	      try {
+	        await mobileFs.replaceFile(journalRemoveStage, journalRemoveTarget);
+	      } finally {
+	        mobileAdapter.remove = originalRemoveForReplacementCleanup;
+	      }
+	      assert.equal(await mobileAdapter.read(journalRemoveTarget), "journal-remove-new", "Journal cleanup failure reverted a successful replacement");
+	      const detachedJournalPaths = (await mobileAdapter.list(mobileJournalDir)).files
+	        .filter((filePath) => path.posix.basename(String(filePath)).includes("mobile-replacement-journal-v2-") && String(filePath).includes(".json.delete-"));
+	      assert(detachedJournalPaths.length === 1 && await mobileAdapter.exists(detachedJournalPaths[0]), "Journal cleanup failure did not retain exactly one detached terminal journal");
+	      assert((await listMobileJournalPaths()).length === 0, "Journal cleanup failure restored a terminal journal to the active recovery namespace");
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert(await mobileAdapter.exists(detachedJournalPaths[0]), "Startup maintenance destroyed the detached terminal journal after cleanup failed");
+	      assert((await mobileAdapter.list(mobileJournalDir)).files.filter((filePath) => String(filePath).includes(".json.delete-")).length === 1, "Repeated mobile recovery amplified a detached terminal journal");
+
+	      const localDeviceOwner = mockLocalStorage.get("local-image-compress:device-owner-v1");
+	      assert(/^[a-f0-9]{32}$/i.test(localDeviceOwner || ""), "Mobile replacement did not persist a device-local owner identity");
+	      const foreignDeviceOwner = localDeviceOwner === "f".repeat(32) ? "e".repeat(32) : "f".repeat(32);
+	      const sha256Text = (value) => crypto.createHash("sha256").update(value).digest("hex");
+	      let recoveryCaseId = 100;
+	      const createRecoveryState = async ({ ownerId = localDeviceOwner, phase = "detached", expectedTargetText = "old", stagedText = "compressed", targetText = null, rollbackText = null, journalRollbackText = rollbackText } = {}) => {
+	        recoveryCaseId += 1;
+	        const targetPath = `Replacement/matrix-${recoveryCaseId}.bin`;
+	        const stagedPath = `${targetPath}.tinylocal-${recoveryCaseId}-0123456789abcdef.tmp`;
+	        const rollbackPath = `Replacement/.matrix-${recoveryCaseId}.bin.tinylocal-rollback-${recoveryCaseId}-0123456789abcdef0123456789abcdef.tmp`;
+	        if (stagedText !== null) await mobileAdapter.writeBinary(stagedPath, toArrayBuffer(Buffer.from(stagedText)));
+	        if (targetText !== null) await mobileAdapter.writeBinary(targetPath, toArrayBuffer(Buffer.from(targetText)));
+	        if (rollbackText !== null) await mobileAdapter.writeBinary(rollbackPath, toArrayBuffer(Buffer.from(rollbackText)));
+	        const journal = {
+	          ownerId,
+	          transactionId: recoveryCaseId.toString(16).padStart(32, "0"),
+	          stagedPath,
+	          targetPath,
+	          rollbackPath: rollbackText === null ? null : rollbackPath,
+	          stagedSha256: sha256Text("compressed"),
+	          expectedTargetSha256: expectedTargetText === null ? null : sha256Text(expectedTargetText),
+	          rollbackSha256: journalRollbackText === null ? null : sha256Text(journalRollbackText),
+	          phase
+	        };
+	        const journalPath = getMobileJournalPath(journal);
+	        await writeMobileJournal(journal, journalPath);
+	        return { ...journal, journalPath };
+	      };
+	      const removeRecoveryState = async (state) => {
+	        for (const filePath of [state.stagedPath, state.targetPath, state.rollbackPath, state.journalPath]) {
+	          if (filePath && await mobileAdapter.exists(filePath)) await mobileAdapter.remove(filePath);
+	        }
+	      };
+
+	      // Every foreign J/S/T/R subset is read-only. Partial Sync delivery and
+	      // a later journal tombstone may never command this device's filesystem.
+	      for (let mask = 0; mask < 8; mask++) {
+	        const state = await createRecoveryState({
+	          ownerId: foreignDeviceOwner,
+	          phase: ["prepared", "detached", "installed"][mask % 3],
+	          stagedText: (mask & 1) ? "compressed" : null,
+	          targetText: (mask & 2) ? "foreign-current" : null,
+	          rollbackText: (mask & 4) ? "old" : null
+	        });
+	        await mobileFs.recoverInterruptedReplacement();
+	        assert(await mobileAdapter.exists(state.journalPath), `Foreign recovery journal subset ${mask} was consumed`);
+	        assert.equal(await mobileAdapter.exists(state.stagedPath), Boolean(mask & 1), `Foreign staged subset ${mask} was mutated`);
+	        assert.equal(await mobileAdapter.exists(state.targetPath), Boolean(mask & 2), `Foreign target subset ${mask} was mutated`);
+	        assert.equal(Boolean(state.rollbackPath && await mobileAdapter.exists(state.rollbackPath)), Boolean(mask & 4), `Foreign rollback subset ${mask} was mutated`);
+	        await mobileAdapter.remove(state.journalPath);
+	        await mobileFs.recoverInterruptedReplacement();
+	        assert.equal(await mobileAdapter.exists(state.stagedPath), Boolean(mask & 1), `Foreign staged subset ${mask} changed after journal tombstone`);
+	        assert.equal(await mobileAdapter.exists(state.targetPath), Boolean(mask & 2), `Foreign target subset ${mask} changed after journal tombstone`);
+	        assert.equal(Boolean(state.rollbackPath && await mobileAdapter.exists(state.rollbackPath)), Boolean(mask & 4), `Foreign rollback subset ${mask} changed after journal tombstone`);
+	        await removeRecoveryState(state);
+	      }
+
+	      const notStartedState = await createRecoveryState({ phase: "prepared", stagedText: "compressed", targetText: "old" });
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert.equal(await mobileAdapter.read(notStartedState.targetPath), "old", "Prepared recovery changed an untouched target");
+	      assert(!await mobileAdapter.exists(notStartedState.stagedPath) && !await mobileAdapter.exists(notStartedState.journalPath), "Prepared recovery did not abort its owned staged artifact");
+	      await removeRecoveryState(notStartedState);
+
+	      const detachedState = await createRecoveryState({ phase: "detached", stagedText: "compressed", targetText: null, rollbackText: "old" });
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert.equal(await mobileAdapter.read(detachedState.targetPath), "old", "Detached recovery did not restore the captured target");
+	      assert(!await mobileAdapter.exists(detachedState.stagedPath) && await mobileAdapter.exists(detachedState.rollbackPath) && !await mobileAdapter.exists(detachedState.journalPath), "Detached recovery did not retain only the exact rollback safety copy");
+	      await removeRecoveryState(detachedState);
+
+	      const detachedWithoutStageState = await createRecoveryState({ phase: "detached", stagedText: null, targetText: null, rollbackText: "captured-without-stage" });
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert.equal(await mobileAdapter.read(detachedWithoutStageState.targetPath), "captured-without-stage", "Mobile recovery left the canonical target missing when its exact rollback existed without a staged file");
+	      assert(await mobileAdapter.exists(detachedWithoutStageState.rollbackPath) && !await mobileAdapter.exists(detachedWithoutStageState.journalPath), "Mobile detached-without-stage recovery did not retain only its exact rollback safety copy");
+	      await removeRecoveryState(detachedWithoutStageState);
+
+	      const mismatchedRollbackState = await createRecoveryState({
+	        phase: "detached",
+	        stagedText: "compressed",
+	        targetText: null,
+	        rollbackText: "sync-replaced-rollback",
+	        journalRollbackText: "journal-owned-rollback"
+	      });
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert(!await mobileAdapter.exists(mismatchedRollbackState.targetPath), "Mobile recovery installed a rollback revision that did not match journal.rollbackSha256");
+	      assert.equal(await mobileAdapter.read(mismatchedRollbackState.rollbackPath), "sync-replaced-rollback", "Mobile recovery changed the mismatched rollback bytes");
+	      assert(await mobileAdapter.exists(mismatchedRollbackState.stagedPath) && await mobileAdapter.exists(mismatchedRollbackState.journalPath), "Mobile recovery discarded staged or journal evidence after rollback hash mismatch");
+	      await removeRecoveryState(mismatchedRollbackState);
+
+	      for (const stagedText of [null, "compressed"]) {
+	        const installedState = await createRecoveryState({ phase: "installed", stagedText, targetText: "compressed", rollbackText: "old" });
+	        await mobileFs.recoverInterruptedReplacement();
+	        assert.equal(await mobileAdapter.read(installedState.targetPath), "compressed", "Installed recovery reverted the verified target");
+	        assert(!await mobileAdapter.exists(installedState.stagedPath) && await mobileAdapter.exists(installedState.rollbackPath) && !await mobileAdapter.exists(installedState.journalPath), "Installed recovery did not retain only the exact rollback safety copy");
+	        await removeRecoveryState(installedState);
+	      }
+
+	      const preparedAfterDetachState = await createRecoveryState({
+	        phase: "prepared",
+	        stagedText: "compressed",
+	        targetText: null,
+	        rollbackText: "old",
+	        journalRollbackText: null
+	      });
+	      const installedForeignSidesState = await createRecoveryState({
+	        phase: "installed",
+	        stagedText: "foreign-staged",
+	        targetText: "compressed",
+	        rollbackText: "foreign-rollback",
+	        journalRollbackText: "old"
+	      });
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert.equal(await mobileAdapter.read(preparedAfterDetachState.targetPath), "old", "Prepared-after-detach mobile recovery left the canonical target missing");
+	      assert(!await mobileAdapter.exists(preparedAfterDetachState.stagedPath) && await mobileAdapter.exists(preparedAfterDetachState.rollbackPath) && !await mobileAdapter.exists(preparedAfterDetachState.journalPath), "Prepared-after-detach mobile recovery retained active metadata or lost rollback safety");
+	      assert.equal(await mobileAdapter.read(installedForeignSidesState.targetPath), "compressed", "Installed mobile terminal recovery changed the verified target");
+	      assert.equal(await mobileAdapter.read(installedForeignSidesState.stagedPath), "foreign-staged", "Installed mobile terminal recovery changed the foreign staged artifact");
+	      assert.equal(await mobileAdapter.read(installedForeignSidesState.rollbackPath), "foreign-rollback", "Installed mobile terminal recovery changed the foreign rollback artifact");
+	      assert(!await mobileAdapter.exists(installedForeignSidesState.journalPath), "Installed mobile terminal recovery retained its active journal");
+	      await mobileFs.recoverInterruptedReplacement();
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert.equal(await mobileAdapter.read(installedForeignSidesState.stagedPath), "foreign-staged", "Repeated mobile recovery changed the foreign staged artifact");
+	      assert.equal(await mobileAdapter.read(installedForeignSidesState.rollbackPath), "foreign-rollback", "Repeated mobile recovery changed the foreign rollback artifact");
+	      const afterPreparedStage = `${preparedAfterDetachState.targetPath}.tinylocal-1900000000000-${"1".repeat(32)}.tmp`;
+	      await mobileAdapter.writeBinary(afterPreparedStage, toArrayBuffer(Buffer.from("after-prepared-detach")));
+	      await mobileFs.replaceFile(afterPreparedStage, preparedAfterDetachState.targetPath, {
+	        expectedTargetSha256: sha256Text("old"),
+	        expectedStagedSha256: sha256Text("after-prepared-detach")
+	      });
+	      assert.equal(await mobileAdapter.read(preparedAfterDetachState.targetPath), "after-prepared-detach", "Prepared-after-detach recovery blocked the next mobile replacement");
+	      const afterForeignSidesStage = `${installedForeignSidesState.targetPath}.tinylocal-1900000000000-${"2".repeat(32)}.tmp`;
+	      await mobileAdapter.writeBinary(afterForeignSidesStage, toArrayBuffer(Buffer.from("after-foreign-sides")));
+	      await mobileFs.replaceFile(afterForeignSidesStage, installedForeignSidesState.targetPath, {
+	        expectedTargetSha256: sha256Text("compressed"),
+	        expectedStagedSha256: sha256Text("after-foreign-sides")
+	      });
+	      assert.equal(await mobileAdapter.read(installedForeignSidesState.targetPath), "after-foreign-sides", "Installed terminal recovery blocked the next mobile replacement");
+	      assert.equal(await mobileAdapter.read(installedForeignSidesState.stagedPath), "foreign-staged", "Later mobile replacement changed the retained foreign staged artifact");
+	      assert.equal(await mobileAdapter.read(installedForeignSidesState.rollbackPath), "foreign-rollback", "Later mobile replacement changed the retained foreign rollback artifact");
+	      await removeRecoveryState(preparedAfterDetachState);
+	      await removeRecoveryState(installedForeignSidesState);
+
+	      const capturedConcurrentState = await createRecoveryState({ phase: "detached", stagedText: "compressed", targetText: null, rollbackText: "concurrent-before-capture" });
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert.equal(await mobileAdapter.read(capturedConcurrentState.targetPath), "concurrent-before-capture", "Recovery deleted the concurrent version captured in rollback");
+	      assert(!await mobileAdapter.exists(capturedConcurrentState.journalPath), "Recovered concurrent capture left its journal");
+	      await removeRecoveryState(capturedConcurrentState);
+
+	      const restoredExpectedState = await createRecoveryState({ phase: "detached", stagedText: null, targetText: "old", rollbackText: "old" });
+	      const concurrentCreateState = await createRecoveryState({ phase: "detached", expectedTargetText: null, stagedText: "compressed", targetText: "concurrent-create", rollbackText: null });
+	      const conflictState = await createRecoveryState({ phase: "detached", stagedText: null, targetText: "concurrent-after-install", rollbackText: "old" });
+	      const independentState = await createRecoveryState({ phase: "installed", stagedText: null, targetText: "compressed", rollbackText: "old" });
+	      const detachedMobileJournalCountBeforeStaleRecovery = (await mobileAdapter.list(mobileJournalDir)).files
+	        .filter((filePath) => String(filePath).includes(".json.delete-")).length;
+	      mobileAdapter.remove = async (vaultPath) => {
+	        if (String(vaultPath).startsWith(`${conflictState.journalPath}.delete-`)) {
+	          throw new Error(`Injected stale mobile journal cleanup failure: ${vaultPath}`);
+	        }
+	        await originalRemoveForReplacementCleanup.call(mobileAdapter, vaultPath);
+	      };
+	      try {
+	        await mobileFs.recoverInterruptedReplacement();
+	      } finally {
+	        mobileAdapter.remove = originalRemoveForReplacementCleanup;
+	      }
+	      assert.equal(await mobileAdapter.read(restoredExpectedState.targetPath), "old", "Mobile terminal recovery changed an already restored expected target");
+	      assert(await mobileAdapter.exists(restoredExpectedState.rollbackPath) && !await mobileAdapter.exists(restoredExpectedState.journalPath), "Mobile terminal recovery discarded the restored target's exact rollback copy or kept its active journal");
+	      assert.equal(await mobileAdapter.read(concurrentCreateState.targetPath), "concurrent-create", "Mobile create-race recovery overwrote the concurrent target");
+	      assert(await mobileAdapter.exists(concurrentCreateState.stagedPath) && !await mobileAdapter.exists(concurrentCreateState.journalPath), "Mobile create-race recovery discarded staged safety evidence or kept its active journal");
+	      assert.equal(await mobileAdapter.read(conflictState.targetPath), "concurrent-after-install", "Stale mobile recovery overwrote the newer target");
+	      assert(await mobileAdapter.exists(conflictState.rollbackPath), "Stale mobile recovery discarded the exact rollback safety copy");
+	      assert(!await mobileAdapter.exists(conflictState.journalPath), "Stale mobile journal remained in the active recovery namespace");
+	      assert(await mobileAdapter.exists(independentState.rollbackPath) && !await mobileAdapter.exists(independentState.journalPath), "One unresolved journal blocked or over-cleaned an independent recovery");
+	      const detachedConflictJournalPaths = (await mobileAdapter.list(mobileJournalDir)).files
+	        .filter((filePath) => String(filePath).startsWith(`${conflictState.journalPath}.delete-`));
+	      assert(detachedConflictJournalPaths.length === 1, "Mobile stale-journal cleanup failure did not retain exactly one detached terminal journal");
+	      await mobileFs.recoverInterruptedReplacement();
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert(
+	        (await mobileAdapter.list(mobileJournalDir)).files.filter((filePath) => String(filePath).includes(".json.delete-")).length === detachedMobileJournalCountBeforeStaleRecovery + 1,
+	        "Repeated mobile recovery amplified a detached stale journal"
+	      );
+	      const blockedStage = `${conflictState.targetPath}.tinylocal-999-0123456789abcdef.tmp`;
+	      await mobileAdapter.writeBinary(blockedStage, toArrayBuffer(Buffer.from("blocked")));
+	      await mobileFs.replaceFile(blockedStage, conflictState.targetPath);
+	      assert.equal(await mobileAdapter.read(conflictState.targetPath), "blocked", "Stale mobile journal still blocked a later replacement");
+	      assert(!await mobileAdapter.exists(blockedStage), "Successful mobile replacement retained its staged file");
+	      assert(await mobileAdapter.exists(conflictState.rollbackPath), "Later mobile replacement removed the retained old safety copy");
+	      const restoredExpectedStage = `${restoredExpectedState.targetPath}.tinylocal-998-fedcba9876543210.tmp`;
+	      await mobileAdapter.writeBinary(restoredExpectedStage, toArrayBuffer(Buffer.from("after-restored-target")));
+	      await mobileFs.replaceFile(restoredExpectedStage, restoredExpectedState.targetPath);
+	      assert.equal(await mobileAdapter.read(restoredExpectedState.targetPath), "after-restored-target", "Restored-target journal still blocked a later mobile replacement");
+	      assert(await mobileAdapter.exists(restoredExpectedState.rollbackPath), "Later mobile replacement removed the restored target's retained safety copy");
+	      await mobileFs.replaceFile(concurrentCreateState.stagedPath, concurrentCreateState.targetPath);
+	      assert.equal(await mobileAdapter.read(concurrentCreateState.targetPath), "compressed", "Create-race journal still blocked a later mobile replacement");
+	      assert(!await mobileAdapter.exists(concurrentCreateState.stagedPath), "Later mobile create-race replacement retained its staged file");
+	      await removeRecoveryState(restoredExpectedState);
+	      await removeRecoveryState(concurrentCreateState);
+	      await removeRecoveryState(conflictState);
+	      await removeRecoveryState(independentState);
+
+	      const missingAbortState = await createRecoveryState({ phase: "prepared", expectedTargetText: null, stagedText: "compressed", targetText: null, rollbackText: null });
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert(!await mobileAdapter.exists(missingAbortState.stagedPath) && !await mobileAdapter.exists(missingAbortState.journalPath), "Missing-target prepared recovery did not abort its owned staged file");
+	      await removeRecoveryState(missingAbortState);
+	      const missingInstalledState = await createRecoveryState({ phase: "installed", expectedTargetText: null, stagedText: null, targetText: "compressed", rollbackText: null });
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert(!await mobileAdapter.exists(missingInstalledState.journalPath) && await mobileAdapter.exists(missingInstalledState.targetPath), "Missing-target installed recovery did not reach terminal state");
+	      await removeRecoveryState(missingInstalledState);
+
+	      const invalidState = await createRecoveryState({ phase: "detached", stagedText: "compressed", targetText: "keep-invalid-target", rollbackText: "old" });
+	      await mobileAdapter.process(invalidState.journalPath, (current) => current.replace(/"checksum":"[a-f0-9]+"/i, '"checksum":"invalid"'));
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert.equal(await mobileAdapter.read(invalidState.targetPath), "keep-invalid-target", "Invalid journal changed its target");
+	      assert(await mobileAdapter.exists(invalidState.journalPath), "Invalid journal was renamed or deleted without trusted ownership");
+	      await removeRecoveryState(invalidState);
+
+	      const legacyPayload = {
+	        version: 1,
+	        stagedPath: "Replacement/legacy.bin.tinylocal-1-0123456789abcdef.tmp",
+	        targetPath: "Replacement/legacy.bin",
+	        rollbackPath: null,
+	        phase: "prepared"
+	      };
+	      await mobileAdapter.writeBinary(legacyPayload.targetPath, toArrayBuffer(Buffer.from("legacy-current")));
+	      await mobileAdapter.write(mobileLegacyJournalPath, JSON.stringify({ ...legacyPayload, checksum: sha256Text(JSON.stringify(legacyPayload)) }));
+	      await mobileFs.recoverInterruptedReplacement();
+	      assert.equal(await mobileAdapter.read(legacyPayload.targetPath), "legacy-current", "Unowned v1 journal changed an existing target");
+	      assert(await mobileAdapter.exists(mobileLegacyJournalPath), "Unowned v1 journal was automatically consumed");
+	      await mobileAdapter.remove(mobileLegacyJournalPath);
+	      await mobileAdapter.remove(legacyPayload.targetPath);
+
+	      await mobileAdapter.writeBinary("Migration/source-file.bin", toArrayBuffer(Buffer.from("migration-file")));
+	      await mobilePlugin.migrationRunner.moveOrCopyMigrationItem("Migration/source-file.bin", "Migration/dest-file.bin");
+	      assert(!await mobileAdapter.exists("Migration/source-file.bin") && await mobileAdapter.exists("Migration/dest-file.bin"), "Mobile file migration did not copy, verify and remove the file source");
+
+	      const migrationRaceSource = "Migration/race-source.bin";
+	      const migrationRaceDest = "Migration/race-dest.bin";
+	      await mobileAdapter.writeBinary(migrationRaceSource, toArrayBuffer(Buffer.from("same-version")));
+	      await mobileAdapter.writeBinary(migrationRaceDest, toArrayBuffer(Buffer.from("same-version")));
+	      const originalMoveFileToUniqueSibling = mobileFs.moveFileToUniqueSibling;
+	      let migrationRaceQuarantine = null;
+	      mobileFs.moveFileToUniqueSibling = async (sourcePath, options) => {
+	        migrationRaceQuarantine = await originalMoveFileToUniqueSibling.call(mobileFs, sourcePath, options);
+	        await mobileAdapter.writeBinary(sourcePath, toArrayBuffer(Buffer.from("new-sync-version")));
+	        return migrationRaceQuarantine;
+	      };
+	      try {
+	        await mobilePlugin.migrationRunner.mergeMigrationItem(migrationRaceSource, migrationRaceDest);
+	      } finally {
+	        mobileFs.moveFileToUniqueSibling = originalMoveFileToUniqueSibling;
+	      }
+	      assert.equal(await mobileAdapter.read(migrationRaceSource), "new-sync-version", "Migration deleted a source version written after quarantine");
+	      assert.equal(await mobileAdapter.read(migrationRaceDest), "same-version", "Migration changed an already verified destination during source quarantine");
+	      assert(migrationRaceQuarantine && await mobileAdapter.exists(migrationRaceQuarantine), "Migration discarded the exact isolated source safety copy");
+	      assert.equal(await mobileAdapter.read(migrationRaceQuarantine), "same-version", "Migration quarantine did not preserve the isolated source revision");
+	      assert(
+	        (await mobileAdapter.list(mobileJournalDir)).files.some((journalPath) => path.posix.basename(journalPath).startsWith("migration-quarantine-v1-")),
+	        "Migration race did not retain its recovery journal"
+	      );
+
+	      const migrationMismatchSource = "Migration/mismatch-source.bin";
+	      const migrationMismatchDest = "Migration/mismatch-dest.bin";
+	      await mobileAdapter.writeBinary(migrationMismatchSource, toArrayBuffer(Buffer.from("source-version")));
+	      await mobileAdapter.writeBinary(migrationMismatchDest, toArrayBuffer(Buffer.from("target-version")));
+	      let migrationMismatchQuarantine = null;
+	      mobileFs.moveFileToUniqueSibling = async (sourcePath, options) => {
+	        migrationMismatchQuarantine = await originalMoveFileToUniqueSibling.call(mobileFs, sourcePath, options);
+	        return migrationMismatchQuarantine;
+	      };
+	      try {
+	        await assert.rejects(() => mobilePlugin.migrationRunner.mergeMigrationItem(migrationMismatchSource, migrationMismatchDest), /source retained at/);
+	      } finally {
+	        mobileFs.moveFileToUniqueSibling = originalMoveFileToUniqueSibling;
+	      }
+	      assert(migrationMismatchQuarantine && await mobileAdapter.exists(migrationMismatchQuarantine), "Migration mismatch discarded its verified quarantine fallback");
+	      assert.equal(await mobileAdapter.read(migrationMismatchSource), "source-version", "Migration mismatch did not restore the isolated source bytes to the original path");
+	      assert.equal(await mobileAdapter.read(migrationMismatchDest), "target-version", "Migration mismatch overwrote the destination");
+	      assert((await mobileAdapter.list(mobileJournalDir)).files.some((journalPath) => path.posix.basename(journalPath).startsWith("migration-quarantine-v1-")), "Migration mismatch did not retain its recovery journal");
+
+	      const migrationCollisionSource = "Migration/collision-source.bin";
+	      const migrationCollisionDest = "Migration/collision-dest.bin";
+	      await mobileAdapter.writeBinary(migrationCollisionSource, toArrayBuffer(Buffer.from("collision")));
+	      await mobileAdapter.writeBinary(migrationCollisionDest, toArrayBuffer(Buffer.from("collision")));
+	      const originalMkdirForMigrationCollision = mobileAdapter.mkdir;
+	      let migrationCollisionDir = null;
+	      mobileAdapter.mkdir = async (vaultPath) => {
+	        if (!migrationCollisionDir && String(vaultPath).includes(".tinylocal-quarantine-")) {
+	          migrationCollisionDir = String(vaultPath);
+	          await originalMkdirForMigrationCollision(vaultPath);
+	          throw new Error("Injected quarantine directory collision");
+	        }
+	        await originalMkdirForMigrationCollision(vaultPath);
+	      };
+	      try {
+	        await mobilePlugin.migrationRunner.mergeMigrationItem(migrationCollisionSource, migrationCollisionDest);
+	      } finally {
+	        mobileAdapter.mkdir = originalMkdirForMigrationCollision;
+	      }
+	      assert(migrationCollisionDir && await mobileAdapter.exists(migrationCollisionDir), "Migration quarantine collision was not retried with a different owned directory");
+	      await mobileAdapter.rmdir(migrationCollisionDir, false);
+
+	      const migrationAfterEffectSource = "Migration/after-effect-source.bin";
+	      const migrationAfterEffectDest = "Migration/after-effect-dest.bin";
+	      await mobileAdapter.writeBinary(migrationAfterEffectSource, toArrayBuffer(Buffer.from("after-effect")));
+	      await mobileAdapter.writeBinary(migrationAfterEffectDest, toArrayBuffer(Buffer.from("after-effect")));
+	      mobileRenameFailure = (fromPath, toPath) => fromPath === migrationAfterEffectSource && toPath.includes(".tinylocal-quarantine-") ? "after" : null;
+	      await mobilePlugin.migrationRunner.mergeMigrationItem(migrationAfterEffectSource, migrationAfterEffectDest);
+	      mobileRenameFailure = null;
+	      assert(!await mobileAdapter.exists(migrationAfterEffectSource), "Migration rejected a quarantine rename that had already landed");
+
+	      await mobileAdapter.writeBinary("Migration/source-dir/nested.bin", toArrayBuffer(Buffer.from("migration-dir")));
+	      await mobilePlugin.migrationRunner.moveOrCopyMigrationItem("Migration/source-dir", "Migration/dest-dir");
+	      assert(await mobileAdapter.exists("Migration/dest-dir/nested.bin"), "Mobile directory migration did not publish the verified destination child");
+	      assert(!await mobileAdapter.exists("Migration/source-dir/nested.bin"), "Mobile directory migration left the canonical source child in place");
+	      if (await mobileAdapter.exists("Migration/source-dir")) {
+	        const retainedSourceListing = await mobileAdapter.list("Migration/source-dir");
+	        assert(
+	          retainedSourceListing.files.length === 0
+	            && retainedSourceListing.folders.length > 0
+	            && retainedSourceListing.folders.every((folderPath) => path.posix.basename(folderPath).startsWith(".tinylocal-quarantine-")),
+	          "Mobile directory migration left non-recovery content at the source"
+	        );
+	      }
+	      await mobilePlugin.migrationRunner.moveOrCopyMigrationItem("Migration/source-dir", "Migration/dest-dir");
+	      const repeatedDestinationListing = await mobileAdapter.list("Migration/dest-dir");
+	      assert(
+	        repeatedDestinationListing.folders.every((folderPath) => !path.posix.basename(folderPath).startsWith(".tinylocal-quarantine-")),
+	        "Repeated mobile migration copied a retained recovery directory into the destination"
+	      );
+	      await mobileAdapter.writeBinary("Migration/late-source/base.bin", toArrayBuffer(Buffer.from("base")));
+	      const originalVerifyMigrationForLateChild = mobilePlugin.migrationRunner.verifyMigrationItem;
+	      let lateChildInjected = false;
+	      mobilePlugin.migrationRunner.verifyMigrationItem = async (...args) => {
+	        await originalVerifyMigrationForLateChild.apply(mobilePlugin.migrationRunner, args);
+	        if (!lateChildInjected && args[0] === "Migration/late-source") {
+	          lateChildInjected = true;
+	          await mobileAdapter.writeBinary("Migration/late-source/late.bin", toArrayBuffer(Buffer.from("late")));
+	        }
+	      };
+	      await mobilePlugin.migrationRunner.moveOrCopyMigrationItem("Migration/late-source", "Migration/late-dest");
+	      mobilePlugin.migrationRunner.verifyMigrationItem = originalVerifyMigrationForLateChild;
+	      assert(lateChildInjected && await mobileAdapter.exists("Migration/late-dest/late.bin"), "Migration reconciliation lost a child added after verification");
+	      fs.mkdirSync(path.dirname(resolveMobilePath("Migration/oversized.bin")), { recursive: true });
+	      fs.writeFileSync(resolveMobilePath("Migration/oversized.bin"), Buffer.alloc(25 * 1024 * 1024 + 1));
+	      await assert.rejects(() => mobilePlugin.migrationRunner.moveOrCopyMigrationItem("Migration/oversized.bin", "Migration/oversized-dest.bin"), /exceeds the mobile maintenance limit/);
+	      assert(await mobileAdapter.exists("Migration/oversized.bin") && !await mobileAdapter.exists("Migration/oversized-dest.bin"), "Oversized mobile migration created a partial destination or removed its source");
+	      await mobileAdapter.writeBinary("Migration/failing-source.bin", toArrayBuffer(Buffer.from("preserve-me")));
+	      const originalCreateBinaryForMigrationFailure = mobileApp.vault.createBinary;
+	      mobileApp.vault.createBinary = async (filePath, data) => {
+	        if (String(filePath) === "Migration/failing-dest.bin") {
+	          throw new Error(`Injected mobile copy failure: ${filePath}`);
+	        }
+	        return await originalCreateBinaryForMigrationFailure.call(mobileApp.vault, filePath, data);
+	      };
+	      try {
+	        await assert.rejects(() => mobilePlugin.migrationRunner.moveOrCopyMigrationItem("Migration/failing-source.bin", "Migration/failing-dest.bin"), /Injected mobile copy failure/);
+	      } finally {
+	        mobileApp.vault.createBinary = originalCreateBinaryForMigrationFailure;
+	      }
+	      assert(await mobileAdapter.exists("Migration/failing-source.bin"), "Failed mobile migration removed its source");
+
+	      const oversizedMobilePath = "Images/mobile-oversized.jpg";
+	      fs.mkdirSync(path.dirname(resolveMobilePath(oversizedMobilePath)), { recursive: true });
+	      fs.writeFileSync(resolveMobilePath(oversizedMobilePath), Buffer.alloc(25 * 1024 * 1024 + 1));
+	      const oversizedMobileStat = await mobileAdapter.stat(oversizedMobilePath);
+	      const oversizedMobileFile = Object.assign(new MobileObsidianMock.TFile(), createMockFile(oversizedMobilePath, oversizedMobileStat.size, oversizedMobileStat.mtime));
+	      mobileFiles.push(oversizedMobileFile);
+	      const readsBeforeOversized = mobileReadBinaryCalls;
+	      let oversizedWasmCalls = 0;
+	      const originalEnsureWasmReadyForOversized = mobilePlugin.compressor.ensureWasmReady;
+	      mobilePlugin.compressor.ensureWasmReady = async () => {
+	        oversizedWasmCalls += 1;
+	        throw new Error("Oversized mobile input must not initialize WASM");
+	      };
+	      const oversizedMobileResult = await mobilePlugin.compressor.compress(oversizedMobileFile, mobilePlugin.settings);
+	      mobilePlugin.compressor.ensureWasmReady = originalEnsureWasmReadyForOversized;
+	      assert(oversizedMobileResult.skipReason === "too_large", "Mobile oversized input did not use the safety skip");
+	      await mobilePlugin.cache.addSkippedEntry(oversizedMobilePath, "too_large", mobilePlugin.getCompressionSettingsKey(oversizedMobileFile, "too_large"));
+	      assert(mobileReadBinaryCalls === readsBeforeOversized && oversizedWasmCalls === 0, "Mobile too_large persistence read bytes or initialized WASM");
+	      const oversizedCacheEntry = Object.values(mobilePlugin.cache.cacheData.entries).find((entry) => entry.path === oversizedMobilePath);
+	      assert(!oversizedCacheEntry, "Mobile too_large entry was cached without a content identity");
+	      await assert.rejects(() => mobilePlugin.getPlatformPorts().hash.fileSha256Hex(oversizedMobilePath), /exceeds the mobile 25 MB maintenance limit/);
+	      assert(mobileReadBinaryCalls === readsBeforeOversized, "Mobile oversized maintenance hash read the file before rejecting it");
+
+	      const mobileInputBytes = createValidJpegBytes(64 * 1024);
+      await mobileAdapter.writeBinary("Images/mobile.jpg", cloneArrayBuffer(mobileInputBytes));
+      const mobileInputStat = await mobileAdapter.stat("Images/mobile.jpg");
+      const mobileImage = Object.assign(new MobileObsidianMock.TFile(), createMockFile("Images/mobile.jpg", mobileInputStat.size, mobileInputStat.mtime));
+      mobileFiles.push(mobileImage);
+      const mobileValidation = await mobilePlugin.validateFileForCompression(mobileImage);
+      assert(mobileValidation.valid === true, `Mobile validation rejected the fixture: ${JSON.stringify(mobileValidation)}`);
+	      await mobilePlugin.compressFile(mobileImage);
+	      assert(await mobileAdapter.exists("Compressed/Images/mobile.jpg"), "Mobile compression did not write the staged output through the adapter");
+	      const mobileOutputStat = await mobileAdapter.stat("Compressed/Images/mobile.jpg");
+	      assert(mobileOutputStat.size < mobileInputStat.size, "Mobile compression output is not smaller than the input");
+	      const mobileOutputBeforeFailedReplace = Buffer.from(new Uint8Array(await mobileAdapter.readBinary("Compressed/Images/mobile.jpg")));
+	      mobileRenameFailure = (fromPath, toPath) => fromPath.includes("Compressed/Images/mobile.jpg.tinylocal-") && toPath === "Compressed/Images/mobile.jpg" ? "before" : null;
+	      const failedRepeatedMobileResult = await mobilePlugin.compressor.compress(mobileImage, mobilePlugin.settings);
+	      mobileRenameFailure = null;
+	      const mobileOutputAfterFailedReplace = Buffer.from(new Uint8Array(await mobileAdapter.readBinary("Compressed/Images/mobile.jpg")));
+	      assert(mobileOutputAfterFailedReplace.equals(mobileOutputBeforeFailedReplace), "Interrupted repeated mobile compression did not preserve the previous output bytes");
+	      assert(typeof failedRepeatedMobileResult.success === "boolean", "Interrupted repeated mobile compression returned an invalid result");
+	      const repeatedMobileResult = await mobilePlugin.compressor.compress(mobileImage, mobilePlugin.settings);
+	      assert(repeatedMobileResult.success === true && await mobileAdapter.exists("Compressed/Images/mobile.jpg"), "Repeated mobile compression could not replace an existing output");
+	      await mobilePlugin.handleSuccessfulCompression(mobileImage, repeatedMobileResult);
+	      await mobilePlugin.cache.flushPendingCacheSave();
+
+      const mobileEntryPair = Object.entries(mobilePlugin.cache.cacheData.entries).find(([, entry]) => entry.path === "Images/mobile.jpg");
+      assert(mobileEntryPair, "Mobile compression did not record a cache entry");
+      const [mobileCacheKey, mobileEntry] = mobileEntryPair;
+      const expectedMobileMd5 = crypto.createHash("md5").update(new Uint8Array(mobileInputBytes)).digest("hex");
+      assert.equal(mobileEntry.md5, expectedMobileMd5, "Mobile js-md5 fingerprint diverged from Node crypto");
+      const expectedMobileFingerprint = `images/mobile.jpg\n${expectedMobileMd5}\n${Math.round(mobileInputStat.mtime)}`;
+      const expectedMobileKey = `v2:${crypto.createHash("sha256").update(expectedMobileFingerprint).digest("hex")}`;
+      assert.equal(mobileCacheKey, expectedMobileKey, "Mobile cache key diverged from desktop crypto parity");
+
+	      const mobileMoveRecord = {
+        compressedPath: "Compressed/Images/mobile.jpg",
+        relativePath: "Images/mobile.jpg",
+        name: "mobile.jpg",
+	        size: mobileOutputStat.size
+	      };
+	      const secondMobileInput = createValidJpegBytes(48 * 1024);
+	      const secondMobileOutput = createValidEncodedOutput("jpeg");
+	      await mobileAdapter.writeBinary("Images/mobile-second.jpg", cloneArrayBuffer(secondMobileInput));
+	      await mobileAdapter.writeBinary("Compressed/Images/mobile-second.jpg", secondMobileOutput);
+	      const secondMobileInputStat = await mobileAdapter.stat("Images/mobile-second.jpg");
+	      const secondMobileOutputStat = await mobileAdapter.stat("Compressed/Images/mobile-second.jpg");
+	      mobileFiles.push(Object.assign(new MobileObsidianMock.TFile(), createMockFile("Images/mobile-second.jpg", secondMobileInputStat.size, secondMobileInputStat.mtime)));
+	      const secondMobileMd5 = crypto.createHash("md5").update(new Uint8Array(secondMobileInput)).digest("hex");
+	      const secondMobileKey = mobilePlugin.cache.buildCacheKey("Images/mobile-second.jpg", secondMobileMd5, secondMobileInputStat.mtime);
+	      mobilePlugin.cache.cacheData.entries[secondMobileKey] = {
+	        path: "Images/mobile-second.jpg",
+	        md5: secondMobileMd5,
+	        mtime: secondMobileInputStat.mtime,
+	        timestamp: Date.now(),
+	        sourceMtime: secondMobileInputStat.mtime,
+	        sourceSize: secondMobileInputStat.size,
+	        sourceSha256: await mobilePlugin.getPlatformPorts().hash.fileSha256Hex("Images/mobile-second.jpg"),
+	        state: "pending_move",
+	        outputPath: "Compressed/Images/mobile-second.jpg",
+	        outputMtime: secondMobileOutputStat.mtime,
+	        outputSize: secondMobileOutputStat.size,
+	        outputSha256: await mobilePlugin.getPlatformPorts().hash.fileSha256Hex("Compressed/Images/mobile-second.jpg")
+	      };
+	      const secondMobileMoveRecord = {
+	        compressedPath: "Compressed/Images/mobile-second.jpg",
+	        relativePath: "Images/mobile-second.jpg",
+	        name: "mobile-second.jpg",
+	        size: secondMobileOutputStat.size
+	      };
+	      mobilePeakBytesInFlight = 0;
+	      assert(mobilePlugin.moveService.getIOConcurrency() === 1, "Mobile move I/O concurrency is not serialized");
+      const originalMobileMoveStat = mobileAdapter.stat.bind(mobileAdapter);
+      let staleCompressedStatReads = 0;
+      let staleStagedStatReads = 0;
+      mobileAdapter.stat = async (vaultPath) => {
+        const stat = await originalMobileMoveStat(vaultPath);
+        if (stat?.type === "file" && String(vaultPath) === "Compressed/Images/mobile.jpg") {
+          staleCompressedStatReads++;
+          return { ...stat, size: 0 };
+        }
+        if (stat?.type === "file" && String(vaultPath).includes(".tinylocal-") && String(vaultPath).endsWith(".tmp")) {
+          staleStagedStatReads++;
+          return { ...stat, size: 0 };
+        }
+        return stat;
+      };
+      try {
+        assert(
+          await mobilePlugin.cache.isFileAlreadyProcessed(mobileImage),
+          "Mobile pending cache proof rejected exact output bytes because compressed size metadata lagged"
+        );
+        const mobileBackupResult = await mobilePlugin.moveService.createBackupBeforeMove([mobileMoveRecord, secondMobileMoveRecord]);
+        assert(mobileBackupResult.files.length === 2, `Mobile move backup preflight failed: ${mobileMoveRecord.moveSkipReason || secondMobileMoveRecord.moveSkipReason || mobileBackupResult.errorCount}`);
+        assert(mobilePeakBytesInFlight <= mobileInputStat.size, `Mobile move preflight exceeded one-file buffered reads: peak=${mobilePeakBytesInFlight}, file=${mobileInputStat.size}`);
+        await mobilePlugin.moveService.moveSingleFile(mobileBackupResult.files[0]);
+      } finally {
+        mobileAdapter.stat = originalMobileMoveStat;
+      }
+      assert(staleCompressedStatReads > 0, "Mobile move preflight did not exercise stale compressed-output size metadata");
+      assert(staleStagedStatReads > 0, "Mobile move did not exercise stale staged-file size metadata");
+      assert(!mobileMoveRecord.moveSkipReason, `Mobile move was skipped: ${mobileMoveRecord.moveSkipReason}`);
+      assert((await mobileAdapter.stat("Images/mobile.jpg")).size === mobileOutputStat.size, "Mobile move did not replace the original with compressed bytes");
+      assert(!await mobileAdapter.exists("Compressed/Images/mobile.jpg"), "Mobile move left the compressed output behind");
+      const staleMovedFile = Object.assign(new MobileObsidianMock.TFile(), createMockFile("Images/mobile.jpg", 0, mobileInputStat.mtime));
+      assert(
+        await mobilePlugin.cache.isFileAlreadyProcessed(staleMovedFile),
+        "Mobile moved cache proof rejected exact installed bytes because TFile metadata lagged"
+      );
+      const mobileBackupRoots = (await mobileAdapter.list(".local-image-compress/backups/originals")).folders;
+      assert(mobileBackupRoots.length === 1, "Mobile move did not create exactly one originals backup");
+      assert(
+        await mobileAdapter.exists(`${mobileBackupRoots[0]}/originals/Images/mobile.jpg`),
+        "Mobile originals backup is missing the backed-up file"
+      );
+
+      const mobileCacheBackupDir = ".local-image-compress/backups/cache";
+      const mobileRestoreBackupName = "tinyLocal-cache-backup-2026-01-01T00-00-00-000.json";
+      const mobileRestoreBackupPath = `${mobileCacheBackupDir}/${mobileRestoreBackupName}`;
+      const cacheBeforeMobileRestore = await mobileAdapter.read(mobileCachePath);
+      const cachePathsBeforeMobileRestore = Object.values(JSON.parse(cacheBeforeMobileRestore).entries).map((entry) => entry.path).sort();
+      const restoredPath = "Images/mobile-restored.png";
+      const restoredTimestamp = 303;
+      const restoredKey = mobilePlugin.cache.buildCacheKey(restoredPath, "", restoredTimestamp);
+      const restoredPayload = JSON.stringify({
+        entries: { [restoredKey]: concurrentEntry(restoredPath, restoredTimestamp) },
+        version: "2.0.0"
+      });
+      const backupNamesBeforeRestore = new Set(await mobilePlugin.cache.getAvailableBackups());
+      await mobileAdapter.write(mobileRestoreBackupPath, restoredPayload);
+      const mobileRestoreResult = await mobilePlugin.cache.restoreFromBackup(mobileRestoreBackupName);
+      assert(mobileRestoreResult === true, "Mobile restore did not apply a validated adapter backup");
+      const restoredDiskCache = JSON.parse(await mobileAdapter.read(mobileCachePath));
+      assert(Object.values(restoredDiskCache.entries).some((entry) => entry.path === restoredPath), "Mobile restore did not update the disk cache");
+      assert(mobilePlugin.cache.getEntriesForPath(restoredPath).length === 1, "Mobile restore did not update the in-memory cache");
+
+      const backupNamesAfterRestore = await mobilePlugin.cache.getAvailableBackups();
+      const newSafetyBackupNames = backupNamesAfterRestore.filter((name) => name !== mobileRestoreBackupName && !backupNamesBeforeRestore.has(name));
+      let safetyBackupName = null;
+      for (const backupName of newSafetyBackupNames) {
+        const candidate = JSON.parse(await mobileAdapter.read(`${mobileCacheBackupDir}/${backupName}`));
+        const candidatePaths = Object.values(candidate.entries || {}).map((entry) => entry.path).sort();
+        if (JSON.stringify(candidatePaths) === JSON.stringify(cachePathsBeforeMobileRestore)) {
+          safetyBackupName = backupName;
+          break;
+        }
+      }
+      assert(safetyBackupName, "Mobile restore did not create a verified safety backup of the previous cache");
+      assert(await mobilePlugin.cache.restoreFromBackup(safetyBackupName), "Mobile safety backup could not be restored in reverse");
+      const reverseRestoredPaths = Object.values(JSON.parse(await mobileAdapter.read(mobileCachePath)).entries).map((entry) => entry.path).sort();
+      assert.deepEqual(reverseRestoredPaths, cachePathsBeforeMobileRestore, "Reverse mobile restore did not reproduce the pre-restore cache");
+
+      const cacheBeforeFailedRestores = await mobileAdapter.read(mobileCachePath);
+      const memoryBeforeFailedRestores = JSON.stringify(mobilePlugin.cache.cacheData);
+      const mobileRestoreErrors = [];
+      console.error = (...args) => {
+        mobileRestoreErrors.push(args.map((value) => String(value)).join(" "));
+      };
+      try {
+        const malformedBackupName = "tinyLocal-cache-backup-2026-01-02T00-00-00-000.json";
+        await mobileAdapter.write(`${mobileCacheBackupDir}/${malformedBackupName}`, JSON.stringify({ entries: [], version: "2.0.0" }));
+        assert(!await mobilePlugin.cache.restoreFromBackup(malformedBackupName), "Mobile restore accepted an invalid cache schema");
+        assert.equal(await mobileAdapter.read(mobileCachePath), cacheBeforeFailedRestores, "Invalid mobile restore changed the disk cache");
+        assert.equal(JSON.stringify(mobilePlugin.cache.cacheData), memoryBeforeFailedRestores, "Invalid mobile restore changed the in-memory cache");
+
+        const safetyFailureBackupName = "tinyLocal-cache-backup-2026-01-03T00-00-00-000.json";
+        await mobileAdapter.write(`${mobileCacheBackupDir}/${safetyFailureBackupName}`, restoredPayload);
+	        const createBinaryBeforeSafetyFailure = mobileApp.vault.createBinary;
+	        mobileApp.vault.createBinary = async (filePath, data) => {
+	          if (String(filePath).startsWith(`${mobileCacheBackupDir}/tinyLocal-cache-backup-`)) {
+	            throw new Error("Injected required safety-backup failure");
+	          }
+	          return await createBinaryBeforeSafetyFailure.call(mobileApp.vault, filePath, data);
+	        };
+	        try {
+	          assert(!await mobilePlugin.cache.restoreFromBackup(safetyFailureBackupName), "Mobile restore continued without its required safety backup");
+	        } finally {
+	          mobileApp.vault.createBinary = createBinaryBeforeSafetyFailure;
+	        }
+        assert.equal(await mobileAdapter.read(mobileCachePath), cacheBeforeFailedRestores, "Safety-backup failure changed the mobile cache");
+
+        const readbackFailureBackupName = "tinyLocal-cache-backup-2026-01-04T00-00-00-000.json";
+        await mobileAdapter.write(`${mobileCacheBackupDir}/${readbackFailureBackupName}`, restoredPayload);
+        const processBeforeReadbackFailure = mobileAdapter.process;
+        let injectedReadbackResultFailure = false;
+        mobileAdapter.process = async (vaultPath, update) => {
+          if (!injectedReadbackResultFailure && String(vaultPath) === mobileCachePath) {
+            injectedReadbackResultFailure = true;
+            const next = await processBeforeReadbackFailure.call(mobileAdapter, vaultPath, update);
+            return `${next} `;
+          }
+          return await processBeforeReadbackFailure.call(mobileAdapter, vaultPath, update);
+        };
+        try {
+          assert(!await mobilePlugin.cache.restoreFromBackup(readbackFailureBackupName), "Mobile restore accepted an inconsistent atomic-process result");
+        } finally {
+          mobileAdapter.process = processBeforeReadbackFailure;
+        }
+        assert(injectedReadbackResultFailure, "Mobile restore readback failure was not injected");
+        assert.equal(await mobileAdapter.read(mobileCachePath), cacheBeforeFailedRestores, "Failed mobile restore did not roll back the disk cache");
+        assert.equal(JSON.stringify(mobilePlugin.cache.cacheData), memoryBeforeFailedRestores, "Failed mobile restore did not roll back the in-memory cache");
+
+        const oversizedBackupName = "tinyLocal-cache-backup-2026-01-05T00-00-00-000.json";
+        const oversizedBackupPath = `${mobileCacheBackupDir}/${oversizedBackupName}`;
+        await mobileAdapter.write(oversizedBackupPath, restoredPayload);
+        const originalRestoreLimit = mobilePlugin.getPlatformPorts().runtime.maxBufferedFileBytes;
+        const statBeforeOversizedRestore = mobileAdapter.stat;
+        let oversizedRestoreRead = false;
+        const readBeforeOversizedRestore = mobileAdapter.read;
+        mobilePlugin.getPlatformPorts().runtime.maxBufferedFileBytes = 64;
+        mobileAdapter.stat = async (vaultPath) => String(vaultPath) === oversizedBackupPath
+          ? { type: "file", ctime: 1, mtime: 1, size: 1 }
+          : await statBeforeOversizedRestore.call(mobileAdapter, vaultPath);
+        mobileAdapter.read = async (vaultPath) => {
+          if (String(vaultPath) === oversizedBackupPath) oversizedRestoreRead = true;
+          return await readBeforeOversizedRestore.call(mobileAdapter, vaultPath);
+        };
+        try {
+          assert(!await mobilePlugin.cache.restoreFromBackup(oversizedBackupName), "Mobile restore accepted a backup exceeding the post-read UTF-8 byte limit");
+        } finally {
+          mobileAdapter.stat = statBeforeOversizedRestore;
+          mobileAdapter.read = readBeforeOversizedRestore;
+          mobilePlugin.getPlatformPorts().runtime.maxBufferedFileBytes = originalRestoreLimit;
+        }
+        assert(oversizedRestoreRead, "Mobile restore did not exercise its post-read byte-limit check");
+        assert.equal(await mobileAdapter.read(mobileCachePath), cacheBeforeFailedRestores, "Oversized mobile restore changed the cache");
+        assert(!await mobilePlugin.cache.restoreFromBackup("../tinyLocal-cache-backup-2026-01-05T00-00-00-000.json"), "Mobile restore accepted path traversal");
+      } finally {
+        console.error = originalConsoleErrorForMobile;
+      }
+      assert(mobileRestoreErrors.length >= 5, "Expected mobile restore failures were not surfaced through error logging");
+
+	      mobilePlugin.cache.saveCacheDelayMs = 60_000;
+	      mobilePlugin.cache.cacheData.entries["v2:old-unload"] = concurrentEntry("Images/old-unload.png", 201);
+	      const pendingOldUnloadSave = mobilePlugin.cache.saveCache({ mergeDiskEntries: true });
+	      assert(mobilePlugin.cache.saveCacheTimer, "Mobile unload test did not leave a genuinely pending cache save");
+
+	      const mobileReloadedPlugin = new MobilePluginClass();
+	      mobileReloadedPlugin.app = mobileApp;
+	      mobileReloadedPlugin.manifest = mobilePlugin.manifest;
+	      await mobileReloadedPlugin.initializePlugin();
+	      mobileReloadedPlugin.cache.saveCacheDelayMs = 60_000;
+	      mobileReloadedPlugin.cache.cacheData.entries["v2:new-load"] = concurrentEntry("Images/new-load.png", 202);
+	      const pendingNewLoadSave = mobileReloadedPlugin.cache.saveCache({ mergeDiskEntries: true });
+	      let releaseMobileProcessBarrier;
+	      let markMobileProcessEntered;
+	      let mobileProcessBarrierUsed = false;
+	      const mobileProcessEntered = new Promise((resolve) => { markMobileProcessEntered = resolve; });
+	      const mobileProcessRelease = new Promise((resolve) => { releaseMobileProcessBarrier = resolve; });
+	      mobileProcessBarrier = async () => {
+	        if (mobileProcessBarrierUsed) return;
+	        mobileProcessBarrierUsed = true;
+	        markMobileProcessEntered();
+	        await mobileProcessRelease;
+	      };
+	      const newLoadFlush = mobileReloadedPlugin.cache.flushPendingCacheSave();
+	      await mobileProcessEntered;
+	      mobilePlugin.onunload();
+	      await new Promise((resolve) => setImmediate(resolve));
+	      assert(mobilePlugin.cache.activeWritePromise, "Old mobile unload did not queue behind the active new-load cache process");
+	      releaseMobileProcessBarrier();
+	      await Promise.all([pendingOldUnloadSave, pendingNewLoadSave, newLoadFlush]);
+	      mobileProcessBarrier = null;
+	      await Promise.all([
+	        mobilePlugin.cache.activeWritePromise || Promise.resolve(),
+	        mobileReloadedPlugin.cache.activeWritePromise || Promise.resolve()
+	      ]);
+	      const mobileRawCache = JSON.parse(await mobileAdapter.read(mobileCachePath));
+	      const mobileReloadPaths = new Set(Object.values(mobileRawCache.entries).map((entry) => entry.path));
+	      assert(mobileReloadPaths.has("Images/old-unload.png") && mobileReloadPaths.has("Images/new-load.png"), "Mobile old-unload/new-load overlap lost a cache entry");
+	      mobileReloadedPlugin.onunload();
+    } finally {
+      console.error = originalConsoleErrorForMobile;
+      mobileNodeModuleBan = false;
+      Object.assign(MobileObsidianMock.Platform, originalPlatformState);
+	      if (previousMobileWorker === undefined) {
+        delete global.Worker;
+      } else {
+        global.Worker = previousMobileWorker;
+	      }
+      global.setTimeout = stubbedSetTimeout;
+      global.clearTimeout = stubbedClearTimeout;
+      delete global.window.JS_SHA256_NO_NODE_JS;
+      delete global.window.JS_MD5_NO_NODE_JS;
+      delete require.cache[artifactPath];
+      fs.rmSync(mobileTemp, { recursive: true, force: true });
+    }
+  })(), 30000);
+
+  // ponytail: keep the approved bug reproductions in one block and one failing signal.
+  const bugReproducerObserved = {
+    imageIndexDeleteWins: false,
+    renamedInFlightPathCleared: false,
+    longFenceImageIgnored: false,
+    tildeFenceImageIgnored: false,
+    multiBacktickImageIgnored: false
+  };
+
+  const bugReproducerIndexFile = createMockFile("Images/bug-reproducer-index.png", 100000, 301);
+  const originalBugReproducerIsProcessed = plugin.cache.isFileAlreadyProcessed;
+  let markBugReproducerIndexLookup;
+  let releaseBugReproducerIndexLookup;
+  const bugReproducerIndexLookupStarted = new Promise((resolve) => {
+    markBugReproducerIndexLookup = resolve;
+  });
+  try {
+    plugin.cache.isFileAlreadyProcessed = async () => {
+      markBugReproducerIndexLookup();
+      await new Promise((resolve) => {
+        releaseBugReproducerIndexLookup = resolve;
+      });
+      return false;
+    };
+    const staleIndexUpdate = plugin.imageIndex.upsert(bugReproducerIndexFile, plugin.cache);
+    await bugReproducerIndexLookupStarted;
+    plugin.imageIndex.remove(bugReproducerIndexFile.path);
+    releaseBugReproducerIndexLookup();
+    await staleIndexUpdate;
+    bugReproducerObserved.imageIndexDeleteWins = !plugin.imageIndex
+      .getAllFiles()
+      .some((file) => file.path === bugReproducerIndexFile.path);
+  } finally {
+    releaseBugReproducerIndexLookup?.();
+    plugin.imageIndex.remove(bugReproducerIndexFile.path);
+    plugin.cache.isFileAlreadyProcessed = originalBugReproducerIsProcessed;
+  }
+
+  const bugReproducerQueue = plugin.newFileQueue;
+  const bugReproducerOldPath = "Images/bug-reproducer-in-flight.png";
+  const bugReproducerNewPath = "Images/bug-reproducer-renamed.png";
+  const bugReproducerQueueFile = Object.assign(
+    new ObsidianMock.TFile(),
+    createMockFile(bugReproducerOldPath, 100000, 302)
+  );
+  const originalBugReproducerGetFileByPath = plugin.app.vault.getFileByPath;
+  const originalBugReproducerBatch = plugin.processBatchCompressionBackground;
+  const originalBugReproducerUnloading = plugin.isUnloading;
+  try {
+    plugin.isUnloading = false;
+    bugReproducerQueue.newFileCompressionPending.clear();
+    bugReproducerQueue.newFileCompressionInFlight.clear();
+    bugReproducerQueue.newFileBatchDrainInProgress = false;
+    plugin.app.vault.getFileByPath = (filePath) =>
+      filePath === bugReproducerOldPath ? bugReproducerQueueFile : null;
+    plugin.processBatchCompressionBackground = async (files) => {
+      files[0].path = bugReproducerNewPath;
+    };
+    bugReproducerQueue.newFileCompressionPending.add(bugReproducerOldPath);
+    await plugin.drainNewFileCompressionBatch();
+    bugReproducerObserved.renamedInFlightPathCleared =
+      !bugReproducerQueue.newFileCompressionInFlight.has(bugReproducerOldPath) &&
+      !bugReproducerQueue.newFileCompressionInFlight.has(bugReproducerNewPath);
+  } finally {
+    bugReproducerQueue.newFileCompressionPending.clear();
+    bugReproducerQueue.newFileCompressionInFlight.clear();
+    bugReproducerQueue.newFileBatchDrainInProgress = false;
+    plugin.app.vault.getFileByPath = originalBugReproducerGetFileByPath;
+    plugin.processBatchCompressionBackground = originalBugReproducerBatch;
+    plugin.isUnloading = originalBugReproducerUnloading;
+  }
+
+  const originalBugReproducerFiles = plugin.app._files;
+  const originalBugReproducerCachedRead = plugin.app.vault.cachedRead;
+  const originalBugReproducerScannerUnloading = plugin.isUnloading;
+  try {
+    plugin.isUnloading = false;
+    await setMockFiles(plugin, [
+      createMockFile("Images/bug-reproducer-long-fence.png", 100000, 303),
+      createMockFile("Images/bug-reproducer-tilde-fence.png", 100000, 304),
+      createMockFile("Images/bug-reproducer-multi-backtick.png", 100000, 305)
+    ]);
+    plugin.app.vault.cachedRead = async () => [
+      "````markdown",
+      "![[Images/bug-reproducer-long-fence.png]]",
+      "````",
+      "~~~markdown",
+      "![[Images/bug-reproducer-tilde-fence.png]]",
+      "~~~",
+      "``![[Images/bug-reproducer-multi-backtick.png]]``"
+    ].join("\n");
+    const codeOnlyImages = await plugin.imageScanner.getImagesInNote(
+      createMockFile("Notes/bug-reproducer.md", 1000, 306)
+    );
+    const codeOnlyPaths = new Set(codeOnlyImages.map((file) => file.path));
+    bugReproducerObserved.longFenceImageIgnored =
+      !codeOnlyPaths.has("Images/bug-reproducer-long-fence.png");
+    bugReproducerObserved.tildeFenceImageIgnored =
+      !codeOnlyPaths.has("Images/bug-reproducer-tilde-fence.png");
+    bugReproducerObserved.multiBacktickImageIgnored =
+      !codeOnlyPaths.has("Images/bug-reproducer-multi-backtick.png");
+  } finally {
+    plugin.app.vault.cachedRead = originalBugReproducerCachedRead;
+    plugin.isUnloading = false;
+    await setMockFiles(plugin, originalBugReproducerFiles);
+    plugin.isUnloading = originalBugReproducerScannerUnloading;
+  }
+
+  assert.deepEqual(
+    bugReproducerObserved,
+    {
+      imageIndexDeleteWins: true,
+      renamedInFlightPathCleared: true,
+      longFenceImageIgnored: true,
+      tildeFenceImageIgnored: true,
+      multiBacktickImageIgnored: true
+    },
+    `Approved bug reproductions violated production contracts: ${JSON.stringify(bugReproducerObserved)}`
+  );
+  assert.deepEqual(
+    fullAuditBugReproducerObserved,
+    {
+      legacyMovedCacheInvalidated: true,
+      regionalExternalLanguageWins: true,
+      externalLanguageReloadedOnSwitch: true
+    },
+    `Full-code Gate 1 reproductions violated production contracts: ${JSON.stringify(fullAuditBugReproducerObserved)}`
+  );
 
   if (fs.existsSync(bugResearchPath)) {
     assert(fs.readFileSync(bugResearchPath, "utf8").trim().length === 0, "BUG_RESEARCH_FINDINGS.txt must be empty when no confirmed bugs remain");
@@ -8401,11 +12825,10 @@ try {
   global.setTimeout = originalGlobals.setTimeout;
   global.clearTimeout = originalGlobals.clearTimeout;
   delete require.cache[require.resolve(artifact)];
-  if (smokeBackupStorageTemp) {
-    fs.rmSync(smokeBackupStorageTemp, { recursive: true, force: true });
-  }
+  cleanupSmokeBackupStorageTemp();
+  process.removeListener("exit", cleanupSmokeBackupStorageTemp);
 }
-})(), 90_000).catch((error) => {
+})(), 180_000).catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

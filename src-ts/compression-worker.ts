@@ -105,9 +105,7 @@ function toUint8Array(input: ArrayBuffer | Uint8Array | Uint8ClampedArray) {
     return input;
   }
   if (input instanceof Uint8ClampedArray) {
-    const copy = new Uint8Array(input.byteLength);
-    copy.set(input);
-    return copy;
+    return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
   }
   return new Uint8Array(input);
 }
@@ -288,13 +286,14 @@ function quantizePngToPng(imageData: ImageData, settings: WorkerCompressMessage[
   const Imagequant = imagequantModule.Imagequant;
   const ImagequantImage = imagequantModule.ImagequantImage;
   const quantizer = new Imagequant();
-  let image: InstanceType<ImagequantImageConstructor> | null = null;
   try {
     const safeMin = clampInteger(settings.pngQuality?.min, 65, 1, 100);
     const safeMax = Math.max(safeMin, clampInteger(settings.pngQuality?.max, 80, 1, 100));
     quantizer.set_quality(safeMin, safeMax);
     quantizer.set_speed(6);
-    image = new ImagequantImage(toUint8Array(imageData.data), imageData.width, imageData.height, 0);
+    const image = new ImagequantImage(toUint8Array(imageData.data), imageData.width, imageData.height, 0);
+    // imagequant process() consumes the wrapper through __destroy_into_raw().
+    // Calling image.free() afterwards throws "null pointer passed to rust".
     return quantizer.process(image);
   } catch (error) {
     if (isImagequantQualityError(error)) {
@@ -302,11 +301,6 @@ function quantizePngToPng(imageData: ImageData, settings: WorkerCompressMessage[
     }
     throw error;
   } finally {
-    try {
-      image?.free?.();
-    } catch (error) {
-      console.warn("[CompressionWorker]", "Imagequant image cleanup failed:", error);
-    }
     try {
       quantizer.free();
     } catch (error) {

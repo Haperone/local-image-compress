@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Сжимает PNG- и JPEG-файлы в хранилище Obsidian на компьютере, локально без облаков и API. Позволяет экономить 30–70% дискового пространства, занятого изображениями, без потери качества.
+Сжимает PNG- и JPEG-файлы в хранилище Obsidian на компьютере и на мобильных устройствах, локально без облаков и API. Позволяет экономить 30–70% дискового пространства, занятого изображениями, без потери качества.
+
+На телефонах и планшетах плагин работает с мобильными ограничениями: один worker сжатия и входные файлы до 25 МБ / 50 мегапикселей; более крупные файлы пропускаются с понятной причиной. Открытие папок бэкапов в системном проводнике доступно только на компьютере.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF и AVIF в этом релизе намеренно п
 
 Минимальные размеры для сжатия: очень маленькие файлы обычно пропускаются (`<5KB` для PNG и `<10KB` для JPEG).
 
-Внутренние лимиты безопасности фиксированы: файлы больше `100 МБ` пропускаются до чтения, изображения выше `100 млн` пикселей пропускаются после проверки заголовка.
+Контракт платформ задан явно: desktop принимает входные файлы до `100 MB / 100 MP`; mobile — до `25 MB / 50 MP` и использует один worker сжатия. Более крупные входные данные пропускаются до полной обработки.
 
 ### Хранение данных и резервные копии
 - **Основной кэш:** хранится в папке плагина.
 - **Резервные копии кэша:** `Vault/.local-image-compress/backups/cache/`; хранится не более 50 файлов.
 - **Резервные копии изображений:** `Vault/.local-image-compress/backups/originals/`; создаются перед заменой оригиналов.
+- **Восстановление кэша (`restore parity`):** резервные копии кэша можно восстановить на desktop и mobile. Только открытие папки в системном проводнике остаётся desktop-only.
+- **Восстановление миграции (`durable migration journal`):** перед помещением старых данных в карантин плагин записывает метаданные восстановления; при запуске незавершённая миграция согласуется без тихого удаления конфликтующих байтов.
 
 ### Автоматизация
 - При включении «Автоматического фонового сжатия» становятся доступны два ползунка:

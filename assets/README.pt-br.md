@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Comprima arquivos PNG e JPEG diretamente no seu cofre do Obsidian no computador, sem serviços de nuvem nem APIs. Reduza em 30–70% o espaço usado pelas imagens sem sacrificar a qualidade.
+Comprima arquivos PNG e JPEG diretamente no seu cofre do Obsidian, no computador e em dispositivos móveis, sem serviços de nuvem nem APIs. Reduza em 30–70% o espaço usado pelas imagens sem sacrificar a qualidade.
+
+Em celulares e tablets, o plugin funciona com limites seguros para dispositivos móveis: um único worker de compressão e arquivos de entrada de até 25 MB / 50 megapixels; arquivos maiores são ignorados com um motivo claro. Abrir as pastas de backup no gerenciador de arquivos do sistema continua disponível apenas no desktop.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF e AVIF são ignorados intencionalmente nesta versão p
 
 Arquivos muito pequenos geralmente são ignorados (`<5KB` para PNG e `<10KB` para JPEG).
 
-Os limites internos de segurança são fixos: arquivos maiores que `100 MB` são ignorados antes da leitura, e imagens acima de `100 milhões` de pixels após a validação do cabeçalho.
+O contrato por plataforma é explícito: o desktop aceita entradas de até `100 MB / 100 MP`; o mobile aceita até `25 MB / 50 MP` e usa um único worker de compressão. Entradas maiores são ignoradas antes do processamento completo.
 
 ### Armazenamento de dados e backups
 - **Cache principal:** armazenado na pasta do plugin.
 - **Backups do cache:** armazenados em `Vault/.local-image-compress/backups/cache/`; até 50 arquivos são mantidos.
 - **Backups das imagens:** armazenados em `Vault/.local-image-compress/backups/originals/`; criados antes da substituição dos originais.
+- **Restauração do cache (`restore parity`):** os backups do cache podem ser restaurados no desktop e no mobile. Apenas abrir a pasta no gerenciador de arquivos do sistema continua exclusivo do desktop.
+- **Recuperação de migração (`durable migration journal`):** antes de colocar dados antigos em quarentena, o plugin grava metadados de recuperação; na inicialização reconcilia migrações interrompidas sem excluir silenciosamente bytes conflitantes.
 
 ### Automação
 - Ativar “Compressão em segundo plano” disponibiliza dois controles deslizantes:

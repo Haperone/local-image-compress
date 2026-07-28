@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Comprimeer PNG- en JPEG-bestanden rechtstreeks in je Obsidian-kluis op je computer, zonder cloudservices of API's. Verminder de schijfruimte voor afbeeldingen met 30–70% zonder kwaliteitsverlies.
+Comprimeer PNG- en JPEG-bestanden rechtstreeks in je Obsidian-kluis op je computer en op mobiele apparaten, zonder cloudservices of API's. Verminder de schijfruimte voor afbeeldingen met 30–70% zonder kwaliteitsverlies.
+
+Op telefoons en tablets draait de plugin met mobielveilige limieten: één compressie-worker en invoerbestanden tot 25 MB / 50 megapixels; grotere bestanden worden overgeslagen met een duidelijke reden. Het openen van back-upmappen in de bestandsbeheerder van het systeem blijft alleen op desktop beschikbaar.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF en AVIF worden in deze release bewust overgeslagen, om
 
 Zeer kleine bestanden worden meestal overgeslagen (`<5KB` voor PNG en `<10KB` voor JPEG).
 
-De interne veiligheidslimieten staan vast: bestanden groter dan `100 MB` worden vóór het lezen overgeslagen en afbeeldingen boven `100 miljoen` pixels na validatie van de header.
+Het platformcontract is expliciet: desktop accepteert invoer tot `100 MB / 100 MP`; mobiel accepteert tot `25 MB / 50 MP` en gebruikt één compressie-worker. Grotere invoer wordt vóór volledige verwerking overgeslagen.
 
 ### Gegevensopslag en back-ups
 - **Primaire cache:** opgeslagen in de pluginmap.
 - **Cacheback-ups:** opgeslagen in `Vault/.local-image-compress/backups/cache/`; maximaal 50 bestanden blijven bewaard.
 - **Afbeeldingsback-ups:** opgeslagen in `Vault/.local-image-compress/backups/originals/`; gemaakt voordat originelen worden vervangen.
+- **Cacheherstel (`restore parity`):** cacheback-ups kunnen op desktop en mobiel worden hersteld. Alleen het openen van de back-upmap in de systeembestandsbeheerder is desktop-only.
+- **Migratieherstel (`durable migration journal`):** voordat oudere gegevens in quarantaine gaan, schrijft de plugin herstelmetadata; bij het opstarten worden onderbroken migraties verzoend zonder conflicterende bytes stilzwijgend te verwijderen.
 
 ### Automatisering
 - Bij 'Achtergrondcompressie' worden twee schuifregelaars beschikbaar:

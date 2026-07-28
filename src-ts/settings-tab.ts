@@ -1,18 +1,77 @@
 import * as obsidian from "obsidian";
-import * as fs from "fs";
+import type { BackupStoragePaths } from "./backup-storage";
 import { t } from "./i18n";
-import { getActiveDocumentForApp, getActiveWindowForApp, getLogTag, getPluginName, isValidOutputFolder, normalizeOutputFolder, openFilesystemPath } from "./utils";
-import type LocalImageCompressPlugin from "./plugin";
+import type { PlatformPorts } from "./platform";
+import type { LocalImageCompressSettings } from "./settings";
+import { getActiveDocumentForApp, getActiveWindowForApp, getLogTag, getPluginName, isValidOutputFolder, normalizeOutputFolder } from "./utils";
 import type { SavingsSnapshot, StatsSnapshot, TimerHandle } from "./types";
 
+type ManagedModal = { close: () => void };
+
+export interface FolderSuggestModalHost {
+  app: obsidian.App;
+  captureModalFocusTarget(): HTMLElement | null;
+  restoreModalFocus(target: HTMLElement | null | undefined): void;
+  untrackManagedModal(modal: ManagedModal): void;
+}
+
+export interface SettingsTabHost extends obsidian.Plugin, FolderSuggestModalHost {
+  settings: LocalImageCompressSettings;
+  backgroundCompressionService: {
+    AUTO_BACKGROUND_THRESHOLD: number;
+    USER_INACTIVITY_THRESHOLD: number;
+  };
+  cache: {
+    clearCache(): Promise<boolean>;
+    getAvailableBackups(): Promise<string[]>;
+    restoreFromBackup(backupFileName: string): Promise<boolean>;
+  };
+  compressor: {
+    getWasmInitError?(): unknown;
+  };
+  moveService: {
+    moveCompressedToFiles(): Promise<void>;
+  };
+  savingsCalculator: {
+    calculateSpaceSavings(): Promise<SavingsSnapshot>;
+    validateSavingsData(savings: unknown): savings is SavingsSnapshot;
+    formatTooltipData(savings: SavingsSnapshot | null | undefined): {
+      originalFormatted: string;
+      currentFormatted: string;
+      savedFormatted: string;
+      estimatedIndicator: string;
+      estimatedText: string;
+    };
+  };
+  statusBarController: {
+    update(): Promise<void>;
+  };
+  clearOriginalFilesBackups(): Promise<void>;
+  forceRefreshCache(): Promise<void>;
+  getBackupStoragePaths(): BackupStoragePaths;
+  getOutputFolder(): string;
+  getPlatformPorts(): PlatformPorts;
+  getStatsSnapshot(): Promise<StatsSnapshot>;
+  rebuildImageIndex(reason?: string): Promise<void>;
+  saveSettings(): Promise<void>;
+  showCacheBackupsList(): Promise<void>;
+  trackManagedModal<T extends ManagedModal>(modal: T): T;
+}
+
+type OwnedAnimationFrame = {
+  ownerWindow: Window;
+  handle: number;
+  isAnimationFrame: boolean;
+};
+
 class AllowedRootsFolderSuggestModal extends obsidian.FuzzySuggestModal<string> {
-  private readonly plugin: LocalImageCompressPlugin;
+  private readonly plugin: FolderSuggestModalHost;
   private readonly items: string[];
   private readonly appRef: obsidian.App;
   private readonly onChooseCb: (item: string) => void | Promise<void>;
   private readonly returnFocusTo: HTMLElement | null;
 
-  constructor(plugin: LocalImageCompressPlugin, items: string[], onChoose: (item: string) => void | Promise<void>) {
+  constructor(plugin: FolderSuggestModalHost, items: string[], onChoose: (item: string) => void | Promise<void>) {
     super(plugin.app);
     this.plugin = plugin;
     this.appRef = plugin.app;
@@ -38,10 +97,13 @@ class AllowedRootsFolderSuggestModal extends obsidian.FuzzySuggestModal<string> 
 }
 
 export class SettingsTab extends obsidian.PluginSettingTab {
-  plugin: LocalImageCompressPlugin;
+  plugin: SettingsTabHost;
   private _isVisible: boolean;
   private _isRendering: boolean;
   private _pendingRerender: boolean;
+  private _isDisposed: boolean;
+  private _renderGeneration: number;
+  private readonly _ownedAnimationFrames: Set<OwnedAnimationFrame>;
   _renderRootsCleanups: Array<() => void>;
   _savingsTooltipCleanups: Array<() => void>;
   _savingsTooltipDocuments: Set<Document>;
@@ -54,12 +116,15 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   saveSettingsDebounceWindow: Window | null;
   updateStats!: () => Promise<void>;
 
-  constructor(app: obsidian.App, plugin: LocalImageCompressPlugin) {
+  constructor(app: obsidian.App, plugin: SettingsTabHost) {
     super(app, plugin);
     this.plugin = plugin;
     this._isVisible = false;
     this._isRendering = false;
     this._pendingRerender = false;
+    this._isDisposed = false;
+    this._renderGeneration = 0;
+    this._ownedAnimationFrames = new Set();
     this._renderRootsCleanups = [];
     this._savingsTooltipCleanups = [];
     this._savingsTooltipDocuments = new Set();
@@ -72,7 +137,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     this.saveSettingsDebounceWindow = null;
   }
   requestRerenderAfterCurrentRender() {
-    if (!this._isRendering) {
+    if (this._isDisposed || !this._isRendering) {
       return false;
     }
     this._pendingRerender = true;
@@ -93,6 +158,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     });
   }
   rerenderPreservingScroll() {
+    if (this._isDisposed) {
+      return;
+    }
     try {
       const { containerEl } = this;
       if (!containerEl) {
@@ -101,6 +169,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       }
       const prevScroll = containerEl.scrollTop || 0;
       const active = this.getActiveDocument().activeElement;
+      const ownerWindow = containerEl.win || this.getActiveWindow();
       const restore = () => {
         try {
           containerEl.scrollTop = prevScroll;
@@ -110,13 +179,15 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         }
       };
       this.requestWindowAnimationFrame(() => {
-        this.renderSettings()
-          .then(() => this.requestWindowAnimationFrame(restore))
+        const renderPromise = this.renderSettings();
+        const renderGeneration = this._renderGeneration;
+        renderPromise
+          .then(() => this.requestWindowAnimationFrame(restore, ownerWindow, renderGeneration, containerEl))
           .catch((error) => {
             console.error(getLogTag(this), "Settings re-render failed:", error);
-            this.requestWindowAnimationFrame(restore);
+            this.requestWindowAnimationFrame(restore, ownerWindow, renderGeneration, containerEl);
           });
-      });
+      }, ownerWindow);
     } catch (error) {
       console.error(getLogTag(this), "Settings re-render setup failed:", error);
       this.displayWithoutScrollRestore("Settings fallback render failed:");
@@ -188,15 +259,21 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, noticeKey)}`);
   }
   async runButtonTask(button: obsidian.ButtonComponent, idleKey: string, loadingKey: string, task: () => Promise<void>, errorContext = "Settings button action failed:", noticeKey = "notice.operationFailed") {
+    const renderGeneration = this._renderGeneration;
+    const renderContainer = this.containerEl;
     button.setDisabled(true);
     button.setButtonText(t(this.plugin.app, loadingKey));
     try {
       await task();
     } catch (error) {
-      this.showSettingsOperationError(error, errorContext, noticeKey);
+      if (this.isRenderCurrent(renderGeneration, renderContainer)) {
+        this.showSettingsOperationError(error, errorContext, noticeKey);
+      }
     } finally {
-      button.setButtonText(t(this.plugin.app, idleKey));
-      button.setDisabled(false);
+      if (this.isRenderCurrent(renderGeneration, renderContainer)) {
+        button.setButtonText(t(this.plugin.app, idleKey));
+        button.setDisabled(false);
+      }
     }
   }
   applySubsettingVisibility(visible: boolean, ...rows: obsidian.Setting[]) {
@@ -224,12 +301,51 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     }
     this._renderRootsCleanups = [];
   }
-  requestWindowAnimationFrame(callback: FrameRequestCallback | (() => void)) {
-    const ownerWindow = this.containerEl?.win || this.getActiveWindow();
-    if (ownerWindow.requestAnimationFrame) {
-      return ownerWindow.requestAnimationFrame(callback);
+  requestWindowAnimationFrame(
+    callback: FrameRequestCallback | (() => void),
+    ownerWindow: Window = this.containerEl?.win || this.getActiveWindow(),
+    renderGeneration = this._renderGeneration,
+    renderContainer = this.containerEl
+  ): OwnedAnimationFrame | null {
+    if (!this.isRenderCurrent(renderGeneration, renderContainer)) {
+      return null;
     }
-    return this.setWindowTimeout(callback, 0, ownerWindow);
+    const isAnimationFrame = typeof ownerWindow.requestAnimationFrame === "function";
+    let completedSynchronously = false;
+    let ownedFrame: OwnedAnimationFrame | null = null;
+    const run = (timestamp: number) => {
+      completedSynchronously = true;
+      if (ownedFrame) {
+        this._ownedAnimationFrames.delete(ownedFrame);
+      }
+      if (!this.isRenderCurrent(renderGeneration, renderContainer)) {
+        return;
+      }
+      callback(timestamp);
+    };
+    const handle = isAnimationFrame
+      ? ownerWindow.requestAnimationFrame(run)
+      : ownerWindow.setTimeout(() => run(ownerWindow.performance?.now?.() || 0), 0);
+    if (!completedSynchronously) {
+      ownedFrame = { ownerWindow, handle, isAnimationFrame };
+      this._ownedAnimationFrames.add(ownedFrame);
+    }
+    return ownedFrame;
+  }
+  private cancelOwnedAnimationFrame(frame: OwnedAnimationFrame | null) {
+    if (!frame || !this._ownedAnimationFrames.delete(frame)) {
+      return;
+    }
+    if (frame.isAnimationFrame) {
+      frame.ownerWindow.cancelAnimationFrame?.(frame.handle);
+    } else {
+      frame.ownerWindow.clearTimeout(frame.handle);
+    }
+  }
+  private cancelOwnedAnimationFrames() {
+    for (const frame of Array.from(this._ownedAnimationFrames)) {
+      this.cancelOwnedAnimationFrame(frame);
+    }
   }
   normalizeAllowedRootSelection(chosen: string) {
     if (chosen === "" || chosen === "/") {
@@ -275,9 +391,12 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     notesList.createEl("li", { text: t(this.plugin.app, "instructions.notes.originalUnchanged") });
     notesList.createEl("li", { text: t(this.plugin.app, "instructions.notes.recompressionSkipped") });
   }
+  private isRenderCurrent(generation: number, containerEl: HTMLElement) {
+    return !this._isDisposed && this._renderGeneration === generation && this.containerEl === containerEl;
+  }
   finishRender() {
     this._isRendering = false;
-    if (this._pendingRerender) {
+    if (this._pendingRerender && !this._isDisposed && this._isVisible) {
       this._pendingRerender = false;
       this.requestWindowAnimationFrame(() => {
         this.renderSettings().catch((error) => {
@@ -319,6 +438,10 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   }
   dispose() {
     this._isVisible = false;
+    this._isDisposed = true;
+    this._renderGeneration++;
+    this._pendingRerender = false;
+    this.cancelOwnedAnimationFrames();
     this.flushPendingSaveSettings();
     this.cleanupRenderRoots();
     this.cleanupSavingsTooltips();
@@ -347,6 +470,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   }
   // Obsidian invokes this legacy hook synchronously; async work is exposed separately.
   override display(): void {
+    this._isDisposed = false;
     this._isVisible = true;
     this.renderSettings().catch((error) => {
       console.warn(getLogTag(this), "Settings render failed:", error);
@@ -366,12 +490,16 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     await this.renderSettings();
   }
   async renderSettings() {
+    if (this._isDisposed) {
+      return;
+    }
     if (this._isRendering) {
       // If already rendering, mark that a subsequent pass is required
       this._pendingRerender = true;
       return;
     }
     this._isRendering = true;
+    const renderGeneration = ++this._renderGeneration;
     try {
     const { containerEl } = this;
     this.cleanupRenderRoots();
@@ -385,14 +513,39 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     this.compressedFilesCountElement = null;
     this.savingsHostElement = null;
     const statsSnapshot = await this.plugin.getStatsSnapshot();
+    if (!this.isRenderCurrent(renderGeneration, containerEl)) {
+      return;
+    }
     this.currentStatsSnapshot = statsSnapshot;
     
     // Function to update statistics
     this.updateStats = async () => {
       const stats = await this.plugin.getStatsSnapshot();
+      if (!this.isRenderCurrent(renderGeneration, containerEl)) {
+        return;
+      }
       await this.applyStatsSnapshot(stats);
     };
     
+    await this.renderHeaderIndicators(containerEl, statsSnapshot);
+    if (!this.isRenderCurrent(renderGeneration, containerEl)) {
+      return;
+    }
+    this.renderQualitySection(containerEl);
+    this.renderPathsSection(containerEl, renderGeneration);
+    this.renderAutomationSection(containerEl, renderGeneration);
+    this.renderStatsSection(containerEl, statsSnapshot);
+    this.renderMoveSection(containerEl, statsSnapshot);
+    await this.renderCacheBackupsSection(containerEl, renderGeneration);
+    if (!this.isRenderCurrent(renderGeneration, containerEl)) {
+      return;
+    }
+    this.renderInstructions(containerEl);
+    } finally {
+      this.finishRender();
+    }
+  }
+  async renderHeaderIndicators(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
     // Global warning if WASM modules are not available
     const wasmInitError = this.plugin.compressor.getWasmInitError?.();
     if (wasmInitError) {
@@ -402,10 +555,8 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     // Add space savings indicator
     this.savingsHostElement = containerEl.createDiv({ cls: "tiny-local-savings-host" });
     await this.renderSavingsIndicator(this.savingsHostElement, statsSnapshot.savings);
-    
-    // ========================================================================
-    // COMPRESSION QUALITY
-    // ========================================================================
+  }
+  renderQualitySection(containerEl: HTMLElement) {
     this.renderSection(containerEl, "section.quality");
     new obsidian.Setting(containerEl).setName(t(this.plugin.app, "quality.png.name")).setDesc(t(this.plugin.app, "quality.png.desc")).addText((text) => text.setPlaceholder("65-80").setValue(`${this.plugin.settings.pngQuality.min}-${this.plugin.settings.pngQuality.max}`).onChange((value) => {
       const parts = value.split("-");
@@ -431,10 +582,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
 
     // Button: open image backups folder
     // Removed from "Cache backups" section — moved to "Move compressed files"
-
-    // ========================================================================
-    // PATH SETTINGS
-    // ========================================================================
+  }
+  renderPathsSection(containerEl: HTMLElement, renderGeneration = this._renderGeneration) {
+    const isCurrent = () => this.isRenderCurrent(renderGeneration, containerEl);
     this.renderSection(containerEl, "section.paths");
     // Allowed roots: choose from folder list with autocomplete (modal)
     const rootsSetting = new obsidian.Setting(containerEl)
@@ -444,6 +594,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     const rootsListEl = rootsSetting.controlEl.createDiv({ cls: "tiny-local-roots-list" });
 
     const renderRoots = () => {
+      if (!isCurrent()) {
+        return;
+      }
       this.cleanupRenderRoots();
       rootsListEl.empty();
       if (!Array.isArray(this.plugin.settings.allowedRoots) || this.plugin.settings.allowedRoots.length === 0) {
@@ -451,16 +604,25 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         return;
       }
       const list = rootsListEl.createDiv();
-      this.plugin.settings.allowedRoots.forEach((root: string, idx: number) => {
+      this.plugin.settings.allowedRoots.forEach((root: string) => {
         const removeLabel = t(this.plugin.app, "paths.allowedRoots.pill.remove");
         const pill = list.createEl("button", { text: root, cls: "badge tiny-local-roots-pill" });
         pill.type = "button";
         pill.title = removeLabel;
         pill.setAttribute("aria-label", `${removeLabel}: ${root}`);
         const removeRoot = () => {
-          this.plugin.settings.allowedRoots.splice(idx, 1);
+          // Look up by value at click time: a render-captured index goes stale when two pills are removed before the re-render.
+          const rootIndex = this.plugin.settings.allowedRoots.indexOf(root);
+          if (rootIndex === -1) {
+            return;
+          }
+          this.plugin.settings.allowedRoots.splice(rootIndex, 1);
           this.plugin.saveSettings()
-            .then(() => renderRoots())
+            .then(() => {
+              if (isCurrent()) {
+                renderRoots();
+              }
+            })
             .catch((error: unknown) => {
               console.error(getLogTag(this), "Allowed root removal failed:", error);
             });
@@ -485,7 +647,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
           if (!this.plugin.settings.allowedRoots.includes(normalized)) {
             this.plugin.settings.allowedRoots.push(normalized);
             await this.plugin.saveSettings();
-            renderRoots();
+            if (isCurrent()) {
+              renderRoots();
+            }
           }
         }));
         modal.open();
@@ -494,7 +658,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       btn.setIcon("trash").setTooltip(t(this.plugin.app, "paths.allowedRoots.clear")).onClick(async () => {
         this.plugin.settings.allowedRoots = [];
         await this.plugin.saveSettings();
-        renderRoots();
+        if (isCurrent()) {
+          renderRoots();
+        }
       })
     );
 
@@ -519,9 +685,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       this.debouncedSaveSettings();
     }));
     
-    // ========================================================================
-    // AUTOMATION
-    // ========================================================================
+  }
+  renderAutomationSection(containerEl: HTMLElement, renderGeneration = this._renderGeneration) {
+    const isCurrent = () => this.isRenderCurrent(renderGeneration, containerEl);
     this.renderSection(containerEl, "section.automation");
     new obsidian.Setting(containerEl).setName(t(this.plugin.app, "auto.newFiles.name")).setDesc(t(this.plugin.app, "auto.newFiles.desc")).addToggle((toggle) => toggle.setValue(this.plugin.settings.autoCompressNewFiles).onChange(async (value) => {
       this.plugin.settings.autoCompressNewFiles = value;
@@ -532,7 +698,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     bgSetting.addToggle((toggle) => toggle.setValue(this.plugin.settings.autoBackgroundCompression).onChange(async (value) => {
       this.plugin.settings.autoBackgroundCompression = value;
       await this.plugin.saveSettings();
-      this.applySubsettingVisibility(value, thresholdRow, inactivityRow);
+      if (isCurrent()) {
+        this.applySubsettingVisibility(value, thresholdRow, inactivityRow);
+      }
     }));
     const thresholdRow = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "auto.bg.threshold.name")).setDesc(t(this.plugin.app, "auto.bg.threshold.desc"));
     thresholdRow.addSlider((slider) => slider
@@ -564,7 +732,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     retentionToggle.addToggle((toggle) => toggle.setValue(this.plugin.settings.autoBackupsRetentionEnabled).onChange(async (value) => {
       this.plugin.settings.autoBackupsRetentionEnabled = value;
       await this.plugin.saveSettings();
-      this.applySubsettingVisibility(value, retentionRow);
+      if (isCurrent()) {
+        this.applySubsettingVisibility(value, retentionRow);
+      }
     }));
     const retentionRow = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "auto.retention.days.name")).setDesc(t(this.plugin.app, "auto.retention.days.desc"));
     retentionRow.addSlider((slider) => slider
@@ -583,7 +753,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     autoMoveToggle.addToggle((toggle) => toggle.setValue(this.plugin.settings.autoMoveCompressedEnabled).onChange(async (value) => {
       this.plugin.settings.autoMoveCompressedEnabled = value;
       await this.plugin.saveSettings();
-      this.applySubsettingVisibility(value, autoMoveRow);
+      if (isCurrent()) {
+        this.applySubsettingVisibility(value, autoMoveRow);
+      }
     }));
     const autoMoveRow = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "auto.move.threshold.name")).setDesc(t(this.plugin.app, "auto.move.threshold.desc"));
     autoMoveRow.addSlider((slider) => slider
@@ -596,9 +768,8 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       })
     );
     this.applySubsettingVisibility(this.plugin.settings.autoMoveCompressedEnabled, autoMoveRow);
-    // ========================================================================
-    // STATISTICS & CACHE
-    // ========================================================================
+  }
+  renderStatsSection(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
     this.renderSection(containerEl, "section.stats");
     const uncompressedSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.uncompressed.name")).setDesc(`${t(this.plugin.app, "stats.uncompressed.ready")}: ${statsSnapshot.uncompressedImages}`);
     this.uncompressedStatsElement = uncompressedSetting.descEl;
@@ -606,7 +777,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       await this.runButtonTask(button, "common.refresh", "common.refreshing", async () => {
         await this.plugin.forceRefreshCache();
         await this.updateStats();
-        new obsidian.Notice(`${getPluginName(this)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
+        new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
       });
     }));
     const cacheStats = statsSnapshot.cacheStats;
@@ -614,22 +785,23 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     this.cacheStatsElement = cacheSetting.descEl;
     cacheSetting.addButton((button) => this.setDestructiveButton(button).setButtonText(t(this.plugin.app, "common.clearCache")).onClick(async () => {
       await this.runButtonTask(button, "common.clearCache", "common.clearing", async () => {
-        await this.plugin.cache.clearCache();
+        if (!await this.plugin.cache.clearCache()) {
+          throw new Error("Cache clear was not durably committed");
+        }
         await this.plugin.rebuildImageIndex("cache-clear");
         await this.plugin.statusBarController.update();
         await this.updateStats();
-        new obsidian.Notice(`${getPluginName(this)}: ${t(this.plugin.app, "notice.cacheCleared")}`);
+        new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "notice.cacheCleared")}`);
       });
     })).addButton((button) => button.setButtonText(t(this.plugin.app, "common.refreshCache")).onClick(async () => {
       await this.runButtonTask(button, "common.refreshCache", "common.refreshing", async () => {
         await this.plugin.forceRefreshCache();
         await this.updateStats();
-        new obsidian.Notice(`${getPluginName(this)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
+        new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
       });
     }));
-    // ========================================================================
-    // AUTO MOVE
-    // ========================================================================
+  }
+  renderMoveSection(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
     this.renderSection(containerEl, "section.move");
     
     // Button: move compressed files
@@ -650,79 +822,88 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       }, "Clear image backups action failed:", "backups.imagesFolder.clearError");
     }));
 
-    // Button: open image backups folder
-    new obsidian.Setting(containerEl)
-      .setName(t(this.plugin.app, "backups.imagesFolder.name"))
-      .setDesc(t(this.plugin.app, "backups.imagesFolder.desc"))
-      .addButton((button) => button
-        .setButtonText(t(this.plugin.app, "backups.imagesFolder.openButton"))
-        .onClick(async () => {
-          try {
-            const dir = this.plugin.getBackupStoragePaths().originalFilesBackups;
-            await fs.promises.mkdir(dir, { recursive: true });
-            const err = await openFilesystemPath(dir);
-            if (err) {
-              console.error(getLogTag(this), 'Error opening image backups folder:', err);
-              new obsidian.Notice(`${getPluginName(this)}: ${t(this.plugin.app, "backups.imagesFolder.openError")}`);
-            }
-          } catch (e) {
-            console.error(getLogTag(this), 'Error opening image backups folder:', e);
-            new obsidian.Notice(`${getPluginName(this)}: ${t(this.plugin.app, "backups.imagesFolder.openError")}`);
-          }
-        })
-      );
-    
-    // ========================================================================
-    // BACKUPS
-    // ========================================================================
-    this.renderSection(containerEl, "backups.cache.title");
-    const backups = await this.plugin.cache.getAvailableBackups();
-    if (backups.length === 0) {
-      new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.restore")).setDesc(t(this.plugin.app, "backups.cache.none")).setDisabled(true);
-    } else {
-      new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.restore")).setDesc(`${t(this.plugin.app, "backups.cache.available")} ${backups.length}`).addDropdown((dropdown) => {
-        dropdown.addOption("", t(this.plugin.app, "backups.cache.selectPlaceholder"));
-        backups.forEach((backup) => {
-          const date = backup.replace("tinyLocal-cache-backup-", "").replace(".json", "").replace(/-/g, ":").replace(/T/, " ");
-          dropdown.addOption(backup, date);
-        });
-        dropdown.onChange(async (value) => {
-          if (value) {
+    // Button: open image backups folder (desktop only — mobile has no OS file manager)
+    const revealPath = this.plugin.getPlatformPorts().runtime.revealPath;
+    if (revealPath) {
+      new obsidian.Setting(containerEl)
+        .setName(t(this.plugin.app, "backups.imagesFolder.name"))
+        .setDesc(t(this.plugin.app, "backups.imagesFolder.desc"))
+        .addButton((button) => button
+          .setButtonText(t(this.plugin.app, "backups.imagesFolder.openButton"))
+          .onClick(async () => {
             try {
-            const success = await this.plugin.cache.restoreFromBackup(value);
-            if (success) {
-              await this.plugin.rebuildImageIndex("cache-restore");
-              await this.plugin.statusBarController.update();
-              await this.updateStats();
-              new obsidian.Notice(`${getPluginName(this)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
-            } else {
-              new obsidian.Notice(`${getPluginName(this)}: ${t(this.plugin.app, "notice.cacheCleared")}`);
+              const dir = this.plugin.getBackupStoragePaths().originalFilesBackups;
+              await this.plugin.getPlatformPorts().fs.mkdir(dir);
+              const err = await revealPath(dir);
+              if (err) {
+                console.error(getLogTag(this), 'Error opening image backups folder:', err);
+                new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "backups.imagesFolder.openError")}`);
+              }
+            } catch (e) {
+              console.error(getLogTag(this), 'Error opening image backups folder:', e);
+              new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "backups.imagesFolder.openError")}`);
             }
-            } catch (error) {
-              this.showSettingsOperationError(error, "Cache restore action failed:");
+          })
+        );
+    }
+
+  }
+  async renderCacheBackupsSection(containerEl: HTMLElement, renderGeneration: number | null = null) {
+    const isCurrent = () => renderGeneration === null || this.isRenderCurrent(renderGeneration, containerEl);
+    if (!isCurrent()) {
+      return;
+    }
+    this.renderSection(containerEl, "backups.cache.title");
+    const fsPort = this.plugin.getPlatformPorts().fs;
+    if (fsPort.restoreProbe || fsPort.processTextAtomically) {
+      const backups = await this.plugin.cache.getAvailableBackups();
+      if (!isCurrent()) {
+        return;
+      }
+      if (backups.length === 0) {
+        new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.restore")).setDesc(t(this.plugin.app, "backups.cache.none")).setDisabled(true);
+      } else {
+        new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.restore")).setDesc(`${t(this.plugin.app, "backups.cache.available")} ${backups.length}`).addDropdown((dropdown) => {
+          dropdown.addOption("", t(this.plugin.app, "backups.cache.selectPlaceholder"));
+          backups.forEach((backup) => {
+            const date = backup.replace("tinyLocal-cache-backup-", "").replace(".json", "").replace(/-/g, ":").replace(/T/, " ");
+            dropdown.addOption(backup, date);
+          });
+          dropdown.onChange(async (value) => {
+            if (value) {
+              try {
+                const success = await this.plugin.cache.restoreFromBackup(value);
+                if (!success) {
+                  throw new Error("Cache restore returned false");
+                }
+                await this.plugin.rebuildImageIndex("cache-restore");
+                await this.plugin.statusBarController.update();
+                await this.updateStats();
+                new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
+              } catch (error) {
+                this.showSettingsOperationError(error, "Cache restore action failed:");
+              }
             }
-          }
+          });
         });
-      });
+      }
     }
     new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.folder.name")).setDesc(t(this.plugin.app, "backups.cache.folder.desc")).addButton((button) => button.setButtonText(t(this.plugin.app, "backups.cache.folder.openButton")).onClick(async () => {
       await this.plugin.showCacheBackupsList();
     }));
 
     // (Moved to "Move compressed files" section)
-    
-    // ========================================================================
-    // INSTRUCTIONS
-    // ========================================================================
-    this.renderInstructions(containerEl);
-    } finally {
-      this.finishRender();
-    }
   }
   
   async renderSavingsIndicator(containerEl: HTMLElement, savings: SavingsSnapshot | null = null) {
+    const renderGeneration = this._renderGeneration;
+    const renderContainer = this.containerEl;
     try {
       savings = savings || await this.plugin.savingsCalculator.calculateSpaceSavings();
+
+      if (!this.isRenderCurrent(renderGeneration, renderContainer)) {
+        return;
+      }
 
       if (!this.plugin.savingsCalculator.validateSavingsData(savings)) {
         return; // Do not render if data is not valid
@@ -808,6 +989,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       let isTooltipActive = false;
       let showTimer: TimerHandle | null = null;
       let hideTimer: TimerHandle | null = null;
+      let positionFrame: OwnedAnimationFrame | null = null;
       const ownerWindow = container.win || this.getActiveWindow();
       const activeDocument = container.doc || ownerWindow.document || this.getActiveDocument();
       const tooltipRoot = activeDocument?.body;
@@ -841,6 +1023,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         tooltip = tooltipRoot.createDiv();
         tooltip.classList.add("tiny-local-savings-tooltip-wrapper");
         const tooltipContent = tooltip.createDiv({ cls: "tiny-local-savings-tooltip" });
+        tooltipContent.classList.add("tiny-local-savings-tooltip-placement-above");
         tooltipContent.id = "tiny-local-savings-tooltip";
         tooltipContent.setAttribute("role", "tooltip");
         container.setAttribute("aria-describedby", tooltipContent.id);
@@ -852,7 +1035,8 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         tooltipRoot.appendChild(tooltip);
         
         // Position tooltip after a frame to ensure proper sizes
-        this.requestWindowAnimationFrame(() => {
+        positionFrame = this.requestWindowAnimationFrame(() => {
+          positionFrame = null;
           if (!tooltip || !tooltipRoot.contains(tooltip)) return;
           
           const rect = container.getBoundingClientRect();
@@ -860,6 +1044,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
           
           let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
           let top = rect.top - tooltipRect.height - 10;
+          let placement: "above" | "below" = "above";
           
           // Ensure on-screen positioning
           const margin = 10;
@@ -870,18 +1055,28 @@ export class SettingsTab extends obsidian.PluginSettingTab {
           
           if (top < margin) {
             top = rect.bottom + margin;
+            placement = "below";
           }
           top = Math.max(margin, Math.min(top, maxTop));
+          const arrowPadding = 12;
+          const targetCenterX = rect.left + (rect.width / 2);
+          const maxArrowX = Math.max(arrowPadding, tooltipRect.width - arrowPadding);
+          const arrowX = Math.max(arrowPadding, Math.min(targetCenterX - left, maxArrowX));
+          tooltipContent.classList.remove("tiny-local-savings-tooltip-placement-above", "tiny-local-savings-tooltip-placement-below");
+          tooltipContent.classList.add(`tiny-local-savings-tooltip-placement-${placement}`);
           
           // dynamic position via CSS custom properties (static styles live in CSS)
           tooltip.setCssProps({
             "--local-image-compress-savings-tooltip-left": `${left}px`,
-            "--local-image-compress-savings-tooltip-top": `${top}px`
+            "--local-image-compress-savings-tooltip-top": `${top}px`,
+            "--local-image-compress-savings-tooltip-arrow-x": `${arrowX}px`
           });
-        });
+        }, ownerWindow);
       };
       
       const hideTooltip = () => {
+        this.cancelOwnedAnimationFrame(positionFrame);
+        positionFrame = null;
         if (tooltip && tooltipRoot.contains(tooltip)) {
           tooltipRoot.removeChild(tooltip);
         }
@@ -920,11 +1115,12 @@ export class SettingsTab extends obsidian.PluginSettingTab {
           hideTooltip();
         }
       };
-      this.plugin.registerDomEvent(container, 'mouseenter', onMouseEnter);
-      this.plugin.registerDomEvent(container, 'mouseleave', onMouseLeave);
-      this.plugin.registerDomEvent(container, 'focus', onFocus);
-      this.plugin.registerDomEvent(container, 'blur', onBlur);
-      this.plugin.registerDomEvent(container, 'keydown', onKeyDown);
+      // Render-scoped: dispose() owns this cleanup, so listeners do not accumulate on the plugin root component.
+      container.addEventListener('mouseenter', onMouseEnter);
+      container.addEventListener('mouseleave', onMouseLeave);
+      container.addEventListener('focus', onFocus);
+      container.addEventListener('blur', onBlur);
+      container.addEventListener('keydown', onKeyDown);
       this._savingsTooltipCleanups.push(() => {
         container.removeEventListener('mouseenter', onMouseEnter);
         container.removeEventListener('mouseleave', onMouseLeave);

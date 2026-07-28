@@ -20,26 +20,28 @@ export class ConcurrencyLimiter {
     }
     if (this.active >= this.limit) {
       await new Promise<void>((resolve) => this.queue.push(resolve));
+    } else {
+      this.active++;
     }
-    this.active++;
     try {
       return await task();
     } finally {
-      this.active--;
       this.releaseNext();
     }
   }
 
   private releaseNext() {
     const next = this.queue.shift();
-    if (!next) {
+    if (next) {
+      try {
+        next();
+      } catch (error) {
+        console.warn("[Local Image Compress] Failed to transfer a concurrency permit:", error);
+        this.releaseNext();
+      }
       return;
     }
-    Promise.resolve()
-      .then(next)
-      .catch(() => {
-        this.releaseNext();
-      });
+    this.active--;
   }
 
   private static isValidLimit(limit: number) {

@@ -13,6 +13,8 @@ Exact license texts copied from the pinned packages are tracked locally:
 - `licenses/jpeg-codec.txt` for the bundled libjpeg-turbo codec.
 - `licenses/png-codec.txt` for the bundled PNG codec.
 - `licenses/imagequant.txt` for `imagequant`/libimagequant.
+- `licenses/js-md5.txt` for the `js-md5` hash library.
+- `licenses/js-sha256.txt` for the `js-sha256` hash library.
 - `LICENSE` for this GPL-3.0-or-later distribution.
 
 `npm run test:release` verifies these copies byte-for-byte against the pinned
@@ -51,6 +53,17 @@ Exact texts: `licenses/Apache-2.0.txt` and `licenses/jpeg-codec.txt`.
   codec.
 
 Exact texts: `licenses/Apache-2.0.txt` and `licenses/png-codec.txt`.
+
+## js-md5 / js-sha256
+- Packages: `js-md5` (pinned `0.8.3`), `js-sha256` (pinned `0.11.1`)
+- Source: https://github.com/emn178/js-md5 and https://github.com/emn178/js-sha256
+- License: MIT
+
+Pure JavaScript hash implementations used by the mobile platform port, where
+Node `crypto` is unavailable. Cache fingerprints stay byte-identical across
+desktop (Node crypto) and mobile (these libraries).
+
+Exact texts: `licenses/js-md5.txt` and `licenses/js-sha256.txt`.
 
 ## imagequant / libimagequant integrity
 

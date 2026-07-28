@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { spawnSync } = require("child_process");
+const { assertProductionBundle } = require("./mobile-qa-bundle-contract");
 const { resolveRepositoryLayout } = require("./repository-layout");
 
 const { repositoryRoot: root, sourceRoot } = resolveRepositoryLayout();
@@ -24,6 +25,7 @@ function readProductionBundle() {
 const firstBundle = readProductionBundle();
 const firstHash = sha256(firstBundle);
 const firstText = firstBundle.toString("utf8");
+assertProductionBundle(firstText, "Production main.js");
 const lineCount = firstText.split(/\r?\n/).length;
 
 if (!firstText.startsWith("/* GENERATED/BUNDLED FILE.")) {
@@ -47,6 +49,7 @@ if (rebuild.status !== 0) {
 
 const secondBundle = readProductionBundle();
 const secondHash = sha256(secondBundle);
+assertProductionBundle(secondBundle.toString("utf8"), "Rebuilt production main.js");
 if (!firstBundle.equals(secondBundle)) {
   throw new Error(`Production build is not deterministic: ${firstHash} != ${secondHash}`);
 }

@@ -2,27 +2,33 @@
 
 const fs = require("fs");
 const path = require("path");
-const childProcess = require("child_process");
 const esbuild = require("esbuild");
+const { computeMobileQaSourceFingerprint } = require("./mobile-qa-fingerprint");
 const { resolveRepositoryLayout } = require("./repository-layout");
+const { runEsbuildCli } = require("./run-esbuild-cli");
 
-const { isDevLayout, sourceRoot: root } = resolveRepositoryLayout();
-const esbuildCli = require.resolve("esbuild/bin/esbuild");
+const { isDevLayout, repositoryRoot, sourceRoot: root } = resolveRepositoryLayout();
 const production = process.argv.includes("--production");
+const mobileQa = process.argv.includes("--qa");
+const forceCli = process.argv.includes("--force-cli");
+if (production && mobileQa) {
+  throw new Error("--production and --qa are mutually exclusive build profiles");
+}
+const outputDirectory = mobileQa ? path.join(repositoryRoot, "mobile-qa-build") : path.join(root, "dist-ts");
+const generatedWorkerPath = mobileQa ? null : path.join(outputDirectory, "compression-worker.js");
+const mainBundlePath = path.join(outputDirectory, "main.js");
+const minify = production || mobileQa;
 const sourceRepositoryUrl = isDevLayout
   ? "https://github.com/haperone/local-image-compress_DEV"
   : "https://github.com/haperone/local-image-compress";
-const generatedBanner = `/* GENERATED/BUNDLED FILE. Review source at ${sourceRepositoryUrl} */`;
+const generatedBanner = mobileQa
+  ? `/* GENERATED MOBILE QA BUNDLE. LIC_MOBILE_QA_BUILD_V1. Review source at ${sourceRepositoryUrl} */`
+  : `/* GENERATED/BUNDLED FILE. Review source at ${sourceRepositoryUrl} */`;
 
-function runEsbuildCli(args) {
-  childProcess.execFileSync(process.execPath, [esbuildCli, ...args], {
-    cwd: root,
-    stdio: "inherit"
-  });
-}
+const mobileQaSourceFingerprint = mobileQa ? computeMobileQaSourceFingerprint() : "production";
 
 function buildWithCliFallback() {
-  const tempDir = path.join(root, "dist-ts", ".build");
+  const tempDir = path.join(outputDirectory, ".build");
   const workerBundlePath = path.join(tempDir, "compression-worker.js");
   const workerSourceModulePath = path.join(tempDir, "compression-worker-source.js");
 
@@ -36,28 +42,38 @@ function buildWithCliFallback() {
       "--format=iife",
       "--loader:.wasm=binary",
       `--outfile=${workerBundlePath}`,
-      ...(production ? ["--minify"] : []),
+      ...(minify ? ["--minify"] : []),
       "--log-level=silent"
-    ]);
+    ], { cwd: root, stdio: "inherit" });
 
     const compressionWorkerSource = fs.readFileSync(workerBundlePath, "utf8");
+    if (generatedWorkerPath) {
+      fs.copyFileSync(workerBundlePath, generatedWorkerPath);
+    }
     fs.writeFileSync(workerSourceModulePath, `export default ${JSON.stringify(compressionWorkerSource)};\n`);
 
     runEsbuildCli([
       path.join("src-ts", "main.ts"),
       "--bundle",
-      "--platform=node",
+      "--platform=browser",
       "--target=es2020",
       "--format=cjs",
       "--loader:.wasm=binary",
       "--external:obsidian",
       "--external:electron",
+      "--external:buffer",
+      "--external:fs",
+      "--external:path",
+      "--external:crypto",
+      "--external:stream/promises",
       `--alias:virtual:compression-worker=./${path.relative(root, workerSourceModulePath).replace(/\\/g, "/")}`,
-      `--outfile=${path.join(root, "dist-ts", "main.js")}`,
+      `--outfile=${mainBundlePath}`,
       `--banner:js=${generatedBanner}`,
-      ...(production ? ["--minify"] : []),
+      `--define:__LIC_MOBILE_QA__=${mobileQa ? "true" : "false"}`,
+      `--define:__LIC_MOBILE_QA_FINGERPRINT__=${JSON.stringify(mobileQaSourceFingerprint)}`,
+      ...(minify ? ["--minify"] : []),
       "--log-level=info"
-    ]);
+    ], { cwd: root, stdio: "inherit" });
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -72,23 +88,31 @@ async function buildWithApi() {
     format: "iife",
     write: false,
     sourcemap: false,
-    minify: production,
+    minify,
     loader: {
       ".wasm": "binary"
     },
     logLevel: "silent"
   });
   const compressionWorkerSource = Buffer.from(workerResult.outputFiles[0].contents).toString("utf8");
+  if (generatedWorkerPath) {
+    fs.mkdirSync(path.dirname(generatedWorkerPath), { recursive: true });
+    fs.writeFileSync(generatedWorkerPath, compressionWorkerSource);
+  }
 
   await esbuild.build({
     entryPoints: [path.join(root, "src-ts", "main.ts")],
-    outfile: path.join(root, "dist-ts", "main.js"),
+    outfile: mainBundlePath,
     bundle: true,
-    platform: "node",
+    platform: "browser",
     target: "es2020",
     format: "cjs",
     sourcemap: false,
-    minify: production,
+    minify,
+    define: {
+      __LIC_MOBILE_QA__: mobileQa ? "true" : "false",
+      __LIC_MOBILE_QA_FINGERPRINT__: JSON.stringify(mobileQaSourceFingerprint)
+    },
     banner: {
       js: generatedBanner
     },
@@ -97,7 +121,12 @@ async function buildWithApi() {
     },
     external: [
       "obsidian",
-      "electron"
+      "electron",
+      "buffer",
+      "fs",
+      "path",
+      "crypto",
+      "stream/promises"
     ],
     plugins: [
       {
@@ -119,7 +148,15 @@ async function buildWithApi() {
 }
 
 async function main() {
-  process.stdout.write(`Building ${production ? "production minified" : "review"} bundle...\n`);
+  const profile = production ? "production minified" : mobileQa ? "mobile QA minified" : "review";
+  process.stdout.write(`Building ${profile} bundle...\n`);
+  if (mobileQa) {
+    process.stdout.write(`Mobile QA source fingerprint: ${mobileQaSourceFingerprint}\n`);
+  }
+  if (forceCli) {
+    buildWithCliFallback();
+    return;
+  }
   try {
     await buildWithApi();
   } catch (error) {

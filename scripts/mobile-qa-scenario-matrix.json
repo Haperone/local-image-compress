@@ -1,0 +1,370 @@
+{
+  "schemaVersion": 1,
+  "profiles": ["desktop", "android", "ios"],
+  "statuses": ["automated", "partial", "manual", "skip"],
+  "capabilities": [
+    "active-note",
+    "atomic-text-cache",
+    "backup-storage",
+    "background-compression",
+    "canvas-encoding",
+    "commands",
+    "context-menu",
+    "core-services",
+    "filesystem-restore-probe",
+    "folder-selector",
+    "image-index",
+    "localization",
+    "mobile-platform-ports",
+    "mobile-ribbon",
+    "mobile-touch-dom",
+    "move",
+    "new-file-events",
+    "popout-window",
+    "reveal-path",
+    "settings-dom",
+    "status-bar",
+    "wasm-codecs"
+  ],
+  "scenarios": [
+    {
+      "desktopCheck": "runtime: plugin services and commands are loaded",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["core-services", "commands", "image-index"],
+      "mutation": ["none"],
+      "fixtures": ["none"],
+      "cleanup": ["none"],
+      "portableScenario": "M01-runtime-readiness",
+      "manual": [],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "runtime: codec readiness and settings application",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["core-services", "wasm-codecs", "mobile-platform-ports"],
+      "mutation": ["reapply normalized runtime settings"],
+      "fixtures": ["none"],
+      "cleanup": ["restore the session settings snapshot"],
+      "portableScenario": "M02-mobile-ports-codecs-limits",
+      "manual": ["Repeat near the mobile memory limit on a physical device"],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "settings: DOM surface has every expected control family",
+      "classification": { "desktop": "automated", "android": "manual", "ios": "manual" },
+      "capabilities": ["settings-dom", "mobile-touch-dom"],
+      "mutation": ["open plugin settings"],
+      "fixtures": ["real settings surface"],
+      "cleanup": ["close plugin settings and owned tooltips"],
+      "portableScenario": "M03-mobile-settings-surface",
+      "manual": ["Open the real settings tab and verify every expected control family, scrolling, and the on-screen keyboard"],
+      "skipReasons": {
+        "android": "The portable runner verifies settings service readiness but does not inspect the real settings DOM.",
+        "ios": "The portable runner verifies settings service readiness but does not inspect the real settings DOM."
+      }
+    },
+    {
+      "desktopCheck": "localization: selected language reaches commands and settings",
+      "classification": { "desktop": "automated", "android": "partial", "ios": "partial" },
+      "capabilities": ["commands", "localization", "settings-dom"],
+      "mutation": ["open plugin settings"],
+      "fixtures": ["current Obsidian locale"],
+      "cleanup": ["close plugin settings"],
+      "portableScenario": "M03-mobile-settings-surface",
+      "manual": ["Verify translated command and settings labels plus truncation in portrait orientation"],
+      "skipReasons": {
+        "android": "The runner verifies the selected language value and command registration, not translated DOM text.",
+        "ios": "The runner verifies the selected language value and command registration, not translated DOM text."
+      }
+    },
+    {
+      "desktopCheck": "accessibility: theme variables, motion overrides, and popout ownership",
+      "classification": { "desktop": "automated", "android": "partial", "ios": "partial" },
+      "capabilities": ["settings-dom", "mobile-touch-dom", "popout-window"],
+      "mutation": ["temporarily switch theme classes", "open and close a desktop popout"],
+      "fixtures": ["settings tooltip", "mobile touch-target probe", "desktop popout"],
+      "cleanup": ["restore theme classes", "remove touch probe", "detach desktop popout"],
+      "portableScenario": "M03-mobile-settings-surface",
+      "manual": ["Verify touch targets, rotation, scrolling, and reduced-motion behavior on-device"],
+      "skipReasons": {
+        "android": "M12 verifies ribbon registration, visible menu touch targets, and action dispatch; collapsed-ribbon touch, settings theme, motion, contrast, and popout ownership remain manual.",
+        "ios": "M12 verifies ribbon registration, visible menu touch targets, and action dispatch; collapsed-ribbon touch, settings theme, motion, contrast, and popout ownership remain manual."
+      }
+    },
+    {
+      "desktopCheck": "settings: text inputs and sliders update runtime settings",
+      "classification": { "desktop": "automated", "android": "manual", "ios": "manual" },
+      "capabilities": ["settings-dom"],
+      "mutation": ["PNG/JPEG quality", "output folder", "automation thresholds", "retention settings"],
+      "fixtures": ["session-owned output folder"],
+      "cleanup": ["restore the session settings baseline in a local finally"],
+      "portableScenario": "M04-mobile-settings-mutations",
+      "manual": ["Verify every text/slider control changes runtime settings, including dragging and keyboard input"],
+      "skipReasons": {
+        "android": "M04 verifies isolated settings values, but no settings input or slider events are dispatched.",
+        "ios": "M04 verifies isolated settings values, but no settings input or slider events are dispatched."
+      }
+    },
+    {
+      "desktopCheck": "settings: toggles update runtime settings",
+      "classification": { "desktop": "automated", "android": "manual", "ios": "manual" },
+      "capabilities": ["settings-dom"],
+      "mutation": ["auto-compress", "background compression", "backup retention", "auto-move"],
+      "fixtures": ["none"],
+      "cleanup": ["disable automation and restore the session settings baseline in a local finally"],
+      "portableScenario": "M04-mobile-settings-mutations",
+      "manual": ["Verify each settings toggle updates runtime behavior and provides touch feedback"],
+      "skipReasons": {
+        "android": "M04 verifies the safe automation baseline but does not dispatch toggle UI events.",
+        "ios": "M04 verifies the safe automation baseline but does not dispatch toggle UI events."
+      }
+    },
+    {
+      "desktopCheck": "settings: allowed roots add modal and clear icon work",
+      "classification": { "desktop": "automated", "android": "manual", "ios": "manual" },
+      "capabilities": ["settings-dom", "folder-selector"],
+      "mutation": ["allowed roots", "open an owned modal"],
+      "fixtures": ["session root"],
+      "cleanup": ["close owned modals and restore the session root as the only allowed root"],
+      "portableScenario": "M04-mobile-settings-mutations",
+      "manual": ["Verify add/clear roots, modal scrolling, selection, and touch dismissal"],
+      "skipReasons": {
+        "android": "M04 verifies the isolated allowed root only; it does not open or dispatch the allowed-roots modal.",
+        "ios": "M04 verifies the isolated allowed root only; it does not open or dispatch the allowed-roots modal."
+      }
+    },
+    {
+      "desktopCheck": "settings: cache restore dropdown is populated and dispatches restore",
+      "classification": { "desktop": "automated", "android": "partial", "ios": "partial" },
+      "capabilities": ["settings-dom", "atomic-text-cache", "filesystem-restore-probe"],
+      "mutation": ["session-isolated cache and cache backup"],
+      "fixtures": ["session cache marker entry", "session cache backup"],
+      "cleanup": ["flush and remove only the session-isolated cache tree"],
+      "portableScenario": "M07-isolated-cache-lifecycle",
+      "manual": ["Verify the restore dropdown is populated and dispatches restore through touch"],
+      "skipReasons": {
+        "android": "M07 verifies the atomic cache backup/restore backend, not dropdown population or event dispatch.",
+        "ios": "M07 verifies the atomic cache backup/restore backend, not dropdown population or event dispatch."
+      }
+    },
+    {
+      "desktopCheck": "settings: all action buttons dispatch their intended operations",
+      "classification": { "desktop": "automated", "android": "manual", "ios": "manual" },
+      "capabilities": ["settings-dom", "reveal-path"],
+      "mutation": ["dispatch settings actions through temporary QA-owned method probes"],
+      "fixtures": ["session backup paths"],
+      "cleanup": ["restore every patched method and close owned UI"],
+      "portableScenario": "M04-mobile-settings-mutations",
+      "manual": ["Verify destructive action confirmation and touch feedback"],
+      "skipReasons": {
+        "android": "The runner exercises backend operations directly; it does not inspect or dispatch the settings action buttons.",
+        "ios": "The runner exercises backend operations directly; it does not inspect or dispatch the settings action buttons."
+      }
+    },
+    {
+      "desktopCheck": "cache: clear, compaction, backup, and restore work",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["atomic-text-cache", "filesystem-restore-probe"],
+      "mutation": ["session-isolated cache file", "session cache backups"],
+      "fixtures": ["too-small image", "missing and stale cache entries", "cache restore marker"],
+      "cleanup": ["flush and remove only the session-isolated cache tree"],
+      "portableScenario": "M07-isolated-cache-lifecycle",
+      "manual": ["Force-stop during mobile atomic cache restore and verify startup recovery"],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "compression: direct JPG, JPEG, and PNG produce smaller outputs and pending cache entries",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["canvas-encoding", "wasm-codecs", "image-index"],
+      "mutation": ["session image outputs", "session-isolated cache"],
+      "fixtures": ["generated JPG", "generated JPEG", "generated PNG"],
+      "cleanup": ["wait for late operations, verify source hashes, then remove the exact session root"],
+      "portableScenario": "M05-mobile-compression-formats",
+      "manual": ["Repeat while suspending and resuming the app"],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "compression: file context menu action compresses selected image",
+      "classification": { "desktop": "automated", "android": "manual", "ios": "manual" },
+      "capabilities": ["context-menu", "wasm-codecs"],
+      "mutation": ["session image output", "session-isolated cache"],
+      "fixtures": ["generated context-menu image", "QA menu wiring probe"],
+      "cleanup": ["close menus and remove the exact session root after settlement"],
+      "portableScenario": "M08-mobile-command-workflows",
+      "manual": ["Invoke the real file long-press context menu on-device"],
+      "skipReasons": {
+        "android": "M08 compresses through product entrypoints but does not construct or dispatch the file context menu.",
+        "ios": "M08 compresses through product entrypoints but does not construct or dispatch the file context menu."
+      }
+    },
+    {
+      "desktopCheck": "compression: folder context menu action compresses images in the folder",
+      "classification": { "desktop": "automated", "android": "manual", "ios": "manual" },
+      "capabilities": ["context-menu", "wasm-codecs"],
+      "mutation": ["session folder outputs", "session-isolated cache"],
+      "fixtures": ["generated folder image", "QA folder-menu wiring probe"],
+      "cleanup": ["close menus and remove the exact session root after settlement"],
+      "portableScenario": "M08-mobile-command-workflows",
+      "manual": ["Invoke the real folder long-press context menu on-device"],
+      "skipReasons": {
+        "android": "M08 exercises the recursive folder entrypoint but does not construct or dispatch the folder context menu.",
+        "ios": "M08 exercises the recursive folder entrypoint but does not construct or dispatch the folder context menu."
+      }
+    },
+    {
+      "desktopCheck": "commands: compress images in active note",
+      "classification": { "desktop": "automated", "android": "partial", "ios": "partial" },
+      "capabilities": ["active-note", "commands", "wasm-codecs"],
+      "mutation": ["open a session note", "session image outputs", "session-isolated cache"],
+      "fixtures": ["session Markdown note", "linked JPG", "linked PNG"],
+      "cleanup": ["close or leave the session note before deleting the exact session root"],
+      "portableScenario": "M08-mobile-command-workflows",
+      "manual": ["Invoke the command from the mobile command palette"],
+      "skipReasons": {
+        "android": "M01 verifies command registration and M08 verifies the active-note entrypoint; palette callback dispatch remains manual.",
+        "ios": "M01 verifies command registration and M08 verifies the active-note entrypoint; palette callback dispatch remains manual."
+      }
+    },
+    {
+      "desktopCheck": "commands: compress images in selected folder",
+      "classification": { "desktop": "automated", "android": "partial", "ios": "partial" },
+      "capabilities": ["commands", "folder-selector", "wasm-codecs"],
+      "mutation": ["session folder outputs", "session-isolated cache"],
+      "fixtures": ["generated image in a session folder"],
+      "cleanup": ["restore the selector method and remove the exact session root after settlement"],
+      "portableScenario": "M08-mobile-command-workflows",
+      "manual": ["Select the folder through the real mobile modal and invoke it from the command palette"],
+      "skipReasons": {
+        "android": "M08 verifies recursive folder compression directly; folder-selector and command callback dispatch remain manual.",
+        "ios": "M08 verifies recursive folder compression directly; folder-selector and command callback dispatch remain manual."
+      }
+    },
+    {
+      "desktopCheck": "folder selector: cancel, select, and managed close clean up",
+      "classification": { "desktop": "automated", "android": "manual", "ios": "manual" },
+      "capabilities": ["folder-selector", "mobile-touch-dom"],
+      "mutation": ["open and close owned modals"],
+      "fixtures": ["session folder choices", "focus-return probe"],
+      "cleanup": ["close all managed modals and remove the focus probe"],
+      "portableScenario": "M03-mobile-settings-surface",
+      "manual": ["Verify focus, scrolling, touch selection, and back-button dismissal on-device"],
+      "skipReasons": {
+        "android": "The portable runner does not open the folder selector; selection, cancellation, focus, and back-button behavior remain manual.",
+        "ios": "The portable runner does not open the folder selector; selection, cancellation, focus, and touch dismissal remain manual."
+      }
+    },
+    {
+      "desktopCheck": "commands: compress all images respects allowed roots and output folder exclusion",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["commands", "image-index", "wasm-codecs"],
+      "mutation": ["session image outputs", "session-isolated cache"],
+      "fixtures": ["allowed session image", "session output-folder image"],
+      "cleanup": ["verify no input escaped the session root, then remove the exact session root"],
+      "portableScenario": "M08-mobile-command-workflows",
+      "manual": [],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "compression: background batch compression works without modal workflow",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["background-compression", "wasm-codecs"],
+      "mutation": ["session image output", "session-isolated cache"],
+      "fixtures": ["generated background-batch image"],
+      "cleanup": ["wait for background idle and remove the exact session root"],
+      "portableScenario": "M09-mobile-automation-workflows",
+      "manual": ["Suspend and resume during background compression"],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "compression: new-file auto compression queue drains and compresses",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["new-file-events", "background-compression", "wasm-codecs"],
+      "mutation": ["temporarily enable auto-compress", "new-file queue", "session image output", "session-isolated cache"],
+      "fixtures": ["newly created session image"],
+      "cleanup": ["drain or cancel only session-owned queue entries and disable automation in a local finally"],
+      "portableScenario": "M09-mobile-automation-workflows",
+      "manual": ["Create an image through a real mobile import flow"],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "validation: unsupported and too-small files are rejected safely",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["wasm-codecs"],
+      "mutation": ["session-isolated skipped cache entry"],
+      "fixtures": ["unsupported text file", "too-small JPEG", "metadata-only over-limit image probe"],
+      "cleanup": ["remove the exact session root and isolated cache after settlement"],
+      "portableScenario": "M06-mobile-validation-limits",
+      "manual": ["Try a real image near the mobile input and pixel limits"],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "status bar: text, aria label, attention state, and menu buttons work",
+      "classification": { "desktop": "automated", "android": "partial", "ios": "partial" },
+      "capabilities": ["status-bar", "mobile-ribbon", "mobile-touch-dom"],
+      "mutation": ["open action menu", "temporarily patch action callbacks"],
+      "fixtures": ["desktop status trigger or mobile ribbon trigger"],
+      "cleanup": ["close the action menu and restore patched callbacks"],
+      "portableScenario": "M12-mobile-ribbon-menu",
+      "manual": ["Open the ribbon menu by touch and verify viewport placement after rotation"],
+      "skipReasons": {
+        "android": "M12 verifies ribbon registration, visible menu accessibility and 44 px geometry, plus two action dispatches; collapsed-ribbon touch, backlog attention state, and rotation remain manual.",
+        "ios": "M12 verifies ribbon registration, visible menu accessibility and 44 px geometry, plus two action dispatches; collapsed-ribbon touch, backlog attention state, and rotation remain manual."
+      }
+    },
+    {
+      "desktopCheck": "stats: counts and savings calculator reflect QA images",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["image-index"],
+      "mutation": ["rebuild the session-scoped image index"],
+      "fixtures": ["previous session compression outputs and isolated cache entries"],
+      "cleanup": ["restore product settings and rebuild the product-scoped index"],
+      "portableScenario": "M11-mobile-index-stats-refresh",
+      "manual": [],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "move: command moves compressed outputs to originals and creates backups",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["move", "backup-storage", "wasm-codecs"],
+      "mutation": ["replace a session-owned original", "remove its session output", "write session-owned original backups", "session-isolated cache transition"],
+      "fixtures": ["generated original image", "compressed output", "redirected backup root"],
+      "cleanup": ["verify backup hashes and remove only the exact session root after move settles"],
+      "portableScenario": "M10-mobile-move-backup",
+      "manual": ["Force-stop during prepared, detached, and installed mobile replacement phases"],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "move: auto-move threshold moves fresh compressed output automatically",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["move", "backup-storage", "wasm-codecs"],
+      "mutation": ["temporarily enable auto-move", "replace a session-owned original", "session backup and cache transition"],
+      "fixtures": ["generated auto-move image", "redirected backup root"],
+      "cleanup": ["disable auto-move in a local finally and remove the exact session root after settlement"],
+      "portableScenario": "M10-mobile-move-backup",
+      "manual": ["Suspend and force-stop during auto-move on-device"],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "backups: clear original-files backups is safe when redirected to isolated storage",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["backup-storage"],
+      "mutation": ["delete only session-owned original backups"],
+      "fixtures": ["session backup directory and marker file"],
+      "cleanup": ["restore backup-path resolver and retain anything without exact session ownership"],
+      "portableScenario": "M10-mobile-move-backup",
+      "manual": [],
+      "skipReasons": {}
+    },
+    {
+      "desktopCheck": "settings: force refresh cache completes and leaves index usable",
+      "classification": { "desktop": "automated", "android": "automated", "ios": "automated" },
+      "capabilities": ["image-index", "settings-dom"],
+      "mutation": ["refresh the session-isolated cache and rebuild the session-scoped index"],
+      "fixtures": ["session images and isolated cache"],
+      "cleanup": ["close the progress modal, restore product settings, and rebuild the product-scoped index"],
+      "portableScenario": "M11-mobile-index-stats-refresh",
+      "manual": ["Verify progress UI and cancellation while the app is backgrounded"],
+      "skipReasons": {}
+    }
+  ]
+}

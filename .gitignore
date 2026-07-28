@@ -1,6 +1,10 @@
 node_modules/
 main.js
 build/
+mobile-qa-build/
+.local-image-compress-qa/
+Local Image Compress QA/
+QA-LIC-Mobile-*/
 release-notes.md
 dist-ts/
 .DS_Store
