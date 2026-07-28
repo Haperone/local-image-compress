@@ -1,12 +1,8 @@
-import * as crypto from "crypto";
-import * as fs from "fs";
-import * as path from "path";
 import * as obsidian from "obsidian";
-import { promisify } from "util";
-import { shell } from "electron";
 
-const randomBytesAsync = promisify(crypto.randomBytes) as (size: number) => Promise<Buffer>;
-const CASE_INSENSITIVE_PATH_PLATFORM = process.platform === "win32" || process.platform === "darwin";
+// Windows and macOS desktop filesystems are case-insensitive, as is iOS;
+// Android and Linux are case-sensitive.
+const CASE_INSENSITIVE_PATH_PLATFORM = obsidian.Platform.isWin || obsidian.Platform.isMacOS || obsidian.Platform.isIosApp;
 const MAX_SANITIZED_PATH_LENGTH = 500;
 const SENSITIVE_PATH_EXTENSIONS = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "heic", "heif", "avif", "json", "tmp", "bak", "log", "txt", "md"];
 const SENSITIVE_UNIX_ROOTS = ["Users", "home", "var", "opt", "tmp", "usr", "etc", "private"];
@@ -74,10 +70,29 @@ export function isUncFilesystemPath(filePath: string): boolean {
   return /^\\\\[^\\]+\\[^\\]+/.test(value) || /^\/\/[^/]+\/[^/]+/.test(value);
 }
 
-function getPathModuleForFilesystemPath(filePath: string, basePath = "") {
-  return isWindowsDriveFilesystemPath(filePath) || isWindowsDriveFilesystemPath(basePath) || isUncFilesystemPath(filePath) || isUncFilesystemPath(basePath)
-    ? path.win32
-    : path;
+function isWindowsStyleFilesystemPath(filePath: string): boolean {
+  return isWindowsDriveFilesystemPath(filePath) || isUncFilesystemPath(filePath);
+}
+
+// String replacement for Node path.relative over already-joined absolute
+// paths. Windows-style paths compare case-insensitively like path.win32.
+// ponytail: no dot-segment resolution — vault paths never contain "..", and
+// foreign roots yield "../" chains that isSafeVaultRelativePath rejects.
+export function relativeFilesystemPath(basePath: string, targetPath: string): string {
+  const useCaseFold = isWindowsStyleFilesystemPath(basePath) || isWindowsStyleFilesystemPath(targetPath);
+  const fold = (value: string) => (useCaseFold ? value.toLowerCase() : value);
+  const baseParts = normalizeVaultPath(basePath).split("/").filter((part) => part !== "");
+  const targetParts = normalizeVaultPath(targetPath).split("/").filter((part) => part !== "");
+  let commonLength = 0;
+  while (
+    commonLength < baseParts.length &&
+    commonLength < targetParts.length &&
+    fold(baseParts[commonLength] || "") === fold(targetParts[commonLength] || "")
+  ) {
+    commonLength += 1;
+  }
+  const upSegments = new Array<string>(baseParts.length - commonLength).fill("..");
+  return [...upSegments, ...targetParts.slice(commonLength)].join("/");
 }
 
 // path & html helpers
@@ -125,19 +140,8 @@ export function isAllowedByRoots(targetPath: string, allowedRoots?: string[]): b
 }
 export function isAbsoluteFilesystemPath(filePath: string | null | undefined): boolean {
   const value = stripWindowsLongPathPrefix(String(filePath || ""));
-  return path.isAbsolute(value) || isWindowsDriveFilesystemPath(value) || isUncFilesystemPath(value);
+  return value.startsWith("/") || value.startsWith("\\") || isWindowsDriveFilesystemPath(value) || isUncFilesystemPath(value);
 }
-
-export type VaultBasePathAdapter = {
-  getBasePath?: () => string;
-};
-
-export type AppOrVaultWithAdapter = {
-  vault?: {
-    adapter?: unknown;
-  };
-  adapter?: unknown;
-};
 
 export type ManifestLike = {
   manifest?: {
@@ -161,41 +165,49 @@ export function getErrorMessage(error: unknown): string {
   return typeof error === "string" ? error : "";
 }
 
-export function getVaultBasePathFromAdapter(adapter: unknown, fallback?: string): string {
-  const candidate = adapter as VaultBasePathAdapter | null | undefined;
-  try {
-    const methodPath = typeof candidate?.getBasePath === "function" ? candidate.getBasePath() : "";
-    if (typeof methodPath === "string" && isAbsoluteFilesystemPath(methodPath)) {
-      return stripWindowsLongPathPrefix(methodPath);
-    }
-  } catch (error) {
-    void error;
-  }
-  if (typeof fallback === "string" && isAbsoluteFilesystemPath(fallback)) {
-    return stripWindowsLongPathPrefix(fallback);
-  }
-  throw new Error("Vault filesystem base path is unavailable; refusing filesystem access outside the vault.");
-}
-export function getVaultBasePath(appOrVault: AppOrVaultWithAdapter | null | undefined, fallback?: string): string {
-  const vault = appOrVault?.vault || appOrVault;
-  return getVaultBasePathFromAdapter(vault?.adapter, fallback);
-}
 export function toVaultRelativePath(filePath: string | null | undefined, basePath: string): string {
   const rawPath = stripWindowsLongPathPrefix(String(filePath || ""));
   if (!rawPath) {
     return "";
   }
   const safeBasePath = stripWindowsLongPathPrefix(String(basePath || ""));
-  const pathModule = getPathModuleForFilesystemPath(rawPath, safeBasePath);
-  return normalizeVaultPath(isAbsoluteFilesystemPath(rawPath) ? pathModule.relative(safeBasePath, rawPath) : rawPath);
+  return normalizeVaultPath(isAbsoluteFilesystemPath(rawPath) ? relativeFilesystemPath(safeBasePath, rawPath) : rawPath);
 }
 export function getVaultFolderPath(filePath: string): string {
   const safePath = normalizeVaultPathRoot(filePath);
   const slashIndex = safePath.lastIndexOf("/");
   return slashIndex === -1 ? "" : safePath.slice(0, slashIndex);
 }
-export async function openFilesystemPath(targetPath: string): Promise<string> {
-  return await shell.openPath(targetPath);
+export function vaultBasename(filePath: string): string {
+  const safePath = normalizeVaultPathRoot(filePath);
+  const slashIndex = safePath.lastIndexOf("/");
+  return slashIndex === -1 ? safePath : safePath.slice(slashIndex + 1);
+}
+// Mirrors Node path.extname().slice(1): empty for dotless and dotfile names.
+export function vaultFileExtension(filePath: string): string {
+  const baseName = vaultBasename(filePath);
+  const dotIndex = baseName.lastIndexOf(".");
+  return dotIndex <= 0 ? "" : baseName.slice(dotIndex + 1);
+}
+// Mirrors Node path.posix.normalize() for vault-relative inputs: resolves "."
+// and "..", keeps unmatched leading ".." segments for callers to reject.
+export function resolveVaultDotSegments(filePath: string): string {
+  const stack: string[] = [];
+  for (const part of normalizeVaultPath(filePath).split("/")) {
+    if (!part || part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      if (stack.length > 0 && stack[stack.length - 1] !== "..") {
+        stack.pop();
+      } else {
+        stack.push("..");
+      }
+      continue;
+    }
+    stack.push(part);
+  }
+  return stack.join("/");
 }
 export function isInsideOutputFolder(targetPath: string, outputFolderName: string): boolean {
   const safeOutput = normalizeOutputFolder(outputFolderName);
@@ -335,22 +347,28 @@ export function sanitizeErrorForUser(error: unknown): string {
   return sanitized;
 }
 
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// Web Crypto is identical across main and popout windows, so the main-window
+// reference is always safe here.
+function getWebCrypto(): Crypto {
+  return window.crypto;
+}
+
 export async function randomHexSuffix(byteCount = 16): Promise<string> {
-  return (await randomBytesAsync(byteCount)).toString("hex");
+  const bytes = new Uint8Array(byteCount);
+  getWebCrypto().getRandomValues(bytes);
+  return bytesToHex(bytes);
 }
 
 export function randomHexSuffixSync(): string {
-  return crypto.randomUUID().replace(/-/g, "");
-}
-
-export async function streamHashSha256(filePath: string): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const hash = crypto.createHash("sha256");
-    const stream = fs.createReadStream(filePath, { highWaterMark: 256 * 1024 });
-    stream.on("data", (chunk) => {
-      hash.update(chunk);
-    });
-    stream.on("end", () => resolve(hash.digest("hex")));
-    stream.on("error", reject);
-  });
+  const webCrypto = getWebCrypto();
+  if (typeof webCrypto.randomUUID === "function") {
+    return webCrypto.randomUUID().replace(/-/g, "");
+  }
+  const bytes = new Uint8Array(16);
+  webCrypto.getRandomValues(bytes);
+  return bytesToHex(bytes);
 }

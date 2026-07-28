@@ -2,9 +2,17 @@ import { getLogTag } from "./utils";
 import { ConcurrencyLimiter } from "./concurrency-limiter";
 import type LocalImageCompressPlugin from "./plugin";
 import type { TimerHandle } from "./types";
-import type { TFile } from "obsidian";
+import { Component, type TFile } from "obsidian";
 
 const BACKGROUND_FILTER_CONCURRENCY = 8;
+const USER_ACTIVITY_EVENTS: Array<keyof DocumentEventMap> = [
+  "mousemove",
+  "mousedown",
+  "keydown",
+  "scroll",
+  "wheel",
+  "touchstart"
+];
 
 // Owns background auto-compression: user-activity/inactivity tracking state and
 // the idle-trigger logic. The plugin holds a reference and forwards runtime
@@ -19,6 +27,7 @@ export class BackgroundCompressionService {
   isBackgroundCompressionRunning = false;
   inactivityTimer: TimerHandle | null = null;
   inactivityCheckActive = false;
+  private readonly activityDocuments = new Map<Document, Component>();
 
   constructor(plugin: LocalImageCompressPlugin) {
     this.plugin = plugin;
@@ -38,26 +47,39 @@ export class BackgroundCompressionService {
       this.plugin.clearWindowTimeout(this.inactivityTimer);
       this.inactivityTimer = null;
     }
+    for (const document of Array.from(this.activityDocuments.keys())) {
+      this.unregisterUserActivityDocument(document);
+    }
   }
 
-  setupUserActivityTracking() {
+  setupUserActivityTracking(documents: Iterable<Document> = [this.plugin.getActiveDocument()]) {
+    for (const document of documents) {
+      this.registerUserActivityDocument(document);
+    }
+  }
+
+  registerUserActivityDocument(document: Document) {
+    if (this.plugin.isUnloading || this.activityDocuments.has(document)) {
+      return;
+    }
+    const listenerOwner = this.plugin.addChild(new Component());
     const updateActivity: EventListener = () => {
       this.lastUserActivity = Date.now();
       this.lastUserActivityPerfTime = this.plugin.getMonotonicTime();
     };
-    const activeDocument = this.plugin.getActiveDocument();
-    // Plugin-lifetime listeners: registerDomEvent auto-removes them on unload.
-    const activityEvents: Array<keyof DocumentEventMap> = [
-      "mousemove",
-      "mousedown",
-      "keydown",
-      "scroll",
-      "wheel",
-      "touchstart"
-    ];
-    for (const event of activityEvents) {
-      this.plugin.registerDomEvent(activeDocument, event, updateActivity, { passive: true });
+    for (const event of USER_ACTIVITY_EVENTS) {
+      listenerOwner.registerDomEvent(document, event, updateActivity, { passive: true });
     }
+    this.activityDocuments.set(document, listenerOwner);
+  }
+
+  unregisterUserActivityDocument(document: Document) {
+    const listenerOwner = this.activityDocuments.get(document);
+    if (!listenerOwner) {
+      return;
+    }
+    this.activityDocuments.delete(document);
+    this.plugin.removeChild(listenerOwner);
   }
 
   isUserInactive() {

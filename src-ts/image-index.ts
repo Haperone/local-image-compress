@@ -37,6 +37,7 @@ type ImageIndexCache = {
 export class ImageIndex {
   private records = new Map<string, ImageIndexRecord>();
   private pendingRebuildMutations = new Map<string, ImageIndexRecord | null>();
+  private pendingUpserts = new Map<string, ImageIndexRecord>();
   private ready = false;
   private generation = 0;
   private rebuildingGeneration: number | null = null;
@@ -67,19 +68,28 @@ export class ImageIndex {
       .map((record) => record.file);
   }
 
+  cancelPendingWork() {
+    this.generation++;
+    this.rebuildingGeneration = null;
+    this.pendingRebuildMutations.clear();
+    this.pendingUpserts.clear();
+    this.ready = false;
+  }
+
   async rebuild(cache: ImageIndexCache) {
     const generation = ++this.generation;
     this.rebuildingGeneration = generation;
     const wasReady = this.ready;
     this.ready = false;
     this.pendingRebuildMutations.clear();
+    this.pendingUpserts.clear();
     const nextRecords = new Map<string, ImageIndexRecord>();
 
     try {
       const files = this.app.vault.getFiles();
       const batchSize = this.options.batchSize || 150;
       for (let i = 0; i < files.length; i += batchSize) {
-        if (generation !== this.generation) {
+        if (!this.isCurrentGeneration(generation)) {
           return;
         }
         for (const file of files.slice(i, i + batchSize)) {
@@ -97,7 +107,7 @@ export class ImageIndex {
         await this.options.yieldToUi();
       }
       await this.refreshProcessedStatesForRecords(nextRecords, cache, generation);
-      if (generation === this.generation) {
+      if (this.isCurrentGeneration(generation)) {
         for (const [path, record] of this.pendingRebuildMutations) {
           if (record) {
             nextRecords.set(path, record);
@@ -115,7 +125,7 @@ export class ImageIndex {
       // PPP2-B-2: an exception during rebuild must not leave the index permanently
       // unready. nextRecords is built separately, so this.records still holds the
       // prior snapshot — restore the previous ready state for the current generation.
-      if (generation === this.generation) {
+      if (this.isCurrentGeneration(generation)) {
         this.ready = wasReady;
         this.rebuildingGeneration = null;
       }
@@ -124,15 +134,27 @@ export class ImageIndex {
   }
 
   async upsert(file: ImageIndexFile, cache: ImageIndexCache) {
+    const generation = this.generation;
     const record = this.createRecord(file);
     if (!record) {
       this.remove(file?.path);
       return;
     }
-    record.processed = await cache.isFileAlreadyProcessed(file);
-    this.records.set(record.path, record);
-    this.trackRebuildMutation(record.path, record);
-    this.recalculateSnapshot();
+    this.pendingUpserts.set(record.path, record);
+    try {
+      const processed = await cache.isFileAlreadyProcessed(file);
+      if (!this.isCurrentGeneration(generation) || this.pendingUpserts.get(record.path) !== record) {
+        return;
+      }
+      record.processed = processed;
+      this.records.set(record.path, record);
+      this.trackRebuildMutation(record.path, record);
+      this.recalculateSnapshot();
+    } finally {
+      if (this.pendingUpserts.get(record.path) === record) {
+        this.pendingUpserts.delete(record.path);
+      }
+    }
   }
 
   async rename(file: ImageIndexFile, oldPath: string, cache: ImageIndexCache) {
@@ -142,6 +164,7 @@ export class ImageIndex {
 
   remove(filePath: string) {
     if (filePath) {
+      this.pendingUpserts.delete(filePath);
       this.records.delete(filePath);
       this.trackRebuildMutation(filePath, null);
       this.recalculateSnapshot();
@@ -154,7 +177,7 @@ export class ImageIndex {
 
   async refreshProcessedStates(cache: ImageIndexCache, generation = this.generation) {
     await this.refreshProcessedStatesForRecords(this.records, cache, generation);
-    if (generation === this.generation) {
+    if (this.isCurrentGeneration(generation)) {
       this.recalculateSnapshot();
     }
   }
@@ -164,7 +187,7 @@ export class ImageIndex {
     const entriesByPath = cache.getEntriesByPathMap ? cache.getEntriesByPathMap() : null;
     const recordPaths = Array.from(recordsByPath.keys());
     for (let i = 0; i < recordPaths.length; i += batchSize) {
-      if (generation !== this.generation) {
+      if (!this.isCurrentGeneration(generation)) {
         return;
       }
       for (const recordPath of recordPaths.slice(i, i + batchSize)) {
@@ -172,13 +195,19 @@ export class ImageIndex {
         if (!record) {
           continue;
         }
-        if (entriesByPath && cache.getEntriesForPathFromMap && cache.getFreshEntryForFileFromEntries) {
-          record.processed = !!await cache.getFreshEntryForFileFromEntries(record.file, cache.getEntriesForPathFromMap(record.path, entriesByPath));
-        } else {
-          record.processed = await cache.isFileAlreadyProcessed(record.file);
+        const processed = entriesByPath && cache.getEntriesForPathFromMap && cache.getFreshEntryForFileFromEntries
+          ? !!await cache.getFreshEntryForFileFromEntries(record.file, cache.getEntriesForPathFromMap(record.path, entriesByPath))
+          : await cache.isFileAlreadyProcessed(record.file);
+        if (!this.isCurrentGeneration(generation)) {
+          return;
         }
+        record.processed = processed;
       }
     }
+  }
+
+  private isCurrentGeneration(generation: number) {
+    return generation === this.generation;
   }
 
   private createRecord(file: ImageIndexFile): ImageIndexRecord | null {

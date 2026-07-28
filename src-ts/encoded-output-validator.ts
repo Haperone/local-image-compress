@@ -266,9 +266,7 @@ export function toOutputBytes(output: ArrayBuffer | Uint8Array | Uint8ClampedArr
     return output;
   }
   if (output instanceof Uint8ClampedArray) {
-    const copy = new Uint8Array(output.byteLength);
-    copy.set(output);
-    return copy;
+    return new Uint8Array(output.buffer, output.byteOffset, output.byteLength);
   }
   return new Uint8Array(output);
 }

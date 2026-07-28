@@ -1,6 +1,13 @@
 import type { LocalImageCompressSettings } from "./settings";
 import type { TimerHandle } from "./types";
-import { clearTimeout as fallbackClearTimeout, setTimeout as fallbackSetTimeout } from "timers";
+
+// Non-window fallback timers for worker teardown in tests; both the renderer
+// and the Node harness expose these globals, and no popout window is involved.
+// Captured lazily so the host environment is read at first use, not at load.
+let fallbackTimerHost: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } | null = null;
+function fallbackTimers() {
+  return (fallbackTimerHost ??= { setTimeout, clearTimeout });
+}
 
 export type WorkerFormat = "png" | "jpeg";
 export type WorkerFactory = (source: string) => Worker;
@@ -403,7 +410,7 @@ export class WorkerSlot {
     if (typeof window !== "undefined") {
       return window.setTimeout(callback, delay);
     }
-    return fallbackSetTimeout(callback, delay);
+    return fallbackTimers().setTimeout(callback, delay);
   }
 
   private clearWorkerTimeout(timeoutHandle: TimerHandle | null | undefined) {
@@ -414,7 +421,7 @@ export class WorkerSlot {
       window.clearTimeout(timeoutHandle as number);
       return;
     }
-    fallbackClearTimeout(timeoutHandle);
+    fallbackTimers().clearTimeout(timeoutHandle as number);
   }
 
   private cloneAsArrayBuffer(input: Uint8Array) {

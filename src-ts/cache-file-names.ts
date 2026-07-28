@@ -1,4 +1,4 @@
-import * as path from "path";
+import type { PathOps } from "./platform/ports";
 
 // Persisted cache artifacts keep the historical TinyLocal filenames for backward
 // compatibility with existing vaults and backup/restore flows.
@@ -11,18 +11,20 @@ export function getCacheBackupTimestamp(now = new Date()) {
   return now.toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");
 }
 
-export function getBrokenCacheFilePath(cacheBackupsDir: string, timestamp: string, randomSuffix: string) {
-  return path.join(cacheBackupsDir, "broken", `${LEGACY_BROKEN_CACHE_PREFIX}${timestamp}-${randomSuffix}.json`);
+export function getBrokenCacheFilePath(pathOps: PathOps, cacheBackupsDir: string, timestamp: string, randomSuffix: string) {
+  return pathOps.joinPath(cacheBackupsDir, "broken", `${LEGACY_BROKEN_CACHE_PREFIX}${timestamp}-${randomSuffix}.json`);
 }
 
-export function getCacheTempFilePath(cacheFile: string, processId: number, timestamp: number, randomSuffix: string) {
-  return path.join(path.dirname(cacheFile), `${LEGACY_CACHE_TEMP_PREFIX}${processId}-${timestamp}-${randomSuffix}.tmp`);
+export function getCacheTempFilePath(pathOps: PathOps, cacheFile: string, processId: number, timestamp: number, randomSuffix: string) {
+  void processId;
+  const targetName = cacheFile.replace(/\\/g, "/").split("/").pop() || LEGACY_CACHE_FILE_NAME;
+  return pathOps.joinPath(pathOps.dirnamePath(cacheFile), `.${targetName}.tinylocal-${timestamp}-${randomSuffix}.tmp`);
 }
 
-export function getCacheBackupPath(cacheBackupsDir: string, randomSuffix: string, now = new Date()) {
+export function getCacheBackupPath(pathOps: PathOps, cacheBackupsDir: string, randomSuffix: string, now = new Date()) {
   const backupDir = cacheBackupsDir;
   const timestamp = getCacheBackupTimestamp(now);
-  const backupFile = path.join(backupDir, `${LEGACY_CACHE_BACKUP_PREFIX}${timestamp}-${randomSuffix}.json`);
+  const backupFile = pathOps.joinPath(backupDir, `${LEGACY_CACHE_BACKUP_PREFIX}${timestamp}-${randomSuffix}.json`);
   return { backupDir, backupFile };
 }
 

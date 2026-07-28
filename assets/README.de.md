@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Komprimieren Sie PNG- und JPEG-Dateien direkt in Ihrem Obsidian-Vault auf Ihrem Computer, ohne Cloud-Dienste oder APIs. Reduzieren Sie den von Bildern belegten Speicherplatz ohne Qualitätsverlust um 30–70 %.
+Komprimieren Sie PNG- und JPEG-Dateien direkt in Ihrem Obsidian-Vault auf dem Computer und auf Mobilgeräten, ohne Cloud-Dienste oder APIs. Reduzieren Sie den von Bildern belegten Speicherplatz ohne Qualitätsverlust um 30–70 %.
+
+Auf Smartphones und Tablets läuft das Plugin mit mobilfreundlichen Grenzen: ein einzelner Komprimierungs-Worker und Eingabedateien bis 25 MB / 50 Megapixel; größere Dateien werden mit einer klaren Begründung übersprungen. Das Öffnen der Backup-Ordner im Dateimanager des Systems bleibt dem Desktop vorbehalten.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF und AVIF werden in dieser Version absichtlich überspr
 
 Sehr kleine Dateien werden üblicherweise übersprungen (`<5KB` für PNG und `<10KB` für JPEG).
 
-Die Sicherheitsgrenzen sind fest: Dateien über `100 MB` werden vor dem Lesen übersprungen, Bilder mit mehr als `100 Millionen` Pixeln nach der Header-Prüfung.
+Der Plattformvertrag ist eindeutig: Desktop verarbeitet Eingaben bis `100 MB / 100 MP`; Mobile verarbeitet bis `25 MB / 50 MP` mit einem Komprimierungs-Worker. Größere Eingaben werden vor der vollständigen Verarbeitung übersprungen.
 
 ### Datenspeicherung und Sicherungen
 - **Primärer Cache:** wird im Plugin-Ordner gespeichert.
 - **Cache-Sicherungen:** werden unter `Vault/.local-image-compress/backups/cache/` gespeichert; bis zu 50 Dateien bleiben erhalten.
 - **Bildsicherungen:** werden unter `Vault/.local-image-compress/backups/originals/` gespeichert und vor dem Ersetzen der Originale erstellt.
+- **Cache-Wiederherstellung (`restore parity`):** Cache-Sicherungen können auf Desktop und Mobile wiederhergestellt werden. Nur das Öffnen des Sicherungsordners im System-Dateimanager ist Desktop vorbehalten.
+- **Migrationswiederherstellung (`durable migration journal`):** Vor der Quarantäne älterer Daten schreibt das Plugin Wiederherstellungsmetadaten; beim Start werden unterbrochene Migrationen abgeglichen, ohne widersprüchliche Bytes still zu löschen.
 
 ### Automatisierung
 - Wenn „Hintergrundkomprimierung“ aktiviert ist, werden zwei Schieberegler eingeblendet:

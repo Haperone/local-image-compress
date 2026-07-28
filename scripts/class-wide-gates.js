@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const ts = require("typescript");
 const { resolveRepositoryLayout } = require("./repository-layout");
 
 const { repositoryRoot, sourceRoot: root } = resolveRepositoryLayout();
@@ -23,16 +24,25 @@ const syncFsMethods = [
   "readdirSync",
   "readlinkSync",
   "realpathSync",
+  "replaceFileSync",
   "renameSync",
   "rmSync",
   "rmdirSync",
   "statSync",
   "symlinkSync",
   "unlinkSync",
-  "writeFileSync"
+  "writeFileSync",
+  "readTextSync",
+  "writeTextSync",
+  "removeFileSync",
+  "listNamesSync",
+  "writeExclusiveSync",
+  "fsyncBestEffortSync"
 ];
 
-const syncFsPattern = new RegExp(`\\bfs\\d*\\.(${syncFsMethods.join("|")})\\s*\\(`);
+// Receiver-agnostic so both raw `fs.*Sync(...)` calls and the platform port
+// sync facet (`ports.fs.sync.*Sync(...)`) stay behind the same gate.
+const syncFsPattern = new RegExp(`\\.(${syncFsMethods.join("|")})\\s*\\(`);
 
 const lineRules = [
   {
@@ -59,10 +69,26 @@ const lineRules = [
     id: "explicit-any",
     pattern: /(?::\s*any\b|\bas\s+any\b|\bis\s+any\b|\bany\s*\[\]|<[^>\n]*\bany\b[^>\n]*>)/,
     message: "Explicit any is forbidden in src-ts; use a domain type, unknown with narrowing, or a narrow structural boundary type."
+  },
+  {
+    id: "adapter-rename-boundary",
+    pattern: /\b(?:this\.)?adapter\.rename\s*\(/,
+    message: "Direct DataAdapter.rename is allowed only inside the mobile replacement port."
+  },
+  {
+    id: "adapter-boundary-access",
+    pattern: /\.vault(?:\?\.|\.)adapter\b/,
+    message: "Shared runtime code must use the plugin-owned PlatformPorts instead of DataAdapter directly."
   }
 ];
 
 const syncFsExceptionScopes = [
+  {
+    file: "src-ts/platform/desktop.ts",
+    startPattern: /^class DesktopFsSyncPort/,
+    endPattern: /^__end-of-file__$/,
+    reason: "Desktop synchronous port facet backs the unload durability path and recovery flows; mobile exposes no sync facet."
+  },
   {
     file: "src-ts/cache.ts",
     startPattern: /^\s*removeStaleCacheLockSync\(/,
@@ -106,15 +132,15 @@ const syncFsExceptionScopes = [
     reason: "Legacy synchronous cache load is test-only; normal startup always awaits async loadCache."
   },
   {
-    file: "src-ts/cache.ts",
+    file: "src-ts/services/cache-backup-store.ts",
     startPattern: /^\s*createBackupSync\(/,
     endPattern: /^\s*async cleanupOldBackups\(/,
     reason: "Synchronous backup helper is retained only for explicit recovery tests."
   },
   {
-    file: "src-ts/cache.ts",
+    file: "src-ts/services/cache-backup-store.ts",
     startPattern: /^\s*cleanupRetainedFilesSync\(/,
-    endPattern: /^\s*\/\/ Enhanced restore-from-backup method/,
+    endPattern: /^\s*isValidBackupFileName\(/,
     reason: "Synchronous retention cleanup is retained only for explicit recovery tests."
   },
   {
@@ -185,6 +211,62 @@ function getLineNumber(source, offset) {
     }
   }
   return lineNumber;
+}
+
+function getLiteralModuleName(node) {
+  return node && ts.isStringLiteralLike(node) ? node.text : null;
+}
+
+function getImportTypeModuleName(node) {
+  return ts.isLiteralTypeNode(node.argument) ? getLiteralModuleName(node.argument.literal) : null;
+}
+
+function isDesktopImplementationModule(moduleName, relativePath) {
+  const normalizedModuleName = moduleName.replace(/\\/g, "/").split(/[?#]/, 1)[0];
+  const withoutExtension = normalizedModuleName.replace(/\.(?:c|m)?(?:j|t)sx?$/i, "");
+  if (withoutExtension.startsWith(".")) {
+    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(relativePath), withoutExtension));
+    return resolved === "src-ts/platform/desktop";
+  }
+  return /(?:^|\/|@)platform\/desktop$/.test(withoutExtension);
+}
+
+function addDesktopBoundaryImportFindings(source, relativePath, findings) {
+  if (relativePath === "src-ts/platform/index.ts") {
+    return;
+  }
+  const sourceFile = ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  function inspect(node, moduleName) {
+    if (!moduleName || !isDesktopImplementationModule(moduleName, relativePath)) {
+      return;
+    }
+    findings.push({
+      rule: "desktop-boundary-import",
+      file: relativePath,
+      line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+      text: node.getText(sourceFile).replace(/\s+/g, " ").trim(),
+      message: "Shared runtime code must use PlatformPorts instead of importing the desktop implementation."
+    });
+  }
+  function visit(node) {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      inspect(node, getLiteralModuleName(node.moduleSpecifier));
+    } else if (ts.isImportTypeNode(node)) {
+      inspect(node, getImportTypeModuleName(node));
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      inspect(node, getLiteralModuleName(node.moduleReference.expression));
+    } else if (ts.isCallExpression(node)) {
+      const isRequireCall = ts.isIdentifier(node.expression) && node.expression.text === "require";
+      const isMemberRequireCall = (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "require")
+        || (ts.isElementAccessExpression(node.expression) && getLiteralModuleName(node.expression.argumentExpression) === "require");
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      if (isRequireCall || isMemberRequireCall || isDynamicImport) {
+        inspect(node, getLiteralModuleName(node.arguments[0]));
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
 }
 
 function addEmptyCatchFindings(source, relativePath, findings) {
@@ -313,6 +395,37 @@ if (process.argv.includes("--self-test")) {
     console.error("Class-wide gates self-test failed: valid nested CSS produced a false positive.");
     process.exit(1);
   }
+  for (const mutation of [
+    'import { unsafe } from "../platform/desktop";',
+    'import "@platform/desktop";',
+    'export * from "../platform/desktop.ts";',
+    'const desktop = import("../platform/desktop");',
+    'const desktop = require("../platform/desktop");',
+    'import desktop = require("../platform/desktop");',
+    'type Desktop = typeof import("../platform/desktop");',
+    'object.require("../platform/desktop");',
+    'globalThis["require"]("../platform/desktop");',
+    'const desktop = require("..\\\\platform\\\\desktop");',
+    'const desktop = import("../platform/desktop?worker");'
+  ]) {
+    const desktopBoundaryFindings = [];
+    addDesktopBoundaryImportFindings(mutation, "src-ts/services/self-test.ts", desktopBoundaryFindings);
+    if (!desktopBoundaryFindings.some((finding) => finding.rule === "desktop-boundary-import")) {
+      console.error(`Class-wide gates self-test failed: desktop boundary mutation escaped detection: ${mutation}`);
+      process.exit(1);
+    }
+  }
+  const allowedDesktopBoundaryFindings = [];
+  addDesktopBoundaryImportFindings('import { createDesktopPlatformPorts } from "./desktop";', "src-ts/platform/index.ts", allowedDesktopBoundaryFindings);
+  if (allowedDesktopBoundaryFindings.length > 0) {
+    console.error("Class-wide gates self-test failed: the platform composition root was rejected.");
+    process.exit(1);
+  }
+  const adapterBoundaryRule = lineRules.find((rule) => rule.id === "adapter-boundary-access");
+  if (!adapterBoundaryRule?.pattern.test("plugin.app.vault.adapter.read(path)")) {
+    console.error("Class-wide gates self-test failed: direct shared DataAdapter access was not detected.");
+    process.exit(1);
+  }
   console.log("Class-wide gates self-test passed.");
   process.exit(0);
 }
@@ -335,10 +448,17 @@ for (const target of parseTargets(process.argv.slice(2))) {
     const fileSource = fs.readFileSync(filePath, "utf8");
     const lines = fileSource.split(/\r?\n/);
     addEmptyCatchFindings(fileSource, relativePath, findings);
+    addDesktopBoundaryImportFindings(fileSource, relativePath, findings);
     lines.forEach((line, index) => {
       for (const rule of lineRules) {
         if (rule.pattern.test(line)) {
           if (rule.id === "sync-fs" && findSyncFsException(relativePath, index, lines)) {
+            continue;
+          }
+          if (rule.id === "adapter-rename-boundary" && relativePath === "src-ts/platform/mobile.ts") {
+            continue;
+          }
+          if (rule.id === "adapter-boundary-access" && relativePath.startsWith("src-ts/platform/")) {
             continue;
           }
           findings.push({

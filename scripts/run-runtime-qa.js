@@ -2,23 +2,29 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const { resolveRepositoryLayout } = require("./repository-layout");
+const { cleanupRuntimeQaOwnershipLedgers } = require("./runtime-qa-ownership");
 
 const pluginId = "local-image-compress";
 const { repositoryRoot: repoRoot, sourceRoot } = resolveRepositoryLayout();
 const runnerPath = path.join(__dirname, "runtime-qa.js");
+const ownershipModulePath = path.join(__dirname, "runtime-qa-ownership.js");
 const reportDir = path.join(repoRoot, "qa-backups");
 const pluginInstallDir = resolvePluginInstallDirectory();
 const vaultRoot = path.resolve(pluginInstallDir, "..", "..", "..");
 const dataJsonPath = path.join(pluginInstallDir, "data.json");
 const preQaSettingsBackupPath = path.join(reportDir, "pre-qa-data-backup.json");
 const QA_STATE_MARKER = "QA-LIC-Runtime-";
-const QA_ARTIFACT_PARENTS = ["", "Compressed", "files", "files/Compressed"];
 const cliPath = process.env.OBSIDIAN_CLI || (
   process.platform === "win32" ? "C:\\Program Files\\Obsidian\\Obsidian.com" : "obsidian"
 );
 const DEFAULT_OBSIDIAN_CLI_TIMEOUT_MS = 10 * 60 * 1000;
+const ACTIVE_RUNTIME_QA_SYMBOL_KEY = "local-image-compress.runtime-qa-active-v1";
+let runtimeQaMayStillBeActive = false;
+let runtimeQaReservationConfirmed = false;
+let runtimeQaReservationToken = "";
 
 const args = new Set(process.argv.slice(2));
 const skipReload = args.has("--skip-reload");
@@ -77,7 +83,7 @@ function runObsidianCli(cliArgs, description, options = {}) {
 
 function getObsidianCliTimeoutMs() {
   const timeoutMs = Number(process.env.OBSIDIAN_CLI_TIMEOUT_MS);
-  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.trunc(timeoutMs) : DEFAULT_OBSIDIAN_CLI_TIMEOUT_MS;
+  return Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_OBSIDIAN_CLI_TIMEOUT_MS;
 }
 
 function extractEvalPayload(stdout) {
@@ -98,7 +104,7 @@ function extractEvalPayload(stdout) {
     if (firstBrace !== -1 && lastBrace > firstBrace) {
       return payload.slice(firstBrace, lastBrace + 1);
     }
-    throw error;
+    return payload;
   }
 }
 
@@ -108,6 +114,54 @@ function parseRuntimeReport(stdout) {
     return JSON.parse(reportJson);
   } catch (error) {
     throw new Error(`Could not parse runtime QA report: ${error.message}\nPayload:\n${reportJson.slice(0, 4000)}`);
+  }
+}
+
+function buildReserveRuntimeQaExpression(token) {
+  return `(() => {
+    const key = Symbol.for(${JSON.stringify(ACTIVE_RUNTIME_QA_SYMBOL_KEY)});
+    const current = globalThis[key];
+    if (current) return { reserved: false, phase: current.phase || "unknown", startedAt: current.startedAt || null };
+    globalThis[key] = { version: 1, token: ${JSON.stringify(token)}, owner: "wrapper", phase: "reserved", startedAt: new Date().toISOString() };
+    return { reserved: true };
+  })()`;
+}
+
+function reserveRuntimeQa(token) {
+  const expression = buildReserveRuntimeQaExpression(token);
+  const result = runObsidianCli(["eval", `code=${expression}`], "runtime QA single-run reservation");
+  const reservation = JSON.parse(extractEvalPayload(result.stdout));
+  if (reservation?.reserved !== true) {
+    throw new Error(`Refusing overlapping runtime QA: another renderer-owned run is ${reservation?.phase || "active"}${reservation?.startedAt ? ` since ${reservation.startedAt}` : ""}. Wait for it to finish or fully restart Obsidian.`);
+  }
+}
+
+function buildReleaseRuntimeQaExpression(token) {
+  return `(() => {
+    const key = Symbol.for(${JSON.stringify(ACTIVE_RUNTIME_QA_SYMBOL_KEY)});
+    const current = globalThis[key];
+    if (current?.version === 1 && current?.owner === "wrapper" && current?.token === ${JSON.stringify(token)} && (current?.phase === "reserved" || current?.phase === "settled")) {
+      Reflect.deleteProperty(globalThis, key);
+      return true;
+    }
+    return false;
+  })()`;
+}
+
+function releaseUnusedRuntimeQaReservation(token) {
+  const expression = buildReleaseRuntimeQaExpression(token);
+  runObsidianCli(["eval", `code=${expression}`], "runtime QA reservation cleanup", { allowFailure: true });
+}
+
+function closeSettingsBeforeRuntimeQa() {
+  runObsidianCli(
+    ["dev:cdp", "method=Page.bringToFront", "params={}"],
+    "pre-QA renderer activation"
+  );
+  const expression = "(() => { app.setting?.close?.(); return true; })()";
+  const result = runObsidianCli(["eval", `code=${expression}`], "pre-QA settings close");
+  if (JSON.parse(extractEvalPayload(result.stdout)) !== true) {
+    throw new Error("Obsidian did not confirm that Settings was closed before runtime QA");
   }
 }
 
@@ -126,6 +180,29 @@ function readJsonSafe(filePath) {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
   } catch (error) {
     return null;
+  }
+}
+
+function samePath(left, right) {
+  return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+}
+
+function assertActiveVaultMatchesConfiguredVault() {
+  const result = runObsidianCli(["eval", "code=app.vault.adapter.basePath"], "active vault preflight", { allowFailure: true });
+  if (result.status !== 0) {
+    throw new Error([
+      `Obsidian CLI failed during active vault preflight with exit ${result.status}.`,
+      result.stdout ? `stdout:\n${result.stdout}` : "",
+      result.stderr ? `stderr:\n${result.stderr}` : ""
+    ].filter(Boolean).join("\n"));
+  }
+  const activeVaultRoot = String(extractEvalPayload(result.stdout));
+  if (!samePath(activeVaultRoot, vaultRoot)) {
+    throw new Error([
+      "Refusing runtime QA: active Obsidian vault does not match the configured DEV/QA vault.",
+      `Active vault: ${path.resolve(activeVaultRoot)}`,
+      `Expected vault: ${path.resolve(vaultRoot)}`
+    ].join("\n"));
   }
 }
 
@@ -184,39 +261,14 @@ function restoreSettingsIfPolluted() {
   }
 }
 
-function removePathInsideVault(targetPath) {
-  const resolvedBase = path.resolve(vaultRoot);
-  const resolvedTarget = path.resolve(targetPath);
-  const relative = path.relative(resolvedBase, resolvedTarget);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error(`Refusing to remove outside vault: ${targetPath}`);
-  }
-  fs.rmSync(resolvedTarget, { recursive: true, force: true });
-}
-
 function cleanupRuntimeQaVaultArtifacts() {
-  for (const parentRel of QA_ARTIFACT_PARENTS) {
-    const parentPath = parentRel ? path.join(vaultRoot, ...parentRel.split("/")) : vaultRoot;
-    let entries = [];
-    try {
-      entries = fs.readdirSync(parentPath, { withFileTypes: true });
-    } catch (error) {
-      if (error.code !== "ENOENT") {
-        console.warn(`Could not read runtime QA artifact parent ${parentPath}: ${error.message}`);
-      }
-      continue;
+  cleanupRuntimeQaOwnershipLedgers({
+    vaultRoot,
+    pluginInstallDir,
+    onWarning: (sessionId, error) => {
+      console.warn(`Retained runtime QA session ${sessionId} because exact ownership could not be proven: ${error.message}`);
     }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !entry.name.startsWith(QA_STATE_MARKER)) {
-        continue;
-      }
-      try {
-        removePathInsideVault(path.join(parentPath, entry.name));
-      } catch (error) {
-        console.warn(`Could not remove runtime QA artifact ${entry.name}: ${error.message}`);
-      }
-    }
-  }
+  });
 }
 
 async function main() {
@@ -231,9 +283,22 @@ async function main() {
   if (installedManifest?.id !== pluginId || !fs.existsSync(path.join(pluginInstallDir, "main.js"))) {
     throw new Error(`Configured runtime plugin is not a deployed ${pluginId} installation: ${pluginInstallDir}`);
   }
-  fs.mkdirSync(reportDir, { recursive: true });
   console.log(`Runtime plugin directory: ${pluginInstallDir}`);
+  assertActiveVaultMatchesConfiguredVault();
+  const reservationToken = crypto.randomBytes(16).toString("hex");
+  runtimeQaReservationToken = reservationToken;
+
+  try {
+    reserveRuntimeQa(reservationToken);
+  } catch (error) {
+    releaseUnusedRuntimeQaReservation(reservationToken);
+    throw error;
+  }
+  runtimeQaReservationConfirmed = true;
+  closeSettingsBeforeRuntimeQa();
+  fs.mkdirSync(reportDir, { recursive: true });
   ensurePreQaSettingsBackup();
+  cleanupRuntimeQaVaultArtifacts();
 
   if (!skipReload) {
     console.log(`Reloading ${pluginId} through Obsidian CLI...`);
@@ -241,8 +306,10 @@ async function main() {
   }
 
   console.log("Running Obsidian runtime QA...");
-  const evalExpression = `eval(require("fs").readFileSync(${JSON.stringify(runnerPath)}, "utf8"))`;
+  const evalExpression = `globalThis.__tinyLocalRuntimeQaLaunchToken = ${JSON.stringify(reservationToken)}; globalThis.__tinyLocalRuntimeQaOwnershipModulePath = ${JSON.stringify(ownershipModulePath)}; eval(require("fs").readFileSync(${JSON.stringify(runnerPath)}, "utf8"))`;
+  runtimeQaMayStillBeActive = true;
   const qaResult = runObsidianCli(["eval", `code=${evalExpression}`], "runtime QA", { allowFailure: true });
+  runtimeQaMayStillBeActive = false;
   if (qaResult.status !== 0) {
     const rawPath = writeTextReport("runtime-qa-raw", `${qaResult.stdout || ""}\n${qaResult.stderr || ""}`);
     throw new Error(`Runtime QA eval failed with exit ${qaResult.status}. Raw output: ${rawPath}`);
@@ -285,10 +352,33 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-}).finally(() => {
-  restoreSettingsIfPolluted();
-  cleanupRuntimeQaVaultArtifacts();
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  }).finally(() => {
+    if (!runtimeQaReservationConfirmed) {
+      return;
+    }
+    if (runtimeQaMayStillBeActive) {
+      console.warn("Runtime QA eval may still be active; skipped wrapper-side settings and artifact cleanup to avoid racing the renderer. Fully restart Obsidian before retrying.");
+      return;
+    }
+    try {
+      restoreSettingsIfPolluted();
+      cleanupRuntimeQaVaultArtifacts();
+    } finally {
+      try {
+        releaseUnusedRuntimeQaReservation(runtimeQaReservationToken);
+      } catch (error) {
+        console.warn(`Could not release the settled runtime QA reservation; fully restart Obsidian before retrying: ${error.message}`);
+      }
+    }
+  });
+}
+
+module.exports = {
+  ACTIVE_RUNTIME_QA_SYMBOL_KEY,
+  buildReleaseRuntimeQaExpression,
+  buildReserveRuntimeQaExpression
+};

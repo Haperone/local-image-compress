@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Compress PNG and JPEG files directly in your Obsidian vault on your computer, without cloud services or APIs. Reduce the disk space used by images by 30–70% without sacrificing quality.
+Compress PNG and JPEG files directly in your Obsidian vault on desktop and mobile, without cloud services or APIs. Reduce the disk space used by images by 30–70% without sacrificing quality.
+
+On phones and tablets the plugin runs with mobile-safe limits: a single compression worker and inputs up to 25 MB / 50 megapixels; larger files are skipped with a clear reason. Opening backup folders in the system file manager stays desktop-only.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF, and AVIF are intentionally skipped in this release be
 
 Minimum sizes for compression: very small files are usually skipped (`<5KB` for PNG and `<10KB` for JPEG).
 
-Internal safety limits are fixed: files larger than `100 MB` are skipped before reading, and images above `100 million` pixels are skipped after header validation.
+Platform safety limits are explicit: desktop accepts inputs up to `100 MB / 100 MP`; mobile accepts up to `25 MB / 50 MP` and uses one compression worker. Larger inputs are skipped before full processing.
 
 ### Data storage and backups
 - **Primary cache:** stored in the plugin folder.
 - **Cache backups:** stored in `Vault/.local-image-compress/backups/cache/`; up to 50 files are kept.
 - **Image backups:** stored in `Vault/.local-image-compress/backups/originals/`; created before the originals are replaced.
+- **Cache restore (`restore parity`):** cache backups can be restored on desktop and mobile. Only opening the backup folder in the system file manager is desktop-only.
+- **Migration recovery (`durable migration journal`):** before legacy data is quarantined, the plugin writes recovery metadata; startup reconciles interrupted migrations without silently deleting conflicting bytes.
 
 ### Automation
 - Enabling “Background compression” makes two sliders available:

@@ -1,6 +1,8 @@
 # Local Image Compress
 
-无需云服务或 API，直接在电脑上的 Obsidian 仓库中压缩 PNG 和 JPEG 文件。在不牺牲画质的前提下，将图片占用的磁盘空间减少 30–70%。
+无需云服务或 API，直接在电脑和移动设备上的 Obsidian 仓库中压缩 PNG 和 JPEG 文件。在不牺牲画质的前提下，将图片占用的磁盘空间减少 30–70%。
+
+在手机和平板上，插件会以移动端安全限制运行：仅使用一个压缩 worker，输入文件最大 25 MB / 5000 万像素；超出限制的文件会被跳过并给出明确原因。在系统文件管理器中打开备份文件夹的功能仍仅限桌面端。
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ Read in your language: [English](https://github.com/Haperone/local-image-compres
 
 通常会跳过很小的文件（PNG `<5KB`，JPEG `<10KB`）。
 
-内部安全限制固定：超过 `100 MB` 的文件在读取前跳过，超过 `1 亿`像素的图片在验证文件头后跳过。
+平台契约明确：桌面端接受最大 `100 MB / 100 MP` 的输入；移动端接受最大 `25 MB / 50 MP` 的输入并使用一个压缩 worker。更大的输入会在完整处理前跳过。
 
 ### 数据存储与备份
 - **主缓存：**存储在插件文件夹中。
 - **缓存备份：**存储在 `Vault/.local-image-compress/backups/cache/`；最多保留 50 个文件。
 - **图片备份：**存储在 `Vault/.local-image-compress/backups/originals/`；替换原图前创建。
+- **缓存恢复 (`restore parity`)：**缓存备份可在桌面端和移动端恢复。只有在系统文件管理器中打开备份文件夹是桌面端专用功能。
+- **迁移恢复 (`durable migration journal`)：**旧数据进入隔离区前，插件会写入恢复元数据；启动时会协调中断的迁移，不会静默删除冲突字节。
 
 ### 自动化
 - 启用“后台压缩”后会显示两个滑块：

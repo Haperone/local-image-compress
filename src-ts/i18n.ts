@@ -1,8 +1,7 @@
-import * as fs from "fs";
-import * as path from "path";
 import { getLanguage as getObsidianLanguage, Notice, requireApiVersion, type App } from "obsidian";
 import { BUILTIN_I18N } from "./locales";
-import { getLogTag, getVaultBasePath, normalizeVaultPathForComparison } from "./utils";
+import type { FsPort } from "./platform/ports";
+import { getLogTag, normalizeVaultPathForComparison, vaultBasename } from "./utils";
 
 type LocaleApp = Partial<App>;
 
@@ -14,18 +13,13 @@ type LoadedLangCache = {
   loadedAt: number;
 };
 const LOADED_LANGS: Record<string, LoadedLangCache> = {};
+// ponytail: builtin dicts are static, so merged lookups are cached per (pluginDir, lang) and cleared on external preload.
+const MERGED_DICTS = new Map<string, Record<string, string>>();
 const WARNED_LANG_LOAD_ERRORS = new Set<string>();
+// Vault-relative plugin directory; only used for cache keys and lang paths.
 export function resolvePluginDirFromApp(app: LocaleApp | null | undefined): string | null {
-  try {
-    const configDir = app?.vault?.configDir;
-    if (!configDir) {
-      return null;
-    }
-    const basePath = getVaultBasePath(app);
-    return path.join(basePath, configDir, "plugins", "local-image-compress");
-  } catch {
-    return null;
-  }
+  const configDir = app?.vault?.configDir;
+  return configDir ? `${configDir}/plugins/local-image-compress` : null;
 }
 
 function normalizeLanguageTag(lang: string | null | undefined): string {
@@ -64,7 +58,7 @@ function getBuiltinLanguage(lang: string): string {
 function getExternalLanguageCandidates(lang: string): string[] {
   const fullLang = normalizeLanguageTag(lang);
   const primary = getPrimaryLanguage(fullLang);
-  return Array.from(new Set([fullLang, primary].filter(Boolean)));
+  return Array.from(new Set([primary, fullLang].filter(Boolean)));
 }
 
 function getExternalCacheKey(pluginDir: string, lang: string): string {
@@ -92,42 +86,59 @@ function warnExternalLanguageLoadFailure(_app: LocaleApp | null | undefined, fil
   WARNED_LANG_LOAD_ERRORS.add(warningKey);
   console.warn(getLogTag({ manifest: { name: 'Local Image Compress' } }), "i18n: failed to load external lang file", filePath, error);
   try {
-    new Notice(`${I18N["en"]?.["i18n.externalLoadFailed"] || "External language file could not be loaded"}: ${path.basename(filePath)}`, 10000);
+    new Notice(`${I18N["en"]?.["i18n.externalLoadFailed"] || "External language file could not be loaded"}: ${vaultBasename(filePath)}`, 10000);
   } catch (noticeError) {
     console.debug(getLogTag({ manifest: { name: 'Local Image Compress' } }), "i18n: failed to show external lang warning", noticeError);
   }
 }
 
-export async function preloadExternalLanguages(app: LocaleApp | null | undefined, lang: string = getCurrentLang(app)): Promise<Record<string, string>> {
+export async function preloadExternalLanguages(
+  app: LocaleApp | null | undefined,
+  fsPort: FsPort,
+  lang: string = getCurrentLang(app)
+): Promise<Record<string, string>> {
   const pluginDir = resolvePluginDirFromApp(app);
   if (!pluginDir) {
+    return {};
+  }
+  const configDir = app?.vault?.configDir;
+  if (!configDir) {
     return {};
   }
   const cacheKey = getExternalCacheKey(pluginDir, lang);
   const externalDict: Record<string, string> = {};
   for (const candidate of getExternalLanguageCandidates(lang)) {
-    const langFile = path.join(pluginDir, "lang", `${candidate}.json`);
+    const langFile = `${pluginDir}/lang/${candidate}.json`;
+    const relativeLangFile = `${configDir}/plugins/local-image-compress/lang/${candidate}.json`;
     try {
-      const raw = await fs.promises.readFile(langFile, "utf8");
+      if (!await fsPort.exists(relativeLangFile)) {
+        continue;
+      }
+      const raw = await fsPort.readText(relativeLangFile);
       Object.assign(externalDict, normalizeTranslationDict(JSON.parse(raw)));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
-        warnExternalLanguageLoadFailure(app, langFile, error);
-      }
+      warnExternalLanguageLoadFailure(app, langFile, error);
     }
   }
   LOADED_LANGS[cacheKey] = { dict: externalDict, loadedAt: Date.now() };
+  MERGED_DICTS.clear();
   return externalDict;
 }
 
 export function getMergedDict(app: LocaleApp | null | undefined, lang: string): Record<string, string> {
   const pluginDir = resolvePluginDirFromApp(app);
+  const mergedKey = `${pluginDir ? normalizeVaultPathForComparison(pluginDir) : ""}\0${normalizeLanguageTag(lang)}`;
+  const cachedDict = MERGED_DICTS.get(mergedKey);
+  if (cachedDict) {
+    return cachedDict;
+  }
   const builtinLang = getBuiltinLanguage(lang);
   const merged = Object.assign({}, I18N["en"] || {}, I18N[builtinLang] || {});
   const external = pluginDir ? LOADED_LANGS[getExternalCacheKey(pluginDir, lang)]?.dict : null;
   if (external) {
     Object.assign(merged, external);
   }
+  MERGED_DICTS.set(mergedKey, merged);
   return merged;
 }
 export function getUserLang(_app: LocaleApp | null | undefined): string {

@@ -2,13 +2,21 @@
   const fs = require("fs");
   const path = require("path");
   const electron = require("electron");
+  const crypto = require("crypto");
 
   const pluginId = "local-image-compress";
   const startedAt = new Date().toISOString();
-  const runStamp = startedAt.replace(/[:.]/g, "-").replace(/Z$/, "");
   const qaStateMarker = "QA-LIC-Runtime-";
-  const qaRoot = `${qaStateMarker}${runStamp}`;
-  const staleQaArtifactParents = ["", "Compressed", "files", "files/Compressed"];
+  const launchTokenKey = "__tinyLocalRuntimeQaLaunchToken";
+  const ownershipModulePathKey = "__tinyLocalRuntimeQaOwnershipModulePath";
+  const launchToken = globalThis[launchTokenKey];
+  const ownershipModulePath = globalThis[ownershipModulePathKey];
+  Reflect.deleteProperty(globalThis, launchTokenKey);
+  Reflect.deleteProperty(globalThis, ownershipModulePathKey);
+  const qaSessionId = typeof launchToken === "string" && /^[a-f0-9]{32}$/.test(launchToken)
+    ? launchToken
+    : crypto.randomBytes(16).toString("hex");
+  const qaRoot = `${qaStateMarker}${qaSessionId}`;
   const report = {
     startedAt,
     pluginId,
@@ -19,9 +27,46 @@
     metrics: {}
   };
 
+  const activeQaSymbol = Symbol.for("local-image-compress.runtime-qa-active-v1");
+  // RUNTIME_QA_CARRIER_START
+  const claimRuntimeQaCarrier = (globalObject, carrierSymbol, wrapperLaunchToken, claimStartedAt) => {
+    const existing = globalObject[carrierSymbol];
+    if (typeof wrapperLaunchToken === "string") {
+      if (existing?.version !== 1 || existing.owner !== "wrapper" || existing.phase !== "reserved" || existing.token !== wrapperLaunchToken) {
+        throw new Error("Desktop runtime QA launch token has no matching renderer reservation");
+      }
+      existing.phase = "running";
+      return existing;
+    }
+    if (existing) {
+      throw new Error("Another desktop runtime QA operation is already active; refusing an overlapping run");
+    }
+    const directOwner = { version: 1, token: `direct-${claimStartedAt}`, owner: "direct", phase: "running", startedAt: claimStartedAt };
+    globalObject[carrierSymbol] = directOwner;
+    return directOwner;
+  };
+  const finishRuntimeQaCarrier = (globalObject, carrierSymbol, owner, settledAt) => {
+    if (globalObject[carrierSymbol] !== owner) {
+      return;
+    }
+    if (owner.owner === "direct") {
+      Reflect.deleteProperty(globalObject, carrierSymbol);
+      return;
+    }
+    if (owner.owner === "wrapper" && owner.phase === "running") {
+      owner.phase = "settled";
+      owner.settledAt = settledAt;
+    }
+  };
+  // RUNTIME_QA_CARRIER_END
+  const qaOwner = claimRuntimeQaCarrier(globalThis, activeQaSymbol, launchToken, startedAt);
+
+  try {
+
   const restoreStack = [];
   const cleanupStack = [];
   let progressPath = "";
+  let ownership = null;
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -46,12 +91,14 @@
     if (!progressPath) {
       return;
     }
-    fs.writeFileSync(progressPath, JSON.stringify({
+    const progressText = JSON.stringify({
       status,
       name,
       updatedAt: new Date().toISOString(),
       ...details
-    }, null, 2));
+    }, null, 2);
+    fs.writeFileSync(progressPath, progressText);
+    ownership?.recordFileWithExpectedSha256Sync(progressPath, crypto.createHash("sha256").update(progressText).digest("hex"));
   };
   const check = async (name, fn) => {
     const start = Date.now();
@@ -81,19 +128,35 @@
     }
   };
 
-  const p = app?.plugins?.plugins?.[pluginId];
-  if (!p) {
-    throw new Error(`${pluginId} is not loaded`);
+  let p = null;
+  const pluginReadyDeadline = Date.now() + 90_000;
+  while (Date.now() < pluginReadyDeadline) {
+    const candidate = app?.plugins?.plugins?.[pluginId];
+    if (candidate?.isInitialized === true && candidate?.cache?.cacheData && candidate?.compressor && candidate?.imageIndex && typeof candidate.getPlatformPorts === "function") {
+      p = candidate;
+      break;
+    }
+    await sleep(100);
   }
-  progressPath = path.join(p.getPluginDirectory(), "qa-backups", "runtime-qa-progress.json");
-  fs.mkdirSync(path.dirname(progressPath), { recursive: true });
-  writeProgress("starting", "runtime QA");
-
-  const vaultBase = p.moveService?.getVaultBasePath?.() || app.vault.adapter?.getBasePath?.() || app.vault.adapter?.basePath;
+  if (!p) {
+    throw new Error(`${pluginId} did not finish runtime initialization`);
+  }
+  const vaultBase = p.getPlatformPorts?.().fs.getDisplayPath("") || app.vault.adapter?.getBasePath?.() || app.vault.adapter?.basePath;
   if (!vaultBase) {
     throw new Error("Vault base path is unavailable");
   }
   const absolute = (vaultRel) => path.join(vaultBase, ...normalizeVaultPath(vaultRel).split("/").filter(Boolean));
+  const sha256Abs = (targetAbs) => crypto.createHash("sha256").update(fs.readFileSync(targetAbs)).digest("hex");
+  assert(typeof ownershipModulePath === "string" && ownershipModulePath, "Runtime QA ownership module path is unavailable");
+  delete require.cache[require.resolve(ownershipModulePath)];
+  const { RuntimeQaOwnershipLedger } = require(ownershipModulePath);
+  const pluginInstallAbsolute = absolute(p.getPluginDirectory());
+  ownership = new RuntimeQaOwnershipLedger({ vaultRoot: vaultBase, pluginInstallDir: pluginInstallAbsolute, sessionId: qaSessionId });
+  ownership.initialize();
+  const qaStateRoot = joinVault(p.getPluginDirectory(), "qa-backups", "runtime", qaSessionId);
+  report.qaStateRoot = qaStateRoot;
+  progressPath = absolute(joinVault(qaStateRoot, "runtime-qa-progress.json"));
+  writeProgress("starting", "runtime QA");
   const outputRelFor = (sourceRel) => joinVault(p.getOutputFolder(), sourceRel);
   const outputAbsFor = (sourceRel) => absolute(outputRelFor(sourceRel));
   const existsRel = async (vaultRel) => fs.promises.access(absolute(vaultRel)).then(() => true).catch(() => false);
@@ -103,31 +166,24 @@
     const resolvedTarget = path.resolve(targetAbs);
     const relative = path.relative(resolvedBase, resolvedTarget);
     assert(relative && !relative.startsWith("..") && !path.isAbsolute(relative), "Refusing to remove outside vault", { targetAbs, vaultBase });
-    await fs.promises.rm(resolvedTarget, { recursive: true, force: true });
-  };
-  const removeQaRunRootsUnder = async (parentRel) => {
-    const parentAbs = parentRel ? absolute(parentRel) : vaultBase;
-    let entries = [];
-    try {
-      entries = await fs.promises.readdir(parentAbs, { withFileTypes: true });
-    } catch (error) {
-      if (error?.code !== "ENOENT") {
-        recordWarning("cleanup.read-qa-artifact-parent", { parentRel, error: serializeError(error) });
-      }
-      return;
+    const targetStat = await fs.promises.lstat(resolvedTarget).catch((error) => error?.code === "ENOENT" ? null : Promise.reject(error));
+    if (!targetStat) return;
+    assert(!targetStat.isSymbolicLink(), "Refusing to remove a symbolic link from runtime QA", { targetAbs });
+    if (targetStat.isDirectory()) {
+      await fs.promises.rmdir(resolvedTarget);
+    } else {
+      await fs.promises.unlink(resolvedTarget);
     }
-    await Promise.all(entries
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith(qaStateMarker))
-      .map((entry) => safeRmAbs(path.join(parentAbs, entry.name))));
-  };
-  const removeRuntimeQaVaultArtifacts = async () => {
-    await safeRmAbs(absolute(qaRoot));
-    await Promise.all(staleQaArtifactParents.map((parentRel) => removeQaRunRootsUnder(parentRel)));
   };
   const isQaOwnedVaultPath = (vaultRel) => {
     const normalized = normalizeVaultPath(vaultRel);
     return normalized === qaRoot || normalized.startsWith(`${qaRoot}/`);
   };
+  const isQaOwnedStatePath = (vaultRel) => {
+    const normalized = normalizeVaultPath(vaultRel);
+    return normalized === qaStateRoot || normalized.startsWith(`${qaStateRoot}/`);
+  };
+  const isQaOwnedArtifactPath = (vaultRel) => isQaOwnedVaultPath(vaultRel) || isQaOwnedStatePath(vaultRel);
   const getEscapedQaFiles = (files) => Array.from(files || [])
     .filter((file) => file?.path && !isQaOwnedVaultPath(file.path))
     .map((file) => file.path);
@@ -156,39 +212,14 @@
     return normalizeVaultPath(vaultRel).replace(/^\/+|\/+$/g, "");
   }
 
-  // --- QA settings safety net (must survive a hard-killed run) ---
-  // This harness overwrites the user's real data.json. The in-renderer restore in the finally
-  // below only runs if execution reaches it; a hard process kill skips it and leaves QA values
-  // behind. So: auto-heal data.json if a previous crashed run left QA state in it, then snapshot
-  // the clean settings to disk *before* any mutation so recovery is always possible.
-  const preQaSettingsBackupPath = path.join(p.getPluginDirectory(), "qa-backups", "pre-qa-data-backup.json");
-  const settingsLookLikeQaState = (settings) => {
-    const outputFolder = String(settings?.outputFolder || "");
-    const roots = Array.isArray(settings?.allowedRoots) ? settings.allowedRoots : [];
-    return outputFolder.includes(qaStateMarker) || roots.some((root) => String(root).includes(qaStateMarker));
-  };
-  if (settingsLookLikeQaState(p.settings)) {
-    try {
-      p.settings = JSON.parse(await fs.promises.readFile(preQaSettingsBackupPath, "utf8"));
-      await p.saveSettings();
-      recordWarning("qa.autoHealedPollutedSettings", { from: preQaSettingsBackupPath });
-    } catch (error) {
-      recordWarning("qa.autoHealUnavailable", serializeError(error));
-    }
-  }
-  if (!settingsLookLikeQaState(p.settings)) {
-    try {
-      await fs.promises.mkdir(path.dirname(preQaSettingsBackupPath), { recursive: true });
-      await fs.promises.writeFile(preQaSettingsBackupPath, JSON.stringify(p.settings, null, 2));
-    } catch (error) {
-      recordWarning("qa.preBackupFailed", serializeError(error));
-    }
-  }
-  // --- end QA settings safety net ---
-
   const originalSettings = clone(p.settings);
   const originalCacheData = clone(p.cache.cacheData);
   const originalOpenPath = electron.shell.openPath;
+  const originalTrashItem = electron.shell.trashItem;
+  const adapter = app.vault.adapter;
+  const hadOwnTrashLocal = Object.prototype.hasOwnProperty.call(adapter, "trashLocal");
+  const originalTrashLocal = adapter.trashLocal;
+  let vaultTrashCallCount = 0;
   const originalNewFileDelay = p.newFileQueue?.AUTO_COMPRESS_DELAY;
   const originalCompressFile = p.compressFile;
   const originalRunCompressionBatch = p.runCompressionBatch;
@@ -212,18 +243,89 @@
   }
   const originalGetBackupStoragePaths = p.getBackupStoragePaths;
   if (typeof originalGetBackupStoragePaths === "function") {
-    const qaBackupStorageRoot = absolute(joinVault(qaRoot, "IsolatedBackupStorage"));
+    const qaBackupStorageRoot = joinVault(qaStateRoot, "storage");
+    const originalCacheFile = p.cache.cacheFile;
+    const originalCacheBackupsDir = p.cache.cacheBackupsDir;
+    const originalCacheFileAbsolute = absolute(originalCacheFile);
+    const originalCacheFileBytes = await fs.promises.readFile(originalCacheFileAbsolute).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
     p.getBackupStoragePaths = () => {
       const originalPaths = originalGetBackupStoragePaths.call(p);
       return {
         ...originalPaths,
         root: qaBackupStorageRoot,
-        backupsRoot: path.join(qaBackupStorageRoot, "backups"),
-        originalFilesBackups: path.join(qaBackupStorageRoot, "backups", "originals")
+        backupsRoot: joinVault(qaBackupStorageRoot, "backups"),
+        cacheBackups: joinVault(qaBackupStorageRoot, "backups", "cache"),
+        originalFilesBackups: joinVault(qaBackupStorageRoot, "backups", "originals")
       };
     };
+    p.cache.cancelPendingSave();
+    p.cache.cacheFile = joinVault(qaStateRoot, "cache", "tinyLocal-cache.json");
+    p.cache.cacheBackupsDir = joinVault(qaBackupStorageRoot, "backups", "cache");
+    ownership.recordDirectorySync(path.dirname(absolute(p.cache.cacheFile)));
+    const isQaOwnedRecoveryJournal = async (vaultRel) => {
+      const normalized = normalizeVaultPath(vaultRel);
+      if (!normalized.startsWith(".local-image-compress/recovery/")) return false;
+      const fileName = path.basename(normalized);
+      if (!/^desktop-(?:replacement|cleanup)-journal-v1-[a-f0-9]{32}-[a-f0-9]{32}\.json\.delete-[a-f0-9]{32}\.tmp$/i.test(fileName)) return false;
+      let journal;
+      try {
+        journal = JSON.parse(await fs.promises.readFile(absolute(normalized), "utf8"));
+      } catch (error) {
+        void error;
+        return false;
+      }
+      if (journal?.sourcePath !== undefined) {
+        return [journal.sourcePath, journal.quarantinePath]
+          .every((candidate) => typeof candidate === "string" && isQaOwnedArtifactPath(candidate));
+      }
+      return [journal?.stagedPath, journal?.targetPath]
+        .every((candidate) => typeof candidate === "string" && isQaOwnedArtifactPath(candidate))
+        && (journal?.rollbackPath === null
+          || (typeof journal?.rollbackPath === "string" && isQaOwnedArtifactPath(journal.rollbackPath)));
+    };
+    const removeQaOwnedTrashTarget = async (vaultRel, action) => {
+      const normalized = normalizeVaultPath(vaultRel);
+      assert(
+        isQaOwnedVaultPath(normalized) || isQaOwnedStatePath(normalized) || await isQaOwnedRecoveryJournal(normalized),
+        `Runtime QA blocked ${action} outside ${qaRoot}`,
+        { target: normalized }
+      );
+      await safeRmAbs(absolute(normalized));
+    };
+    adapter.trashLocal = async (vaultRel) => {
+      vaultTrashCallCount += 1;
+      await removeQaOwnedTrashTarget(vaultRel, "trashLocal");
+    };
+    electron.shell.trashItem = async (targetAbs) => {
+      const relative = path.relative(path.resolve(vaultBase), path.resolve(targetAbs));
+      assert(relative && !relative.startsWith("..") && !path.isAbsolute(relative), `Runtime QA blocked trashItem outside ${qaRoot}`, { targetAbs });
+      await removeQaOwnedTrashTarget(relative, "trashItem");
+    };
     restoreStack.push(async () => {
+      p.cache.cacheFile = originalCacheFile;
+      p.cache.cacheBackupsDir = originalCacheBackupsDir;
       p.getBackupStoragePaths = originalGetBackupStoragePaths;
+      if (hadOwnTrashLocal) {
+        adapter.trashLocal = originalTrashLocal;
+      } else {
+        Reflect.deleteProperty(adapter, "trashLocal");
+      }
+      electron.shell.trashItem = originalTrashItem;
+    });
+    restoreStack.push(async () => {
+      const currentCacheFileBytes = await fs.promises.readFile(originalCacheFileAbsolute).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      assert(
+        originalCacheFileBytes === null
+          ? currentCacheFileBytes === null
+          : currentCacheFileBytes !== null && Buffer.compare(originalCacheFileBytes, currentCacheFileBytes) === 0,
+        "Runtime QA changed the product cache while the isolated cache was active"
+      );
     });
   }
   restoreStack.push(async () => {
@@ -240,12 +342,29 @@
     p.settings = clone(originalSettings);
     await p.saveSettings();
     p.cache.cacheData = clone(originalCacheData);
-    await p.cache.saveCache({ mergeDiskEntries: false, authoritative: true });
     await p.rebuildImageIndex?.("runtime-qa-restore");
     await p.statusBarController?.update?.();
   });
   cleanupStack.push(async () => {
-    await removeRuntimeQaVaultArtifacts();
+    assert(await p.cache.flushPendingCacheSave(), "Runtime QA isolated cache did not settle before cleanup");
+    p.cache.cancelPendingSave();
+    if (await existsRel(p.cache.cacheFile)) {
+      assert(typeof expectedCacheFileSha256 === "string", "Runtime QA isolated cache has no exact committed payload proof");
+      ownership.recordFileWithExpectedSha256Sync(
+        absolute(p.cache.cacheFile),
+        expectedCacheFileSha256
+      );
+    }
+    ownership.recordCacheLeaseArtifactsSync(absolute(p.cache.cacheFile));
+    for (const backupName of await p.cache.getAvailableBackups()) {
+      const backupPath = joinVault(p.cache.cacheBackupsDir, backupName);
+      if (await existsRel(backupPath)) {
+        const backupAbsolutePath = path.resolve(absolute(backupPath));
+        const expectedSha256 = expectedCacheBackupFiles.get(backupAbsolutePath);
+        assert(typeof expectedSha256 === "string", "Runtime QA cache backup has no exact creation proof", { backupPath });
+        ownership.recordFileWithExpectedSha256Sync(backupAbsolutePath, expectedSha256);
+      }
+    }
   });
 
   function patchMethod(target, name, replacement) {
@@ -256,6 +375,38 @@
     });
     return original;
   }
+
+  const expectedCacheBackupFiles = new Map();
+  let expectedCacheFileSha256 = null;
+  const originalWriteCacheFileAtomic = patchMethod(p.cache, "writeCacheFileAtomic", async function(data, shouldCommit, options = {}) {
+    let committedPayload = options.mergeDiskEntries ? null : data;
+    const originalBuildMergedCachePayload = this.buildMergedCachePayload;
+    this.buildMergedCachePayload = (...args) => {
+      committedPayload = originalBuildMergedCachePayload.apply(this, args);
+      return committedPayload;
+    };
+    try {
+      const committed = await originalWriteCacheFileAtomic.call(this, data, shouldCommit, options);
+      if (committed) {
+        assert(typeof committedPayload === "string", "Runtime QA cache commit exposed no exact payload proof");
+        expectedCacheFileSha256 = crypto.createHash("sha256").update(committedPayload).digest("hex");
+      }
+      return committed;
+    } finally {
+      this.buildMergedCachePayload = originalBuildMergedCachePayload;
+    }
+  });
+  const originalGetCacheBackupPath = patchMethod(p.cache.backupStore, "getCacheBackupPath", function(...args) {
+    const cacheAbsolutePath = absolute(p.cache.cacheFile);
+    const expectedSha256 = fs.existsSync(cacheAbsolutePath) ? sha256Abs(cacheAbsolutePath) : null;
+    const result = originalGetCacheBackupPath.apply(this, args);
+    if (typeof expectedSha256 === "string") {
+      const backupAbsolutePath = path.resolve(absolute(result.backupFile));
+      assert(!expectedCacheBackupFiles.has(backupAbsolutePath), "Runtime QA cache backup path was reused", { backupFile: result.backupFile });
+      expectedCacheBackupFiles.set(backupAbsolutePath, expectedSha256);
+    }
+    return result;
+  });
 
   async function ensureFolder(vaultRel) {
     const normalized = normalizeVaultPath(vaultRel);
@@ -269,13 +420,18 @@
       if (!app.vault.getAbstractFileByPath(current)) {
         await app.vault.createFolder(current);
         await sleep(20);
+        if (isQaOwnedVaultPath(current)) {
+          ownership.recordDirectorySync(absolute(current));
+        }
       }
     }
   }
 
   async function createTextFile(vaultRel, text) {
     await ensureFolder(path.posix.dirname(normalizeVaultPath(vaultRel)));
-    return await app.vault.create(vaultRel, text);
+    const file = await app.vault.create(vaultRel, text);
+    ownership.recordFileWithExpectedSha256Sync(absolute(file.path), crypto.createHash("sha256").update(text).digest("hex"));
+    return file;
   }
 
   function drawPattern(ctx, width, height, variant) {
@@ -317,8 +473,12 @@
     const buffer = kind === "png"
       ? await makeImageBuffer("image/png", 760, 520, undefined, variant)
       : await makeImageBuffer("image/jpeg", 960, 640, 0.99, variant);
+    const expectedSha256 = crypto.createHash("sha256").update(Buffer.from(buffer)).digest("hex");
     const file = await app.vault.createBinary(normalized, buffer);
+    ownership.recordFileWithExpectedSha256Sync(absolute(file.path), expectedSha256);
     await sleep(80);
+    assert(isQaOwnedVaultPath(file.path), "Runtime QA fixture escaped its visible root after Vault automation", { createdPath: normalized, currentPath: file.path });
+    ownership.recordFileWithExpectedSha256Sync(absolute(file.path), expectedSha256);
     return file;
   }
 
@@ -326,9 +486,96 @@
     const normalized = normalizeVaultPath(vaultRel);
     await ensureFolder(path.posix.dirname(normalized));
     const buffer = await makeImageBuffer("image/jpeg", 64, 64, 0.45, 999);
+    const expectedSha256 = crypto.createHash("sha256").update(Buffer.from(buffer)).digest("hex");
     const file = await app.vault.createBinary(normalized, buffer);
+    ownership.recordFileWithExpectedSha256Sync(absolute(file.path), expectedSha256);
     await sleep(80);
+    assert(isQaOwnedVaultPath(file.path), "Runtime QA fixture escaped its visible root after Vault automation", { createdPath: normalized, currentPath: file.path });
+    ownership.recordFileWithExpectedSha256Sync(absolute(file.path), expectedSha256);
     return file;
+  }
+
+  const expectedOriginalBackupFiles = new Map();
+
+  const captureMoveBackupProofs = async (action) => {
+    const originalCreateBackupBeforeMove = p.moveService.createBackupBeforeMove;
+    p.moveService.createBackupBeforeMove = async function(compressedFiles) {
+      const result = await originalCreateBackupBeforeMove.call(this, compressedFiles);
+      for (const file of result.files) {
+        const originalBackupPath = normalizeVaultPath(file.originalBackupPath);
+        const originalsMarker = "/originals/";
+        const originalsIndex = originalBackupPath.lastIndexOf(originalsMarker);
+        assert(originalsIndex > 0
+          && /^[a-f0-9]{64}$/.test(file.originalSha256BeforeMove || "")
+          && /^[a-f0-9]{64}$/.test(file.compressedSha256 || ""),
+        "Move backup result has no exact path-bound file proofs", { file });
+        const batchRoot = originalBackupPath.slice(0, originalsIndex);
+        const expectedFiles = [
+          [originalBackupPath, file.originalSha256BeforeMove],
+          [joinVault(batchRoot, "compressed", file.compressedPath), file.compressedSha256]
+        ];
+        for (const [vaultPath, expectedSha256] of expectedFiles) {
+          assert(isQaOwnedArtifactPath(vaultPath), "Move backup proof escaped exact QA storage", { vaultPath });
+          const absolutePath = path.resolve(absolute(vaultPath));
+          assert(!expectedOriginalBackupFiles.has(absolutePath), "Move backup proof reused an exact path", { vaultPath });
+          expectedOriginalBackupFiles.set(absolutePath, expectedSha256);
+        }
+      }
+      return result;
+    };
+    try {
+      return await action();
+    } finally {
+      p.moveService.createBackupBeforeMove = originalCreateBackupBeforeMove;
+    }
+  };
+
+  function recordProvenOriginalBackups(rootAbs) {
+    if (!fs.existsSync(rootAbs)) {
+      return;
+    }
+    const resolvedRoot = path.resolve(rootAbs);
+    const directories = [];
+    const files = [];
+    const visit = (directoryPath) => {
+      const stat = fs.lstatSync(directoryPath);
+      assert(stat.isDirectory() && !stat.isSymbolicLink(), "Runtime QA original-backup root is not a real directory", { directoryPath });
+      directories.push(path.resolve(directoryPath));
+      for (const entry of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+        const entryPath = path.join(directoryPath, entry.name);
+        assert(!entry.isSymbolicLink(), "Runtime QA original-backup storage contains a symbolic link", { entryPath });
+        if (entry.isDirectory()) {
+          visit(entryPath);
+        } else {
+          assert(entry.isFile(), "Runtime QA original-backup storage contains an unsupported entry", { entryPath });
+          const resolvedEntryPath = path.resolve(entryPath);
+          const expectedSha256 = expectedOriginalBackupFiles.get(resolvedEntryPath);
+          assert(typeof expectedSha256 === "string", "Runtime QA refused to adopt an unproven original-backup file", { entryPath });
+          files.push({ path: resolvedEntryPath, expectedSha256 });
+        }
+      }
+    };
+    visit(resolvedRoot);
+    const expectedDirectories = new Set([resolvedRoot]);
+    for (const expectedFilePath of expectedOriginalBackupFiles.keys()) {
+      assert(expectedFilePath.startsWith(`${resolvedRoot}${path.sep}`), "Runtime QA original-backup proof escaped its exact root", { expectedFilePath });
+      let directoryPath = path.dirname(expectedFilePath);
+      while (directoryPath === resolvedRoot || directoryPath.startsWith(`${resolvedRoot}${path.sep}`)) {
+        expectedDirectories.add(directoryPath);
+        if (directoryPath === resolvedRoot) break;
+        directoryPath = path.dirname(directoryPath);
+      }
+      assert(files.some((file) => file.path === expectedFilePath), "Runtime QA exact original-backup file is missing", { expectedFilePath });
+    }
+    assert(directories.length === expectedDirectories.size
+      && directories.every((directoryPath) => expectedDirectories.has(directoryPath)),
+    "Runtime QA original-backup tree contains an unproven directory", { directories });
+    for (const directoryPath of directories) {
+      ownership.recordDirectorySync(directoryPath);
+    }
+    for (const file of files) {
+      ownership.recordFileWithExpectedSha256Sync(file.path, file.expectedSha256);
+    }
   }
 
   async function waitForFile(vaultRel, timeoutMs = 90000) {
@@ -401,6 +648,8 @@
     const freshEntry = await waitForFreshCacheEntry(file);
     assert(!!freshEntry, `${label}: cache entry missing`, { source: file.path });
     assert(freshEntry.entry?.state === "pending_move", `${label}: cache entry is not pending_move`, freshEntry.entry);
+    assert(freshEntry.entry?.outputPath === outRel && typeof freshEntry.entry?.outputSha256 === "string", `${label}: cache entry has no exact committed output proof`, freshEntry.entry);
+    ownership.recordFileWithExpectedSha256Sync(absolute(outRel), freshEntry.entry.outputSha256);
     return {
       source: file.path,
       output: outRel,
@@ -480,26 +729,57 @@
     }
   }
 
-  async function openSettings() {
+  /* RUNTIME_QA_SETTINGS_WAIT_START */
+  async function waitForSettingsSurface(tab, requiredSelector = null) {
+    const deadline = Date.now() + 5000;
+    let previousSignature = "";
+    let stableSamples = 0;
+    do {
+      const root = tab?.containerEl;
+      const counts = root ? {
+        labels: root.querySelectorAll(".setting-item-name").length,
+        buttons: root.querySelectorAll("button").length,
+        textInputs: root.querySelectorAll("input[type='text']").length,
+        rangeInputs: root.querySelectorAll("input[type='range']").length,
+        toggles: root.querySelectorAll(".checkbox-container").length
+      } : null;
+      const requiredControlReady = !requiredSelector || !!root?.querySelector(requiredSelector);
+      const surfaceReady = !!counts
+        && counts.labels >= 24
+        && counts.buttons >= 8
+        && counts.textInputs >= 2
+        && counts.rangeInputs >= 5
+        && counts.toggles >= 4
+        && requiredControlReady;
+      const signature = surfaceReady
+        ? `${counts.labels}:${counts.buttons}:${counts.textInputs}:${counts.rangeInputs}:${counts.toggles}:${root.childElementCount}:${root.textContent?.length || 0}`
+        : "";
+      stableSamples = signature && signature === previousSignature ? stableSamples + 1 : 0;
+      previousSignature = signature;
+      if (stableSamples >= 2) {
+        return root;
+      }
+      await sleep(100);
+    } while (Date.now() < deadline);
+    assert(false, "Plugin settings render did not reach a stable complete surface", { requiredSelector });
+  }
+  /* RUNTIME_QA_SETTINGS_WAIT_END */
+
+  async function openSettings(requiredSelector = null) {
     app.setting.open();
+    app.setting.openTabById(pluginId);
     let tab = null;
     const deadline = Date.now() + 5000;
     do {
-      app.setting.openTabById(pluginId);
-      await sleep(250);
+      await sleep(100);
       tab = app.setting.activeTab;
       if (tab?.id === pluginId) {
         break;
       }
+      app.setting.openTabById(pluginId);
     } while (Date.now() < deadline);
     assert(tab?.id === pluginId, "Plugin settings tab is not active", { activeId: tab?.id });
-    if (typeof tab.renderSettings === "function") {
-      await tab.renderSettings();
-    } else if (typeof tab.display === "function") {
-      tab.display();
-    }
-    await sleep(600);
-    return tab.containerEl;
+    return await waitForSettingsSurface(tab, requiredSelector);
   }
 
   async function closeTopModal() {
@@ -524,7 +804,7 @@
   }
 
   async function setupIsolatedState() {
-    await removeRuntimeQaVaultArtifacts();
+    assert(!await existsRel(qaRoot), "Refusing to adopt an existing runtime QA visible root", { qaRoot });
     await ensureFolder(qaRoot);
     p.statusBarController?.closeMenu?.();
     p.closeManagedModals?.();
@@ -635,6 +915,17 @@
         await sleep(100);
         const tooltip = document.querySelector(".tiny-local-savings-tooltip");
         assert(tooltip?.getAttribute("role") === "tooltip", "Savings tooltip did not open from keyboard focus");
+        const tooltipWrapper = document.querySelector(".tiny-local-savings-tooltip-wrapper");
+        assert(!!tooltipWrapper?.style.getPropertyValue("--local-image-compress-savings-tooltip-arrow-x"), "Savings tooltip did not calculate arrow position");
+        const targetRect = savingsTarget.getBoundingClientRect();
+        const tooltipRect = tooltip.getBoundingClientRect();
+        if (tooltipRect.bottom <= targetRect.top) {
+          assert(tooltip.classList.contains("tiny-local-savings-tooltip-placement-above"), "Savings tooltip arrow is not attached to the bottom edge for above-target placement");
+        } else if (tooltipRect.top >= targetRect.bottom) {
+          assert(tooltip.classList.contains("tiny-local-savings-tooltip-placement-below"), "Savings tooltip arrow is not attached to the top edge for below-target placement");
+        } else {
+          assert(tooltip.classList.contains("tiny-local-savings-tooltip-placement-above") || tooltip.classList.contains("tiny-local-savings-tooltip-placement-below"), "Savings tooltip is missing a placement class");
+        }
         savingsTarget.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
         await sleep(100);
         assert(!document.querySelector(".tiny-local-savings-tooltip"), "Savings tooltip did not close from Escape");
@@ -667,16 +958,24 @@
     });
 
     await check("accessibility: theme variables, motion overrides, and popout ownership", async () => {
+      const mainDocument = document;
+      const root = await openSettings();
+      const settingsDocument = root.doc || root.ownerDocument;
+      const settingsWindow = settingsDocument?.defaultView;
+      assert(!!settingsDocument && !!settingsWindow, "Plugin settings UI has no owning document or window");
+      const themeBody = settingsDocument.body;
       const originalThemeClasses = {
-        light: document.body.classList.contains("theme-light"),
-        dark: document.body.classList.contains("theme-dark")
+        light: themeBody.classList.contains("theme-light"),
+        dark: themeBody.classList.contains("theme-dark")
       };
-      const sample = document.querySelector(".tiny-local-savings-indicator") || document.querySelector(".tiny-local-settings");
+      const originallyMobile = mainDocument.body.classList.contains("is-mobile");
+      let mobileTouchProbe = null;
+      const sample = root.querySelector(".tiny-local-savings-indicator") || (root.matches(".tiny-local-settings") ? root : null);
       assert(!!sample, "No plugin UI sample available for theme verification");
       const readTheme = (themeClass) => {
-        document.body.classList.remove("theme-light", "theme-dark");
-        document.body.classList.add(themeClass);
-        const style = window.getComputedStyle(sample);
+        themeBody.classList.remove("theme-light", "theme-dark");
+        themeBody.classList.add(themeClass);
+        const style = settingsWindow.getComputedStyle(sample);
         return {
           color: style.color,
           backgroundColor: style.backgroundColor,
@@ -692,7 +991,7 @@
         }
 
         const mediaRules = [];
-        for (const sheet of Array.from(document.styleSheets)) {
+        for (const sheet of Array.from(settingsDocument.styleSheets)) {
           let rules = [];
           try {
             rules = Array.from(sheet.cssRules || []);
@@ -717,7 +1016,7 @@
         await sleep(500);
         const popoutContainer = popoutLeaf?.view?.containerEl;
         const popoutDocument = popoutContainer?.doc || popoutContainer?.ownerDocument;
-        assert(popoutContainer && popoutDocument && popoutDocument !== document, "Obsidian popout leaf did not expose a distinct document");
+        assert(popoutContainer && popoutDocument && popoutDocument !== mainDocument, "Obsidian popout leaf did not expose a distinct document");
         const popoutWindow = popoutDocument.defaultView;
         assert(!!popoutWindow, "Obsidian popout document did not expose its owning window");
         let cancelledPopoutTimerFired = false;
@@ -733,15 +1032,28 @@
         popoutTarget.focus();
         await sleep(150);
         assert(!!popoutDocument.querySelector(".tiny-local-savings-tooltip"), "Savings tooltip did not render in its owning popout document");
-        assert(!document.querySelector(".tiny-local-savings-tooltip"), "Popout savings tooltip leaked into the main document");
+        assert(!mainDocument.querySelector(".tiny-local-savings-tooltip"), "Popout savings tooltip leaked into the main document");
         p.settingsTab.cleanupSavingsTooltips();
         popoutTarget.remove();
 
-        return { light, dark, reducedMotion: true, highContrast: true, popoutOwned: true, popoutTimerOwned: true };
+        mainDocument.body.classList.add("is-mobile");
+        mobileTouchProbe = mainDocument.createElement("div");
+        mobileTouchProbe.classList.add("tiny-local-status-menu");
+        const mobileTouchItem = mainDocument.createElement("button");
+        mobileTouchItem.classList.add("tiny-local-status-menu-item");
+        mobileTouchProbe.appendChild(mobileTouchItem);
+        mainDocument.body.appendChild(mobileTouchProbe);
+        const mainWindow = mainDocument.defaultView || window;
+        const mobileTouchMinHeight = Number.parseFloat(mainWindow.getComputedStyle(mobileTouchItem).minHeight);
+        assert(mobileTouchMinHeight >= 44, "Mobile status menu touch target is below 44px", { mobileTouchMinHeight });
+
+        return { light, dark, reducedMotion: true, highContrast: true, popoutOwned: true, popoutTimerOwned: true, mobileTouchMinHeight };
       } finally {
-        document.body.classList.remove("theme-light", "theme-dark");
-        if (originalThemeClasses.light) document.body.classList.add("theme-light");
-        if (originalThemeClasses.dark) document.body.classList.add("theme-dark");
+        themeBody.classList.remove("theme-light", "theme-dark");
+        if (originalThemeClasses.light) themeBody.classList.add("theme-light");
+        if (originalThemeClasses.dark) themeBody.classList.add("theme-dark");
+        mobileTouchProbe?.remove?.();
+        if (!originallyMobile) mainDocument.body.classList.remove("is-mobile");
         p.settingsTab.cleanupSavingsTooltips();
         popoutLeaf?.detach?.();
       }
@@ -850,7 +1162,12 @@
         sourceMtime: markerMtime,
         sourceSize: 123
       };
+      const vaultTrashCallsBeforeSave = vaultTrashCallCount;
       await p.cache.saveCache({ mergeDiskEntries: false, authoritative: true });
+      assert(
+        vaultTrashCallCount === vaultTrashCallsBeforeSave,
+        "Successful cache save added internal transaction files to the user-visible Vault trash"
+      );
       await p.cache.createBackup();
       const backups = await p.cache.getAvailableBackups();
       assert(backups.length > 0, "No cache backups available after createBackup");
@@ -862,7 +1179,7 @@
         return true;
       };
       try {
-        const root = await openSettings();
+        const root = await openSettings("select");
         const select = root.querySelector("select");
         assert(!!select, "Cache restore dropdown missing");
         assert(Array.from(select.options).some((option) => option.value === targetBackup), "Created backup is missing from dropdown", { targetBackup });
@@ -1018,6 +1335,12 @@
       await p.cache.createBackup();
       const backups = await p.cache.getAvailableBackups();
       assert(backups.length > 0, "Cache backup list is empty");
+      for (const backupName of backups) {
+        const backupAbsolutePath = path.resolve(absolute(joinVault(p.cache.cacheBackupsDir, backupName)));
+        const expectedSha256 = expectedCacheBackupFiles.get(backupAbsolutePath);
+        assert(typeof expectedSha256 === "string", "Cache backup has no exact creation proof", { backupName });
+        ownership.recordFileWithExpectedSha256Sync(backupAbsolutePath, expectedSha256);
+      }
       const targetBackup = backups[0];
       delete p.cache.cacheData.entries[markerKey];
       await p.cache.saveCache({ mergeDiskEntries: false, authoritative: true });
@@ -1038,11 +1361,17 @@
       const jpgResult = await assertCompressed(jpg, "direct jpg");
       await p.compressFile(jpeg);
       const jpegResult = await assertCompressed(jpeg, "direct jpeg");
-      await p.compressFile(png);
-      const pngResult = await assertCompressed(png, "direct png");
-      const validation = await p.validateFileForCompression(jpg);
+	      await p.compressFile(png);
+	      const pngResult = await assertCompressed(png, "direct png");
+	      const repeatedJpg = await p.compressor.compress(jpg, p.settings);
+	      assert(repeatedJpg.success === true, "Repeated compression could not replace the existing output", repeatedJpg);
+	      await p.handleSuccessfulCompression(jpg, repeatedJpg);
+      ownership.recordFileWithExpectedSha256Sync(outputAbsFor(jpg.path), repeatedJpg.artifact.outputSha256);
+	      const repeatedJpgStats = await statRel(outputRelFor(jpg.path));
+	      assert(repeatedJpgStats.size > 0 && repeatedJpgStats.size < jpgResult.originalSize, "Repeated compression produced an invalid output", repeatedJpgStats);
+	      const validation = await p.validateFileForCompression(jpg);
       assert(validation.valid === false, "Already-compressed file was still valid for compression", validation);
-      return { jpgResult, jpegResult, pngResult, alreadyCompressedValidation: validation };
+	      return { jpgResult, jpegResult, pngResult, repeatedJpgSize: repeatedJpgStats.size, alreadyCompressedValidation: validation };
     });
 
     await check("compression: file context menu action compresses selected image", async () => {
@@ -1424,7 +1753,25 @@
       const compressed = await assertCompressed(moveProbe, "move command setup");
       const movableBefore = await p.moveService.getCompressedFilesCount();
       assert(movableBefore > 0, "No compressed files are movable before move", { movableBefore });
-      await runCommand("move-compressed-to-files", 120000);
+      const movedOriginalProofs = [];
+      for (const candidate of await p.moveService.getCompressedMoveCandidates()) {
+        const originalPath = candidate.originalPath || await p.moveService.findOriginalFileForCompressed(candidate);
+        if (originalPath) {
+          assert(isQaOwnedVaultPath(originalPath), "Move candidate original escaped the exact QA root", { originalPath });
+          assert(isQaOwnedVaultPath(candidate.compressedPath), "Move candidate output escaped the exact QA root", { compressedPath: candidate.compressedPath });
+          movedOriginalProofs.push({
+            originalPath,
+            compressedSha256: sha256Abs(absolute(candidate.compressedPath))
+          });
+        }
+      }
+      await captureMoveBackupProofs(async () => await runCommand("move-compressed-to-files", 120000));
+      for (const { originalPath, compressedSha256 } of movedOriginalProofs) {
+        if (await existsRel(originalPath)) {
+          assert(sha256Abs(absolute(originalPath)) === compressedSha256, "Move installed bytes that differ from the exact registered compressed output", { originalPath });
+          ownership.recordFileWithExpectedSha256Sync(absolute(originalPath), compressedSha256);
+        }
+      }
       const originalAfter = (await statRel(moveProbe.path)).size;
       assert(originalAfter < originalBefore, "Move command did not replace original with smaller compressed file", { originalBefore, originalAfter, compressed });
       assert(!(await existsRel(outputRelFor(moveProbe.path))), "Move command did not remove compressed output", { output: outputRelFor(moveProbe.path) });
@@ -1433,8 +1780,10 @@
         entries: p.cache.getEntriesForPath(moveProbe.path)
       });
       const backupDir = p.getBackupStoragePaths().originalFilesBackups;
-      const backups = await fs.promises.readdir(backupDir).catch(() => []);
+      const backupDirAbsolute = absolute(backupDir);
+      const backups = await fs.promises.readdir(backupDirAbsolute).catch(() => []);
       assert(backups.length > 0, "Move command did not create an image backup directory", { backupDir });
+      recordProvenOriginalBackups(backupDirAbsolute);
       return { movableBefore, originalBefore, originalAfter, backupCount: backups.length };
     });
 
@@ -1445,8 +1794,11 @@
         await p.saveSettings();
         const file = await createImage(`${qaRoot}/AutoMove/auto-move.jpg`, "jpg", 13);
         const originalBefore = (await statRel(file.path)).size;
-        await p.compressFile(file);
-        await waitForCompressionIdle(120000);
+        ownership.recordDirectorySync(path.dirname(outputAbsFor(file.path)));
+        await captureMoveBackupProofs(async () => {
+          await p.compressFile(file);
+          await waitForCompressionIdle(120000);
+        });
         const originalAfter = (await statRel(file.path)).size;
         assert(originalAfter < originalBefore, "Auto-move did not replace original with smaller compressed file", { originalBefore, originalAfter });
         assert(!(await existsRel(outputRelFor(file.path))), "Auto-move left compressed output behind", { output: outputRelFor(file.path) });
@@ -1454,6 +1806,13 @@
         assert(!!movedCacheEntry, "Auto-move did not mark cache entry moved", {
           entries: p.cache.getEntriesForPath(file.path)
         });
+        const installedSha256 = sha256Abs(absolute(file.path));
+        assert(movedCacheEntry.entry?.outputSha256 === installedSha256, "Auto-move installed bytes that differ from its exact committed compressed output", {
+          installedSha256,
+          outputSha256: movedCacheEntry.entry?.outputSha256
+        });
+        ownership.recordFileWithExpectedSha256Sync(absolute(file.path), movedCacheEntry.entry.outputSha256);
+        recordProvenOriginalBackups(absolute(p.getBackupStoragePaths().originalFilesBackups));
         return { originalBefore, originalAfter };
       } finally {
         await restoreQaDefaults();
@@ -1461,20 +1820,25 @@
     });
 
     await check("backups: clear original-files backups is safe when redirected to isolated storage", async () => {
-      const isolatedStorageRoot = absolute(`${qaRoot}/IsolatedBackupStorage`);
+      const isolatedStorageRoot = joinVault(qaStateRoot, "storage");
       const originalGetBackupStoragePaths = p.getBackupStoragePaths;
       p.getBackupStoragePaths = () => ({
         root: isolatedStorageRoot,
-        backupsRoot: path.join(isolatedStorageRoot, "backups"),
-        cacheBackups: path.join(isolatedStorageRoot, "backups", "cache"),
-        originalFilesBackups: path.join(isolatedStorageRoot, "backups", "originals")
+        backupsRoot: joinVault(isolatedStorageRoot, "backups"),
+        cacheBackups: joinVault(isolatedStorageRoot, "backups", "cache"),
+        originalFilesBackups: joinVault(isolatedStorageRoot, "backups", "originals")
       });
       try {
         const backupDir = p.getBackupStoragePaths().originalFilesBackups;
-        await fs.promises.mkdir(path.join(backupDir, "backup-test"), { recursive: true });
-        await fs.promises.writeFile(path.join(backupDir, "backup-test", "file.txt"), "backup");
+        const backupDirAbsolute = absolute(backupDir);
+        await fs.promises.mkdir(path.join(backupDirAbsolute, "backup-test"), { recursive: true });
+        await fs.promises.writeFile(path.join(backupDirAbsolute, "backup-test", "file.txt"), "backup");
+        ownership.recordFileWithExpectedSha256Sync(
+          path.join(backupDirAbsolute, "backup-test", "file.txt"),
+          crypto.createHash("sha256").update("backup").digest("hex")
+        );
         await p.clearOriginalFilesBackups();
-        const remaining = await fs.promises.readdir(backupDir).catch(() => []);
+        const remaining = await fs.promises.readdir(backupDirAbsolute).catch(() => []);
         assert(remaining.length === 0, "clearOriginalFilesBackups did not empty isolated backup dir", { remaining, backupDir });
         return { backupDir };
       } finally {
@@ -1530,6 +1894,15 @@
   writeProgress(report.failures.length > 0 ? "completed-with-failures" : "completed", "runtime QA", {
     summary: report.summary
   });
+  try {
+    ownership.cleanup();
+  } catch (error) {
+    recordWarning("cleanup.ownership", serializeError(error));
+    report.summary.warnings = report.warnings.length;
+  }
   globalThis.__tinyLocalFullQaLastReport = report;
   return JSON.stringify(report, null, 2);
+  } finally {
+    finishRuntimeQaCarrier(globalThis, activeQaSymbol, qaOwner, new Date().toISOString());
+  }
 })()

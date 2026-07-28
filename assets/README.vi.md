@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Nén tệp PNG và JPEG trực tiếp trong kho Obsidian trên máy tính, không dùng dịch vụ đám mây hay API. Giảm 30–70% dung lượng đĩa do hình ảnh chiếm dụng mà không làm giảm chất lượng.
+Nén tệp PNG và JPEG trực tiếp trong kho Obsidian trên máy tính và thiết bị di động, không dùng dịch vụ đám mây hay API. Giảm 30–70% dung lượng đĩa do hình ảnh chiếm dụng mà không làm giảm chất lượng.
+
+Trên điện thoại và máy tính bảng, plugin chạy với các giới hạn an toàn cho di động: một worker nén duy nhất và tệp đầu vào tối đa 25 MB / 50 megapixel; các tệp lớn hơn sẽ bị bỏ qua kèm lý do rõ ràng. Việc mở thư mục sao lưu trong trình quản lý tệp của hệ thống vẫn chỉ khả dụng trên máy tính.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF và AVIF được chủ ý bỏ qua trong bản phát 
 
 Tệp rất nhỏ thường được bỏ qua (PNG `<5KB`, JPEG `<10KB`).
 
-Giới hạn an toàn nội bộ được cố định: tệp lớn hơn `100 MB` bị bỏ qua trước khi đọc, và ảnh trên `100 triệu` pixel bị bỏ qua sau khi xác thực phần đầu tệp.
+Hợp đồng theo nền tảng được nêu rõ: máy tính nhận đầu vào đến `100 MB / 100 MP`; di động nhận đến `25 MB / 50 MP` và dùng một worker nén. Đầu vào lớn hơn bị bỏ qua trước khi xử lý đầy đủ.
 
 ### Lưu trữ dữ liệu và sao lưu
 - **Bộ nhớ đệm chính:** lưu trong thư mục plugin.
 - **Bản sao bộ nhớ đệm:** lưu tại `Vault/.local-image-compress/backups/cache/`; giữ tối đa 50 tệp.
 - **Bản sao hình ảnh:** lưu tại `Vault/.local-image-compress/backups/originals/`; được tạo trước khi thay thế tệp gốc.
+- **Khôi phục bộ nhớ đệm (`restore parity`):** bản sao bộ nhớ đệm có thể được khôi phục trên máy tính và di động. Chỉ thao tác mở thư mục trong trình quản lý tệp hệ thống là dành riêng cho máy tính.
+- **Khôi phục di chuyển dữ liệu (`durable migration journal`):** trước khi cách ly dữ liệu cũ, plugin ghi siêu dữ liệu khôi phục; khi khởi động, plugin đối chiếu các lần di chuyển bị gián đoạn mà không âm thầm xóa các byte xung đột.
 
 ### Tự động hóa
 - Bật “Nén nền” sẽ hiện hai thanh trượt:

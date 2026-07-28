@@ -236,6 +236,7 @@
 }
 
 .tiny-local-savings-tooltip {
+	--local-image-compress-savings-tooltip-arrow-size: 6px;
 	background: var(--background-primary);
 	border: 1px solid var(--background-modifier-border);
 	color: var(--text-normal);
@@ -254,25 +255,41 @@
 .tiny-local-savings-tooltip::before {
 	content: '';
 	position: absolute;
-	top: -6px;
-	left: 20px;
+	left: calc(var(--local-image-compress-savings-tooltip-arrow-x, 26px) - var(--local-image-compress-savings-tooltip-arrow-size));
 	width: 0;
 	height: 0;
-	border-left: 6px solid transparent;
-	border-right: 6px solid transparent;
-	border-bottom: 6px solid var(--background-primary);
+	border-left: var(--local-image-compress-savings-tooltip-arrow-size) solid transparent;
+	border-right: var(--local-image-compress-savings-tooltip-arrow-size) solid transparent;
 }
 
 .tiny-local-savings-tooltip::after {
 	content: '';
 	position: absolute;
-	top: -7px;
-	left: 20px;
+	left: calc(var(--local-image-compress-savings-tooltip-arrow-x, 26px) - var(--local-image-compress-savings-tooltip-arrow-size));
 	width: 0;
 	height: 0;
-	border-left: 6px solid transparent;
-	border-right: 6px solid transparent;
-	border-bottom: 6px solid var(--background-modifier-border);
+	border-left: var(--local-image-compress-savings-tooltip-arrow-size) solid transparent;
+	border-right: var(--local-image-compress-savings-tooltip-arrow-size) solid transparent;
+}
+
+.tiny-local-savings-tooltip-placement-above::before {
+	bottom: calc(0px - var(--local-image-compress-savings-tooltip-arrow-size) - 1px);
+	border-top: var(--local-image-compress-savings-tooltip-arrow-size) solid var(--background-modifier-border);
+}
+
+.tiny-local-savings-tooltip-placement-above::after {
+	bottom: calc(0px - var(--local-image-compress-savings-tooltip-arrow-size));
+	border-top: var(--local-image-compress-savings-tooltip-arrow-size) solid var(--background-primary);
+}
+
+.tiny-local-savings-tooltip-placement-below::before {
+	top: calc(0px - var(--local-image-compress-savings-tooltip-arrow-size) - 1px);
+	border-bottom: var(--local-image-compress-savings-tooltip-arrow-size) solid var(--background-modifier-border);
+}
+
+.tiny-local-savings-tooltip-placement-below::after {
+	top: calc(0px - var(--local-image-compress-savings-tooltip-arrow-size));
+	border-bottom: var(--local-image-compress-savings-tooltip-arrow-size) solid var(--background-primary);
 }
 
 .tiny-local-savings-tooltip strong {
@@ -428,6 +445,10 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	transition: background-color 0.2s ease;
+}
+
+.is-mobile .tiny-local-status-menu .tiny-local-status-menu-item {
+	min-height: 44px;
 }
 
 .tiny-local-status-menu .tiny-local-status-menu-item:hover,

@@ -1,6 +1,8 @@
 # Local Image Compress
 
-บีบอัดไฟล์ PNG และ JPEG โดยตรงใน vault ของ Obsidian บนคอมพิวเตอร์ โดยไม่ใช้บริการคลาวด์หรือ API ลดพื้นที่ดิสก์ที่ภาพใช้ลง 30–70% โดยไม่ลดทอนคุณภาพ
+บีบอัดไฟล์ PNG และ JPEG โดยตรงใน vault ของ Obsidian บนคอมพิวเตอร์และอุปกรณ์มือถือ โดยไม่ใช้บริการคลาวด์หรือ API ลดพื้นที่ดิสก์ที่ภาพใช้ลง 30–70% โดยไม่ลดทอนคุณภาพ
+
+บนโทรศัพท์และแท็บเล็ต ปลั๊กอินทำงานภายใต้ขีดจำกัดที่ปลอดภัยสำหรับมือถือ: ใช้ worker บีบอัดเพียงตัวเดียว และรับไฟล์ขนาดไม่เกิน 25 MB / 50 ล้านพิกเซล ไฟล์ที่ใหญ่กว่านั้นจะถูกข้ามพร้อมเหตุผลที่ชัดเจน ส่วนการเปิดโฟลเดอร์สำรองข้อมูลในตัวจัดการไฟล์ของระบบยังคงใช้ได้เฉพาะบนเดสก์ท็อป
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF และ AVIF ถูกข้ามโดยตั้
 
 ไฟล์ขนาดเล็กมากมักถูกข้าม (PNG `<5KB` และ JPEG `<10KB`)
 
-ขีดจำกัดความปลอดภัยภายในเป็นค่าคงที่: ไฟล์ใหญ่กว่า `100 MB` ถูกข้ามก่อนอ่าน และภาพเกิน `100 ล้าน` พิกเซลถูกข้ามหลังตรวจสอบส่วนหัว
+สัญญาของแต่ละแพลตฟอร์มระบุชัดเจน: เดสก์ท็อปรับอินพุตได้ถึง `100 MB / 100 MP`; มือถือรับได้ถึง `25 MB / 50 MP` และใช้ worker บีบอัดหนึ่งตัว อินพุตที่ใหญ่กว่าจะถูกข้ามก่อนการประมวลผลเต็มรูปแบบ
 
 ### การจัดเก็บข้อมูลและข้อมูลสำรอง
 - **แคชหลัก:** เก็บในโฟลเดอร์ปลั๊กอิน
 - **ข้อมูลสำรองแคช:** เก็บใน `Vault/.local-image-compress/backups/cache/` และเก็บสูงสุด 50 ไฟล์
 - **ข้อมูลสำรองภาพ:** เก็บใน `Vault/.local-image-compress/backups/originals/` และสร้างก่อนแทนที่ต้นฉบับ
+- **การคืนค่าแคช (`restore parity`):** คืนค่าข้อมูลสำรองแคชได้ทั้งเดสก์ท็อปและมือถือ เฉพาะการเปิดโฟลเดอร์ในตัวจัดการไฟล์ของระบบเท่านั้นที่ใช้ได้เฉพาะเดสก์ท็อป
+- **การกู้คืนการย้ายข้อมูล (`durable migration journal`):** ก่อนกักกันข้อมูลเดิม ปลั๊กอินจะเขียนข้อมูลกู้คืน และเมื่อเริ่มต้นจะปรับสถานะการย้ายข้อมูลที่ขัดจังหวะโดยไม่ลบไบต์ที่ขัดแย้งอย่างเงียบ ๆ
 
 ### ระบบอัตโนมัติ
 - การเปิด “การบีบอัดเบื้องหลัง” จะแสดงแถบเลื่อนสองรายการ:

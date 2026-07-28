@@ -58,6 +58,12 @@ export const INTERNAL_COMPRESSION_TIMEOUT_SECONDS = 120;
 export const INTERNAL_WASM_INIT_TIMEOUT_SECONDS = 60;
 export const INTERNAL_MAX_INPUT_SIZE_MB = 100;
 export const INTERNAL_MAX_IMAGE_PIXELS_MILLIONS = 100;
+export const INTERNAL_COMPRESSION_MEMORY_BUDGET_MB = 1024;
+// Mobile webviews are killed near ~1.5GB; large decode buffers must stay far
+// below that, so mobile caps inputs harder and runs a single worker.
+export const MOBILE_MAX_INPUT_SIZE_MB = 25;
+export const MOBILE_MAX_IMAGE_PIXELS_MILLIONS = 50;
+export const MOBILE_COMPRESSION_MEMORY_BUDGET_MB = 512;
 const INTERNAL_DEFAULT_WORKER_POOL_SIZE = 2;
 export const INTERNAL_MAX_WORKER_POOL_SIZE = 4;
 
@@ -67,6 +73,43 @@ export function getInternalWorkerPoolSize(hardwareConcurrency?: unknown) {
     ? Math.floor(numeric / 2)
     : INTERNAL_DEFAULT_WORKER_POOL_SIZE;
   return Math.max(1, Math.min(INTERNAL_MAX_WORKER_POOL_SIZE, halfCores || 1));
+}
+
+export function getPlatformWorkerPoolSize(isMobile: boolean, hardwareConcurrency?: unknown) {
+  return isMobile ? 1 : getInternalWorkerPoolSize(hardwareConcurrency);
+}
+
+export function getMaxInputSizeMb(isMobile: boolean) {
+  return isMobile ? MOBILE_MAX_INPUT_SIZE_MB : INTERNAL_MAX_INPUT_SIZE_MB;
+}
+
+export function getMaxImagePixelsMillions(isMobile: boolean) {
+  return isMobile ? MOBILE_MAX_IMAGE_PIXELS_MILLIONS : INTERNAL_MAX_IMAGE_PIXELS_MILLIONS;
+}
+
+export function getCompressionMemoryBudgetBytes(isMobile: boolean) {
+  const budgetMb = isMobile ? MOBILE_COMPRESSION_MEMORY_BUDGET_MB : INTERNAL_COMPRESSION_MEMORY_BUDGET_MB;
+  return budgetMb * 1024 * 1024;
+}
+
+export function getCompressionSettingsKeyForSnapshot(
+  extensionValue: string,
+  settings: LocalImageCompressSettings,
+  skipReason = "",
+  isMobile = false
+): string | null {
+  const extension = extensionValue.replace(/^\./, "").toLowerCase();
+  const reason = skipReason.trim();
+  if (reason === "too_large") {
+    return `${extension || "unknown"}:limits:${getMaxInputSizeMb(isMobile)}:${getMaxImagePixelsMillions(isMobile)}:${reason}`;
+  }
+  if (extension === "png") {
+    return `png:${settings.pngQuality.min}-${settings.pngQuality.max}`;
+  }
+  if (extension === "jpg" || extension === "jpeg") {
+    return `jpeg:${settings.jpegQuality}`;
+  }
+  return reason ? `${extension || "unknown"}:${reason}` : null;
 }
 
 function clampInteger(value: unknown, fallback: number, min: number, max: number) {

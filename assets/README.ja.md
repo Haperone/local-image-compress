@@ -1,6 +1,8 @@
 # Local Image Compress
 
-クラウドサービスや API を使わず、コンピューター上の Obsidian Vault 内で PNG と JPEG ファイルを直接圧縮します。品質を損なわずに、画像が占めるディスク容量を 30～70% 削減できます。
+クラウドサービスや API を使わず、コンピューターとモバイル端末の Obsidian Vault 内で PNG と JPEG ファイルを直接圧縮します。品質を損なわずに、画像が占めるディスク容量を 30～70% 削減できます。
+
+スマートフォンやタブレットでは、プラグインはモバイル向けの安全な制限内で動作します。圧縮ワーカーは 1 つで、入力ファイルは最大 25 MB / 5,000 万画素までです。これを超えるファイルは明確な理由とともにスキップされます。バックアップフォルダーをシステムのファイルマネージャーで開く機能はデスクトップ専用のままです。
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP、GIF、BMP、HEIC/HEIF、AVIF は、このリリースにエンコーダ�
 
 非常に小さいファイルは通常スキップされます（PNG は `<5KB`、JPEG は `<10KB`）。
 
-安全上の上限は固定されています。`100 MB` を超えるファイルは読み込み前に、`1億` ピクセルを超える画像はヘッダー検証後にスキップされます。
+プラットフォーム契約は明示されています。デスクトップは `100 MB / 100 MP` まで、モバイルは 1 つの圧縮ワーカーで `25 MB / 50 MP` までの入力を受け付けます。より大きな入力は完全な処理の前にスキップされます。
 
 ### データ保存とバックアップ
 - **メインキャッシュ:** プラグインフォルダーに保存されます。
 - **キャッシュバックアップ:** `Vault/.local-image-compress/backups/cache/` に保存され、最大 50 ファイルが保持されます。
 - **画像バックアップ:** `Vault/.local-image-compress/backups/originals/` に保存され、原本の置換前に作成されます。
+- **キャッシュ復元 (`restore parity`):** キャッシュバックアップはデスクトップとモバイルの両方で復元できます。システムのファイルマネージャーでバックアップフォルダーを開く操作だけがデスクトップ専用です。
+- **移行の復旧 (`durable migration journal`):** 旧データを隔離する前に復旧メタデータを書き込みます。起動時に中断された移行を調整し、競合するバイトを黙って削除しません。
 
 ### 自動化
 - 「バックグラウンド圧縮」を有効にすると 2 つのスライダーが表示されます。

@@ -1,6 +1,8 @@
 # Local Image Compress
 
-PNG ve JPEG dosyalarını bulut hizmetleri veya API kullanmadan doğrudan bilgisayarınızdaki Obsidian kasasında sıkıştırın. Görsellerin kullandığı disk alanını kaliteyi düşürmeden %30–70 azaltın.
+PNG ve JPEG dosyalarını bulut hizmetleri veya API kullanmadan doğrudan bilgisayarınızdaki ve mobil cihazlarınızdaki Obsidian kasasında sıkıştırın. Görsellerin kullandığı disk alanını kaliteyi düşürmeden %30–70 azaltın.
+
+Telefon ve tabletlerde eklenti, mobil için güvenli sınırlarla çalışır: tek bir sıkıştırma worker'ı ve en fazla 25 MB / 50 megapiksel giriş dosyası; daha büyük dosyalar açık bir gerekçeyle atlanır. Yedek klasörlerini sistem dosya yöneticisinde açma özelliği yalnızca masaüstünde kullanılabilir.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF ve AVIF, eklenti bu biçimlerin kodlayıcılarını i�
 
 Çok küçük dosyalar genellikle atlanır (PNG için `<5KB`, JPEG için `<10KB`).
 
-İç güvenlik sınırları sabittir: `100 MB` üzerindeki dosyalar okunmadan, `100 milyon` piksel üzerindeki görseller başlık doğrulamasından sonra atlanır.
+Platform sözleşmesi açıktır: masaüstü `100 MB / 100 MP` boyutuna kadar, mobil ise tek sıkıştırma workerı ile `25 MB / 50 MP` boyutuna kadar girdileri kabul eder. Daha büyük girdiler tam işlenmeden önce atlanır.
 
 ### Veri depolama ve yedekler
 - **Ana önbellek:** eklenti klasöründe saklanır.
 - **Önbellek yedekleri:** `Vault/.local-image-compress/backups/cache/` içinde saklanır; en fazla 50 dosya tutulur.
 - **Görsel yedekleri:** `Vault/.local-image-compress/backups/originals/` içinde saklanır; orijinaller değiştirilmeden önce oluşturulur.
+- **Önbellek geri yükleme (`restore parity`):** önbellek yedekleri masaüstü ve mobilde geri yüklenebilir. Yalnızca yedek klasörünü sistem dosya yöneticisinde açmak masaüstüne özeldir.
+- **Geçiş kurtarma (`durable migration journal`):** eski veriler karantinaya alınmadan önce eklenti kurtarma meta verisi yazar; başlangıçta kesilen geçişleri çakışan baytları sessizce silmeden uzlaştırır.
 
 ### Otomasyon
 - “Arka plan sıkıştırması” iki kaydırıcıyı kullanılabilir yapar:

@@ -55,7 +55,7 @@ export class NewFileQueue {
   }
 
   async handleNewFile(file: obsidian.TAbstractFile) {
-    if (!this.plugin.settings.autoCompressNewFiles || !(file instanceof obsidian.TFile) || !this.plugin.isImageFile(file) || this.plugin.isOutputFolderPath(file.path)) {
+    if (this.plugin.isUnloading || !this.plugin.isInitialized || !this.plugin.settings.autoCompressNewFiles || !(file instanceof obsidian.TFile) || !this.plugin.isImageFile(file) || this.plugin.isOutputFolderPath(file.path)) {
       return;
     }
     const filePath = normalizeVaultPath(file.path);
@@ -65,7 +65,7 @@ export class NewFileQueue {
     }
     const timer = this.plugin.setWindowTimeout(() => {
       this.newFileCompressionTimers?.delete(filePath);
-      if (this.plugin.isUnloading) {
+      if (this.plugin.isUnloading || !this.plugin.isInitialized) {
         return;
       }
       const freshFile = getVaultFileByPath(this.plugin.app.vault, filePath);
@@ -111,6 +111,9 @@ export class NewFileQueue {
   }
 
   scheduleNewFileBatchDrain() {
+    if (this.plugin.isUnloading || !this.plugin.isInitialized) {
+      return;
+    }
     if (this.newFileBatchFlushTimer) {
       return;
     }
@@ -146,6 +149,7 @@ export class NewFileQueue {
     this.newFileBatchDrainInProgress = true;
     this.newFileBatchDrainRescheduleRequested = false;
     let files: obsidian.TFile[] = [];
+    let inFlightPaths: string[] = [];
     try {
       const paths = Array.from(this.newFileCompressionPending);
       this.newFileCompressionPending.clear();
@@ -160,8 +164,9 @@ export class NewFileQueue {
       if (files.length === 0) {
         return;
       }
-      for (const freshFile of files) {
-        this.newFileCompressionInFlight.add(freshFile.path);
+      inFlightPaths = files.map((freshFile) => freshFile.path);
+      for (const filePath of inFlightPaths) {
+        this.newFileCompressionInFlight.add(filePath);
       }
       await this.plugin.processBatchCompressionBackground(files);
     } catch (error) {
@@ -169,8 +174,8 @@ export class NewFileQueue {
         console.error(getLogTag(this.plugin), "Delayed new-file batch compression error:", error);
       }
     } finally {
-      for (const freshFile of files) {
-        this.newFileCompressionInFlight.delete(freshFile.path);
+      for (const filePath of inFlightPaths) {
+        this.newFileCompressionInFlight.delete(filePath);
       }
       this.newFileBatchDrainInProgress = false;
       const shouldDrainAgain = this.newFileBatchDrainRescheduleRequested || this.newFileCompressionPending.size > 0;

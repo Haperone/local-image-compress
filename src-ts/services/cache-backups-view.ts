@@ -1,10 +1,8 @@
 import * as obsidian from "obsidian";
-import * as fs from "fs";
-import * as path from "path";
 import type { default as LocalImageCompressPlugin } from "../plugin";
 import { ConcurrencyLimiter } from "../concurrency-limiter";
 import { getUserLang, t } from "../i18n";
-import { getLogTag, getPluginName, openFilesystemPath } from "../utils";
+import { getLogTag, getPluginName } from "../utils";
 
 // Lists cache backups (bounded stat fan-out) and renders the read-only backup modal.
 export class CacheBackupsView {
@@ -13,10 +11,9 @@ export class CacheBackupsView {
   async showCacheBackupsList() {
     try {
       const backupDir = this.plugin.getBackupStoragePaths().cacheBackups;
-      try {
-        await fs.promises.access(backupDir);
-      } catch {
-        await fs.promises.mkdir(backupDir, { recursive: true });
+      const fsPort = this.plugin.getPlatformPorts().fs;
+      if (!await fsPort.exists(backupDir)) {
+        await fsPort.mkdir(backupDir);
         new obsidian.Notice(`${this.plugin.manifest?.name || "Local Image Compress"}: ${t(this.plugin.app, "backups.cache.title")}`);
         return;
       }
@@ -29,10 +26,12 @@ export class CacheBackupsView {
       const backupInfoLimiter = new ConcurrencyLimiter(8);
       const infoItems = await Promise.all(backups.map((backup) => backupInfoLimiter.run(async () => {
         try {
-          const backupPath = path.join(backupDir, backup);
-          const stats = await fs.promises.stat(backupPath);
-          const sizeKb = (stats.size / 1024).toFixed(1);
-          const date = stats.mtime.toLocaleString(locale);
+          const stat = await fsPort.stat(fsPort.joinPath(backupDir, backup));
+          if (!stat) {
+            return `${backup}`;
+          }
+          const sizeKb = (stat.size / 1024).toFixed(1);
+          const date = new Date(stat.mtimeMs).toLocaleString(locale);
           return `${backup} ${sizeKb} ${t(this.plugin.app, "units.kb")}, ${date}`;
         } catch {
           return `${backup}`;
@@ -61,7 +60,8 @@ export class CacheBackupsView {
 
       override onOpen() {
         const { contentEl } = this;
-        contentEl.createEl("p", { text: `${t(this.app, "backups.pathLabel")}: ${backupDir}` });
+        const displayBackupDir = owner.getPlatformPorts().fs.getDisplayPath(backupDir);
+        contentEl.createEl("p", { text: `${t(this.app, "backups.pathLabel")}: ${displayBackupDir}` });
         contentEl.createEl("p", { text: `${t(this.app, "backups.foundLabel")}: ${backups.length}` });
         const list = contentEl.createDiv({ cls: "tiny-local-backup-list" });
         list.setAttribute("role", "list");
@@ -70,6 +70,11 @@ export class CacheBackupsView {
           const item = list.createDiv({ text: line });
           item.setAttribute("role", "listitem");
         });
+        // Desktop only — mobile has no OS file manager to reveal the folder in.
+        const revealPath = owner.getPlatformPorts().runtime.revealPath;
+        if (!revealPath) {
+          return;
+        }
         const openButton = contentEl.createEl("button", {
           text: t(this.app, "backups.imagesFolder.openButton"),
           cls: "mod-cta"
@@ -77,7 +82,7 @@ export class CacheBackupsView {
         openButton.type = "button";
         const openBackupFolder = async () => {
           try {
-            const openError = await openFilesystemPath(backupDir);
+            const openError = await revealPath(backupDir);
             if (openError) {
               console.error(getLogTag(owner), "Error opening cache backups folder:", openError);
               new obsidian.Notice(`${pluginName}: ${t(this.app, "backups.imagesFolder.openError")}`);

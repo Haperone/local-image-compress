@@ -1,6 +1,5 @@
 import * as obsidian from "obsidian";
 import { t } from "./i18n";
-import type LocalImageCompressPlugin from "./plugin";
 import type { AnimationHandle, TimerHandle } from "./types";
 import { getActiveWindowForApp } from "./utils";
 
@@ -12,8 +11,15 @@ type PendingProgressUpdate = {
   percentage: number;
 };
 
+export interface ProgressModalHost {
+  readonly app: obsidian.App;
+  captureModalFocusTarget(): HTMLElement | null;
+  untrackManagedModal(modal: { close: () => void }): void;
+  restoreModalFocus(target: HTMLElement | null | undefined): void;
+}
+
 export class ProgressModal extends obsidian.Modal {
-  private readonly plugin: LocalImageCompressPlugin;
+  private readonly plugin: ProgressModalHost;
   private readonly progressLabel: string;
   statusElement: TextElement | null;
   progressContainer: HTMLElement | null;
@@ -29,7 +35,7 @@ export class ProgressModal extends obsidian.Modal {
   private cancelButtonCleanup: (() => void) | null;
   private readonly returnFocusTo: HTMLElement | null;
 
-  constructor(plugin: LocalImageCompressPlugin, title: string) {
+  constructor(plugin: ProgressModalHost, title: string) {
     super(plugin.app);
     this.plugin = plugin;
     this.progressLabel = title;

@@ -7,6 +7,11 @@ export type AnimationHandle = ReturnType<typeof requestAnimationFrame> | TimerHa
 
 export type ImageFileLike = TFile;
 
+export interface CacheMutationRevision {
+  counter: number;
+  ownerId: string;
+}
+
 export interface CacheEntry {
   path?: string;
   md5?: string;
@@ -22,15 +27,19 @@ export interface CacheEntry {
   outputPath?: string;
   outputMtime?: number;
   outputSize?: number;
+  sourceSha256?: string;
+  outputSha256?: string;
   skipReason?: string;
   compressionSettingsKey?: string;
   processedMtime?: number;
   processedSize?: number;
+  mutationRevision?: CacheMutationRevision;
 }
 
 export interface CacheData {
   version: string;
   entries: Record<string, CacheEntry>;
+  tombstones?: Record<string, CacheMutationRevision>;
 }
 
 export interface FreshCacheEntry {
@@ -45,12 +54,40 @@ export interface CacheStats {
   size: number;
 }
 
-export interface CompressionResult {
-  success: boolean;
-  savings?: number;
+export type CompressionOperationInput = Readonly<{
+  sourcePath: string;
+  sourceMtime: number;
+}>;
+
+export type CompressionArtifactContext = Readonly<{
+  sourcePath: string;
+  sourceMtime: number;
+  sourceSize: number;
+  sourceMd5: string;
+  sourceSha256: string;
+  outputPath: string;
+  outputSize: number;
+  outputSha256: string;
+  compressionSettingsKey: string;
+}>;
+
+export type CompressionSuccessResult = {
+  success: true;
+  savings: number;
+  artifact: CompressionArtifactContext;
+  error?: never;
+  skipReason?: never;
+};
+
+export type CompressionFailureResult = {
+  success: false;
+  savings?: never;
+  artifact?: never;
   error?: string;
   skipReason?: string;
-}
+};
+
+export type CompressionResult = CompressionSuccessResult | CompressionFailureResult;
 
 export type CompressionValidationResult =
   | { valid: true }

@@ -1,6 +1,8 @@
 # Local Image Compress
 
-Kompres file PNG dan JPEG langsung di vault Obsidian pada komputer Anda, tanpa layanan cloud atau API. Kurangi ruang disk yang digunakan gambar sebesar 30–70% tanpa mengorbankan kualitas.
+Kompres file PNG dan JPEG langsung di vault Obsidian pada komputer dan perangkat seluler Anda, tanpa layanan cloud atau API. Kurangi ruang disk yang digunakan gambar sebesar 30–70% tanpa mengorbankan kualitas.
+
+Di ponsel dan tablet, plugin berjalan dengan batas aman untuk seluler: satu worker kompresi dan file masukan hingga 25 MB / 50 megapiksel; file yang lebih besar dilewati dengan alasan yang jelas. Membuka folder cadangan di pengelola file sistem tetap hanya tersedia di desktop.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP, GIF, BMP, HEIC/HEIF, dan AVIF sengaja dilewati dalam rilis ini karena plug
 
 File yang sangat kecil biasanya dilewati (`<5KB` untuk PNG dan `<10KB` untuk JPEG).
 
-Batas keamanan internal bersifat tetap: file lebih besar dari `100 MB` dilewati sebelum dibaca, dan gambar di atas `100 juta` piksel dilewati setelah validasi header.
+Kontrak platform dinyatakan jelas: desktop menerima masukan hingga `100 MB / 100 MP`; seluler menerima hingga `25 MB / 50 MP` dan memakai satu worker kompresi. Masukan yang lebih besar dilewati sebelum pemrosesan penuh.
 
 ### Penyimpanan data dan cadangan
 - **Cache utama:** disimpan dalam folder plugin.
 - **Cadangan cache:** disimpan di `Vault/.local-image-compress/backups/cache/`; maksimal 50 file dipertahankan.
 - **Cadangan gambar:** disimpan di `Vault/.local-image-compress/backups/originals/`; dibuat sebelum file asli diganti.
+- **Pemulihan cache (`restore parity`):** cadangan cache dapat dipulihkan di desktop dan seluler. Hanya membuka folder cadangan di pengelola file sistem yang khusus desktop.
+- **Pemulihan migrasi (`durable migration journal`):** sebelum data lama dikarantina, plugin menulis metadata pemulihan; saat mulai, migrasi yang terputus direkonsiliasi tanpa diam-diam menghapus byte yang bertentangan.
 
 ### Otomatisasi
 - Mengaktifkan “Kompresi latar belakang” menyediakan dua slider:

@@ -1,6 +1,8 @@
 # Local Image Compress
 
-اضغط ملفات PNG وJPEG مباشرة داخل خزنة Obsidian على جهازك، من دون خدمات سحابية أو واجهات API. قلّل المساحة التي تشغلها الصور بنسبة 30–70% من دون التضحية بالجودة.
+اضغط ملفات PNG وJPEG مباشرة داخل خزنة Obsidian على الحاسوب والأجهزة المحمولة، من دون خدمات سحابية أو واجهات API. قلّل المساحة التي تشغلها الصور بنسبة 30–70% من دون التضحية بالجودة.
+
+على الهواتف والأجهزة اللوحية يعمل الملحق ضمن حدود آمنة للأجهزة المحمولة: عامل ضغط واحد وملفات إدخال حتى 25 ميغابايت / 50 ميغابكسل؛ ويتم تخطي الملفات الأكبر مع ذكر سبب واضح. يبقى فتح مجلدات النسخ الاحتياطي في مدير ملفات النظام متاحاً على الحاسوب فقط.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ Read in your language: [English](https://github.com/Haperone/local-image-compres
 
 عادةً ما يتم تخطي الملفات الصغيرة جدًا (`<5KB` لـ PNG و`<10KB` لـ JPEG).
 
-حدود الأمان ثابتة: يتم تخطي الملفات الأكبر من `100 MB` قبل قراءتها، والصور التي تتجاوز `100 مليون` بكسل بعد فحص الترويسة.
+عقد حدود المنصات واضح: يقبل سطح المكتب مدخلات حتى `100 MB / 100 MP`، بينما يقبل الهاتف حتى `25 MB / 50 MP` ويستخدم عامل ضغط واحدًا. تُتخطى المدخلات الأكبر قبل المعالجة الكاملة.
 
 ### تخزين البيانات والنسخ الاحتياطية
 - **الذاكرة المؤقتة الأساسية:** تُحفظ في مجلد الإضافة.
 - **نسخ الذاكرة المؤقتة:** تُحفظ في `Vault/.local-image-compress/backups/cache/` ويُحتفظ بما يصل إلى 50 ملفًا.
 - **نسخ الصور:** تُحفظ في `Vault/.local-image-compress/backups/originals/` وتُنشأ قبل استبدال الملفات الأصلية.
+- **استعادة الذاكرة المؤقتة (`restore parity`):** يمكن استعادة نسخ الذاكرة المؤقتة على سطح المكتب والهاتف؛ فتح مجلد النسخ في مدير ملفات النظام فقط هو الخاص بسطح المكتب.
+- **استرداد الترحيل (`durable migration journal`):** يكتب الملحق بيانات استرداد قبل عزل البيانات القديمة، ويصالح بدء التشغيل عمليات الترحيل المتوقفة من دون حذف البايتات المتعارضة بصمت.
 
 ### الأتمتة
 - عند تفعيل «الضغط في الخلفية» يظهر شريطان:

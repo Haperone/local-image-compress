@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
+const { assertProductionBundle } = require("./mobile-qa-bundle-contract");
 const { resolveRepositoryLayout } = require("./repository-layout");
 
 const { repositoryRoot, sourceRoot: root } = resolveRepositoryLayout();
@@ -19,6 +20,9 @@ const build = spawnSync(process.execPath, [path.join(root, "scripts", "build-ts.
 if (build.status !== 0) {
   process.exit(build.status || 1);
 }
+
+const generated = fs.readFileSync(generatedPath);
+assertProductionBundle(generated.toString("utf8"), "Generated production main.js");
 
 function sha256(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex").toUpperCase();
@@ -42,7 +46,6 @@ try {
   }
 }
 
-const generated = fs.readFileSync(generatedPath);
 const rootMain = fs.readFileSync(rootMainPath);
 const generatedHash = sha256(generated);
 const rootMainHash = sha256(rootMain);

@@ -1,6 +1,8 @@
 # Local Image Compress
 
-فایل‌های PNG و JPEG را مستقیماً روی رایانه و در مخزن Obsidian خود، بدون سرویس ابری یا API، فشرده کنید. فضای اشغال‌شده توسط تصاویر را بدون افت کیفیت ۳۰ تا ۷۰ درصد کاهش دهید.
+فایل‌های PNG و JPEG را مستقیماً روی رایانه و دستگاه‌های همراه، در مخزن Obsidian خود و بدون سرویس ابری یا API فشرده کنید. فضای اشغال‌شده توسط تصاویر را بدون افت کیفیت ۳۰ تا ۷۰ درصد کاهش دهید.
+
+در تلفن‌ها و تبلت‌ها این افزونه با محدودیت‌های امن موبایل اجرا می‌شود: یک worker فشرده‌سازی و فایل‌های ورودی تا ۲۵ مگابایت / ۵۰ مگاپیکسل؛ فایل‌های بزرگ‌تر با دلیل روشن رد می‌شوند. باز کردن پوشه‌های پشتیبان در مدیر فایل سیستم فقط در دسکتاپ در دسترس است.
 
 Read in your language: [English](https://github.com/Haperone/local-image-compress/blob/main/README.md) • [العربية](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ar.md) • [Deutsch](https://github.com/Haperone/local-image-compress/blob/main/assets/README.de.md) • [Español](https://github.com/Haperone/local-image-compress/blob/main/assets/README.es.md) • [فارسی](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fa.md) • [Français](https://github.com/Haperone/local-image-compress/blob/main/assets/README.fr.md) • [Bahasa Indonesia](https://github.com/Haperone/local-image-compress/blob/main/assets/README.id.md) • [Italiano](https://github.com/Haperone/local-image-compress/blob/main/assets/README.it.md) • [Nederlands](https://github.com/Haperone/local-image-compress/blob/main/assets/README.nl.md) • [Polski](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pl.md) • [Português](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt.md) • [Português (Brasil)](https://github.com/Haperone/local-image-compress/blob/main/assets/README.pt-br.md) • [Русский](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ru.md) • [ไทย](https://github.com/Haperone/local-image-compress/blob/main/assets/README.th.md) • [Türkçe](https://github.com/Haperone/local-image-compress/blob/main/assets/README.tr.md) • [Українська](https://github.com/Haperone/local-image-compress/blob/main/assets/README.uk.md) • [Tiếng Việt](https://github.com/Haperone/local-image-compress/blob/main/assets/README.vi.md) • [日本語](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ja.md) • [한국어](https://github.com/Haperone/local-image-compress/blob/main/assets/README.ko.md) • [中文简体](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-cn.md) • [中文繁體](https://github.com/Haperone/local-image-compress/blob/main/assets/README.zh-tw.md)
 
@@ -68,12 +70,14 @@ WebP، GIF، BMP، HEIC/HEIF و AVIF عمداً در این نسخه نادید�
 
 حداقل اندازه برای فشرده‌سازی: فایل‌های بسیار کوچک معمولاً نادیده گرفته می‌شوند (`<5KB` برای PNG و `<10KB` برای JPEG).
 
-محدودیت‌های ایمنی ثابت‌اند: فایل‌های بزرگ‌تر از `100 MB` پیش از خواندن و تصاویر بیش از `100 میلیون` پیکسل پس از اعتبارسنجی سرآیند نادیده گرفته می‌شوند.
+قرارداد هر پلتفرم روشن است: دسکتاپ ورودی تا `100 MB / 100 MP` و موبایل تا `25 MB / 50 MP` را با یک worker فشرده‌سازی می‌پذیرد. ورودی‌های بزرگ‌تر پیش از پردازش کامل رد می‌شوند.
 
 ### ذخیره‌سازی داده و نسخه‌های پشتیبان
 - **کش اصلی:** در پوشه افزونه ذخیره می‌شود.
 - **نسخه‌های پشتیبان کش:** در `Vault/.local-image-compress/backups/cache/` ذخیره می‌شوند؛ حداکثر ۵۰ فایل نگهداری می‌شود.
 - **نسخه‌های پشتیبان تصاویر:** در `Vault/.local-image-compress/backups/originals/` ذخیره می‌شوند؛ پیش از جایگزینی فایل‌های اصلی ساخته می‌شوند.
+- **بازیابی کش (`restore parity`):** نسخه‌های پشتیبان کش در دسکتاپ و موبایل قابل بازیابی‌اند؛ فقط باز کردن پوشه پشتیبان در مدیر فایل سیستم مخصوص دسکتاپ است.
+- **بازیابی مهاجرت (`durable migration journal`):** افزونه پیش از قرنطینه داده‌های قدیمی، فراداده بازیابی می‌نویسد؛ هنگام شروع، مهاجرت‌های ناتمام بدون حذف خاموش بایت‌های متعارض سازگار می‌شوند.
 
 ### خودکارسازی
 - با فعال‌کردن «فشرده‌سازی پس‌زمینه» دو لغزنده در دسترس قرار می‌گیرد:
