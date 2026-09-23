@@ -888,7 +888,13 @@ function runSourceContractChecks({ root, repositoryRoot, artifact, isDevLayout }
   assert(!stylesSource.includes("--local-image-compress-status-menu-highlight") && !stylesSource.includes("color-mix(in srgb, var(--interactive-accent)") && !stylesSource.includes("box-shadow: inset 3px 0 0 var(--interactive-accent)"), "Status bar menu still uses a custom accent hover/focus treatment");
   assert(stylesSource.includes(".tiny-local-status-trigger:focus-visible") && stylesSource.includes(".tiny-local-savings-tooltip-target:focus-visible"), "Custom status/tooltip focus targets are missing visible focus styles");
   assert(!statusBarControllerSource.includes("\"mouseenter\"") && !statusBarControllerSource.includes("\"mouseleave\"") && !stylesSource.includes("tiny-local-status-menu-item-hover"), "Status bar menu hover still uses JS listeners instead of CSS :hover");
-  assert(!/#[0-9A-Fa-f]{3,8}\b|rgba?\(|hsla?\(/.test(stylesSource), "styles.css contains hardcoded color literals");
+  const brandRulePattern = /\.tiny-local-settings \.tiny-local-support-link--(?:coffee|telegram)(?::hover)?\s*\{[^}]*\}/g;
+  const coffeeBrandRules = (stylesSource.match(brandRulePattern) || []).filter((rule) => rule.includes("--coffee"));
+  const telegramBrandRules = (stylesSource.match(brandRulePattern) || []).filter((rule) => rule.includes("--telegram"));
+  assert(coffeeBrandRules.length === 2 && coffeeBrandRules.some((rule) => rule.includes("background: #ffdd00;") && rule.includes("color: #000;")), "Buy Me a Coffee button must keep its supplied brand colors");
+  assert(telegramBrandRules.length === 2 && telegramBrandRules.some((rule) => rule.includes("background: #007db8;") && rule.includes("color: #fff;")), "Telegram button must keep its high-contrast blue and white colors");
+  const unbrandedStyles = stylesSource.replace(brandRulePattern, "");
+  assert(!/#[0-9A-Fa-f]{3,8}\b|rgba?\(|hsla?\(/.test(unbrandedStyles), "styles.css contains hardcoded color literals outside the support buttons");
   const importantAllowlist = new Map();
   const importantDeclarations = [...stylesSource.matchAll(/([^{}]+)\{([^{}]*!important[^{}]*)\}/g)]
     .map((match) => match[1].trim());

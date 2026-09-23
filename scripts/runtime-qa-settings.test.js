@@ -120,6 +120,10 @@ async function main() {
     !source.includes('absolute(joinVault(p.getPluginDirectory(), "qa-backups", "pre-qa-data-backup.json"))'),
     "runtime QA leaves its settings recovery backup outside the exact session-owned state root"
   );
+  assert(
+    source.includes('.modal-container .modal, .modal-container .prompt'),
+    "runtime QA does not recognize both legacy modal and declarative prompt surfaces"
+  );
   console.log("Runtime QA settings wait tests passed.");
 }
 

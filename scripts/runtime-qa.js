@@ -783,7 +783,7 @@
   }
 
   async function closeTopModal() {
-    const doc = app.workspace?.activeDocument || document;
+    const doc = p.settingsTab?.containerEl?.doc || p.settingsTab?.containerEl?.ownerDocument || app.workspace?.activeDocument || document;
     const closeButton = doc.querySelector(".modal-container .modal-close-button");
     if (closeButton) {
       clickElement(closeButton);
@@ -900,22 +900,88 @@
       const toggles = Array.from(root.querySelectorAll(".checkbox-container"));
       const dropdowns = Array.from(root.querySelectorAll("select"));
       report.metrics.settingsLabels = labels;
+      const flattenDefinitions = (items) => items.flatMap((item) => item?.items
+        ? [item, ...flattenDefinitions(item.items)]
+        : [item]);
+      const settingItems = p.settingsTab?.settingItems;
+      assert(Array.isArray(settingItems) && settingItems.length > 0, "Obsidian did not register declarative setting definitions");
+      const declarativeItems = flattenDefinitions(settingItems);
+      const declarativeControlKeys = declarativeItems.map((item) => item?.control?.key).filter(Boolean).sort();
+      const expectedDeclarativeControlKeys = [
+        "autoBackgroundCompression",
+        "autoBackgroundThreshold",
+        "autoBackupsRetentionDays",
+        "autoBackupsRetentionEnabled",
+        "autoCompressNewFiles",
+        "autoMoveCompressedEnabled",
+        "autoMoveCompressedThreshold",
+        "inactivityThresholdMinutes",
+        "jpegQuality",
+        "outputFolder"
+      ].sort();
+      assert(
+        JSON.stringify(declarativeControlKeys) === JSON.stringify(expectedDeclarativeControlKeys),
+        "Obsidian indexed an incomplete declarative settings surface",
+        { declarativeControlKeys }
+      );
+      assert(p.settingsTab?._usesDeclarativeSettings === true, "Obsidian rendered the legacy settings path instead of declarative definitions");
+      report.metrics.declarativeSettings = {
+        topLevelItems: settingItems.length,
+        indexedItems: declarativeItems.length,
+        controlKeys: declarativeControlKeys
+      };
       assert(labels.length >= 24, "Settings labels count is too low", { count: labels.length, labels });
       assert(buttons.length >= 8, "Settings buttons count is too low", { count: buttons.length, texts: buttons.map((button) => button.textContent.trim()) });
       assert(textInputs.length >= 2, "Expected PNG and output-folder text inputs", { count: textInputs.length });
       assert(rangeInputs.length >= 5, "Expected all remaining settings sliders", { count: rangeInputs.length });
       assert(toggles.length >= 4, "Expected all settings toggles", { count: toggles.length });
       assert(dropdowns.length >= 0, "Dropdown query failed");
+      const supportLinks = Array.from(root.querySelectorAll(".tiny-local-support-link"));
+      assert(
+        JSON.stringify(supportLinks.map((link) => link.getAttribute("href")).sort())
+          === JSON.stringify(["https://buymeacoffee.com/haperone", "https://t.me/sup_plug_lic_bot"]),
+        "Donation or support link is missing from settings"
+      );
+      for (const link of supportLinks) {
+        assert(link.getAttribute("target") === "_blank" && link.rel.includes("noopener"), "Support link opens without isolation", link.href);
+        assert(link.textContent.trim(), "Support link has no label", link.href);
+      }
+      assert(JSON.stringify(supportLinks.map((link) => link.textContent.trim())) === JSON.stringify(["Buy me a coffee", "Support"]), "Support button labels changed");
+      assert(!!supportLinks[1].querySelector("svg.lucide-send"), "Telegram support button has no paper-plane icon");
+      const supportRow = root.querySelector(".tiny-local-support-links");
+      const firstHeading = root.querySelector(".setting-item-heading");
+      assert(!!supportRow && !!firstHeading && !!(supportRow.compareDocumentPosition(firstHeading) & 4), "Support buttons are not above the settings headings");
+      const savingsHost = root.querySelector(".tiny-local-savings-host");
+      const supportSetting = supportRow?.closest(".setting-item");
+      const savingsSetting = savingsHost?.closest(".setting-item");
+      assert(!!supportSetting && !!savingsSetting && supportSetting !== savingsSetting, "Support buttons and savings card share a setting block");
+      const savingsBounds = savingsHost.getBoundingClientRect();
+      const savingsSettingBounds = savingsSetting.getBoundingClientRect();
+      assert(savingsBounds.width >= savingsSettingBounds.width * 0.8, "Savings card does not fill the settings row");
+      assert(savingsBounds.top - supportRow.getBoundingClientRect().bottom <= 16, "Support buttons are too far from savings statistics");
+      assert(supportRow.ownerDocument.defaultView.getComputedStyle(savingsSetting).borderTopWidth === "0px", "Divider remains between support buttons and savings statistics");
+      const rowBounds = supportSetting.getBoundingClientRect();
+      const buttonsBounds = supportLinks.map((link) => link.getBoundingClientRect());
+      const buttonsCenter = (buttonsBounds[0].left + buttonsBounds[1].right) / 2;
+      const rowCenter = (rowBounds.left + rowBounds.right) / 2;
+      assert(Math.abs(buttonsCenter - rowCenter) <= 2, "Support buttons are not centered across the settings panel");
+      assert(Math.abs(buttonsBounds[0].width - buttonsBounds[1].width) <= 1, "Support buttons have different widths");
+      assert(buttonsBounds[0].height <= 40, "Support buttons are too tall");
+      assert(savingsHost.getBoundingClientRect().top >= supportRow.getBoundingClientRect().bottom - 1, "Savings card is beside the support buttons");
+      const supportStyles = supportRow.ownerDocument.defaultView.getComputedStyle(supportRow);
+      assert(supportStyles.justifyContent === "center", "Support buttons are not centered");
+      assert(supportRow.ownerDocument.defaultView.getComputedStyle(supportLinks[1]).backgroundColor === "rgb(0, 125, 184)", "Telegram button is not blue");
       const savingsTarget = root.querySelector(".tiny-local-savings-tooltip-target");
       if (savingsTarget) {
+        const settingsDocument = root.doc || root.ownerDocument;
         assert(savingsTarget.getAttribute("role") === "group", "Savings tooltip target is missing group semantics");
         assert(savingsTarget.getAttribute("tabindex") === "0", "Savings tooltip target is not keyboard focusable");
         assert(!!savingsTarget.getAttribute("aria-label"), "Savings tooltip target is missing an accessible summary");
         savingsTarget.focus();
         await sleep(100);
-        const tooltip = document.querySelector(".tiny-local-savings-tooltip");
+        const tooltip = settingsDocument.querySelector(".tiny-local-savings-tooltip");
         assert(tooltip?.getAttribute("role") === "tooltip", "Savings tooltip did not open from keyboard focus");
-        const tooltipWrapper = document.querySelector(".tiny-local-savings-tooltip-wrapper");
+        const tooltipWrapper = settingsDocument.querySelector(".tiny-local-savings-tooltip-wrapper");
         assert(!!tooltipWrapper?.style.getPropertyValue("--local-image-compress-savings-tooltip-arrow-x"), "Savings tooltip did not calculate arrow position");
         const targetRect = savingsTarget.getBoundingClientRect();
         const tooltipRect = tooltip.getBoundingClientRect();
@@ -928,7 +994,7 @@
         }
         savingsTarget.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
         await sleep(100);
-        assert(!document.querySelector(".tiny-local-savings-tooltip"), "Savings tooltip did not close from Escape");
+        assert(!settingsDocument.querySelector(".tiny-local-savings-tooltip"), "Savings tooltip did not close from Escape");
       }
       return {
         labelCount: labels.length,
@@ -937,6 +1003,8 @@
         rangeInputCount: rangeInputs.length,
         toggleCount: toggles.length,
         dropdownCount: dropdowns.length,
+        declarativeItemCount: declarativeItems.length,
+        savingsWidth: savingsBounds.width,
         keyboardTooltip: !!savingsTarget
       };
     });
@@ -1127,14 +1195,13 @@
         p.settings.allowedRoots = [`${qaRoot}/`];
         await p.saveSettings();
         let root = await openSettings();
-        let buttons = Array.from(root.querySelectorAll("button"));
         const rootPill = root.querySelector(".tiny-local-roots-pill");
         assert(rootPill?.tagName === "BUTTON" && !!rootPill.getAttribute("aria-label"), "Allowed-root removal pill is not an accessible button");
-        const addButton = buttons.find((button) => !button.classList.contains("tiny-local-roots-pill"));
+        const addButton = rootPill.closest(".setting-item")?.querySelector(".setting-item-control button:not(.tiny-local-roots-pill)");
         assert(!!addButton, "Allowed-roots Add button missing");
         clickElement(addButton);
         await sleep(300);
-        assert(!!document.querySelector(".modal-container .modal"), "Allowed-roots modal did not open");
+        assert(!!(root.doc || root.ownerDocument).querySelector(".modal-container .modal, .modal-container .prompt"), "Allowed-roots modal did not open");
         await closeTopModal();
         root = await openSettings();
         const clearIcon = root.querySelector(".tiny-local-roots-clear");
@@ -1684,10 +1751,14 @@
           const keyboardItems = Array.from(keyboardMenu.querySelectorAll(".tiny-local-status-menu-item"));
           assert(document.activeElement === keyboardItems[0], "Keyboard-opened status menu did not focus first action");
           const focusedItemStyle = statusBarWindow.getComputedStyle(keyboardItems[0]);
-          assert(focusedItemStyle.outlineStyle !== "none" && Number.parseFloat(focusedItemStyle.outlineWidth) > 0, "Focused status menu item has no visible focus indicator", {
-            outlineStyle: focusedItemStyle.outlineStyle,
-            outlineWidth: focusedItemStyle.outlineWidth
-          });
+          if (keyboardMenu.ownerDocument.hasFocus()) {
+            assert(focusedItemStyle.outlineStyle !== "none" && Number.parseFloat(focusedItemStyle.outlineWidth) > 0, "Focused status menu item has no visible focus indicator", {
+              outlineStyle: focusedItemStyle.outlineStyle,
+              outlineWidth: focusedItemStyle.outlineWidth
+            });
+          } else {
+            recordWarning("statusBar.focusIndicatorBackgroundWindow", { reason: "Window is not focused, so :focus is inactive" });
+          }
           document.dispatchEvent(new statusBarWindow.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true, view: statusBarWindow }));
           assert(document.activeElement === keyboardItems[1], "ArrowDown did not focus the next status menu action");
           document.dispatchEvent(new statusBarWindow.KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true, view: statusBarWindow }));

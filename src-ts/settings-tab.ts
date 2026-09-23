@@ -1,4 +1,5 @@
 import * as obsidian from "obsidian";
+import { requireApiVersion } from "obsidian";
 import type { BackupStoragePaths } from "./backup-storage";
 import { t } from "./i18n";
 import type { PlatformPorts } from "./platform";
@@ -64,6 +65,18 @@ type OwnedAnimationFrame = {
   isAnimationFrame: boolean;
 };
 
+type DeclarativeControlKey =
+  | "jpegQuality"
+  | "outputFolder"
+  | "autoCompressNewFiles"
+  | "autoBackgroundCompression"
+  | "autoBackgroundThreshold"
+  | "inactivityThresholdMinutes"
+  | "autoBackupsRetentionEnabled"
+  | "autoBackupsRetentionDays"
+  | "autoMoveCompressedEnabled"
+  | "autoMoveCompressedThreshold";
+
 class AllowedRootsFolderSuggestModal extends obsidian.FuzzySuggestModal<string> {
   private readonly plugin: FolderSuggestModalHost;
   private readonly items: string[];
@@ -103,6 +116,14 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   private _pendingRerender: boolean;
   private _isDisposed: boolean;
   private _renderGeneration: number;
+  private _preparedDeclarativeGeneration: number;
+  private _usesDeclarativeSettings: boolean;
+  private _declarativeSessionId: number;
+  private _declarativeStatsRequestId: number;
+  private _declarativeStatsLoad: Promise<void> | null;
+  private _declarativeBackups: string[] | null;
+  private _declarativeBackupsLoad: Promise<void> | null;
+  private _declarativeBackupSetting: obsidian.Setting | null;
   private readonly _ownedAnimationFrames: Set<OwnedAnimationFrame>;
   _renderRootsCleanups: Array<() => void>;
   _savingsTooltipCleanups: Array<() => void>;
@@ -124,6 +145,14 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     this._pendingRerender = false;
     this._isDisposed = false;
     this._renderGeneration = 0;
+    this._preparedDeclarativeGeneration = 0;
+    this._usesDeclarativeSettings = false;
+    this._declarativeSessionId = 0;
+    this._declarativeStatsRequestId = 0;
+    this._declarativeStatsLoad = null;
+    this._declarativeBackups = null;
+    this._declarativeBackupsLoad = null;
+    this._declarativeBackupSetting = null;
     this._ownedAnimationFrames = new Set();
     this._renderRootsCleanups = [];
     this._savingsTooltipCleanups = [];
@@ -372,6 +401,9 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   }
   renderInstructions(containerEl: HTMLElement) {
     this.renderSection(containerEl, "section.instructions");
+    this.renderInstructionsContent(containerEl);
+  }
+  private renderInstructionsContent(containerEl: HTMLElement) {
     const instructions = containerEl.createDiv({ cls: "setting-item-description" });
     const usageTitle = instructions.createEl("p");
     usageTitle.createEl("strong", { text: t(this.plugin.app, "instructions.usageTitle") });
@@ -390,6 +422,25 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     notesList.createEl("li", { text: `${t(this.plugin.app, "instructions.notes.saved")} "${this.plugin.getOutputFolder()}"` });
     notesList.createEl("li", { text: t(this.plugin.app, "instructions.notes.originalUnchanged") });
     notesList.createEl("li", { text: t(this.plugin.app, "instructions.notes.recompressionSkipped") });
+  }
+  private renderDeclarativeInstructions(setting: obsidian.Setting) {
+    setting.settingEl.empty();
+    this.renderInstructionsContent(setting.settingEl);
+  }
+  private renderSupportLinks(containerEl: HTMLElement) {
+    const links = containerEl.createDiv({ cls: "tiny-local-support-links" });
+    const addLink = (href: string, icon: string, label: string, variant: string) => {
+      const link = links.createEl("a", {
+        cls: "tiny-local-support-link",
+        href,
+        attr: { target: "_blank", rel: "noopener noreferrer" }
+      });
+      link.addClass(variant);
+      obsidian.setIcon(link.createSpan(), icon);
+      link.createSpan({ text: label });
+    };
+    addLink("https://buymeacoffee.com/haperone", "coffee", "Buy me a coffee", "tiny-local-support-link--coffee");
+    addLink("https://t.me/sup_plug_lic_bot", "send", "Support", "tiny-local-support-link--telegram");
   }
   private isRenderCurrent(generation: number, containerEl: HTMLElement) {
     return !this._isDisposed && this._renderGeneration === generation && this.containerEl === containerEl;
@@ -439,6 +490,14 @@ export class SettingsTab extends obsidian.PluginSettingTab {
   dispose() {
     this._isVisible = false;
     this._isDisposed = true;
+    this._usesDeclarativeSettings = false;
+    this._preparedDeclarativeGeneration = 0;
+    this._declarativeSessionId++;
+    this._declarativeStatsRequestId++;
+    this._declarativeStatsLoad = null;
+    this._declarativeBackups = null;
+    this._declarativeBackupsLoad = null;
+    this._declarativeBackupSetting = null;
     this._renderGeneration++;
     this._pendingRerender = false;
     this.cancelOwnedAnimationFrames();
@@ -468,8 +527,358 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       await this.renderSavingsIndicator(this.savingsHostElement, stats.savings);
     }
   }
+  private prepareDeclarativeRender(renderContext: { generation: number }, isCurrentDefinitionSet: boolean): number | null {
+    if (!isCurrentDefinitionSet) {
+      return null;
+    }
+    if (renderContext.generation !== 0) {
+      if (this._isDisposed || !this._isVisible || !this._usesDeclarativeSettings) {
+        renderContext.generation = ++this._renderGeneration;
+      } else if (this._preparedDeclarativeGeneration !== renderContext.generation) {
+        return null;
+      }
+    } else {
+      renderContext.generation = ++this._renderGeneration;
+    }
+    this._isDisposed = false;
+    this._isVisible = true;
+    this._usesDeclarativeSettings = true;
+    this.containerEl.addClass("tiny-local-settings");
+    if (this._preparedDeclarativeGeneration !== renderContext.generation) {
+      this._preparedDeclarativeGeneration = renderContext.generation;
+      this.cacheStatsElement = null;
+      this.uncompressedStatsElement = null;
+      this.compressedFilesCountElement = null;
+      this.savingsHostElement = null;
+      this._declarativeBackupSetting = null;
+      this.updateStats = async () => {
+        const sessionId = this._declarativeSessionId;
+        const requestId = ++this._declarativeStatsRequestId;
+        const stats = await this.plugin.getStatsSnapshot();
+        if (!this.isDeclarativeLoadCurrent(sessionId) || requestId !== this._declarativeStatsRequestId) {
+          return;
+        }
+        await this.applyStatsSnapshot(stats);
+      };
+    }
+    return renderContext.generation;
+  }
+  private requestDeclarativeStats() {
+    if (this._declarativeStatsLoad) {
+      return;
+    }
+    const sessionId = this._declarativeSessionId;
+    const requestId = ++this._declarativeStatsRequestId;
+    let load: Promise<void>;
+    load = this.loadDeclarativeStats(sessionId, requestId).finally(() => {
+      if (this._declarativeStatsLoad === load) {
+        this._declarativeStatsLoad = null;
+      }
+    });
+    this._declarativeStatsLoad = load;
+  }
+  private async loadDeclarativeStats(sessionId: number, requestId: number) {
+    try {
+      const stats = await this.plugin.getStatsSnapshot();
+      if (!this.isDeclarativeLoadCurrent(sessionId) || requestId !== this._declarativeStatsRequestId) {
+        return;
+      }
+      await this.applyStatsSnapshot(stats);
+    } catch (error) {
+      if (this.isDeclarativeLoadCurrent(sessionId) && requestId === this._declarativeStatsRequestId) {
+        console.error(getLogTag(this), "Declarative settings statistics load failed:", error);
+      }
+    }
+  }
+  private requestDeclarativeBackups() {
+    if (this._declarativeBackups || this._declarativeBackupsLoad) {
+      return;
+    }
+    const sessionId = this._declarativeSessionId;
+    let load: Promise<void>;
+    load = this.loadDeclarativeBackups(sessionId).finally(() => {
+      if (this._declarativeBackupsLoad === load) {
+        this._declarativeBackupsLoad = null;
+      }
+    });
+    this._declarativeBackupsLoad = load;
+  }
+  private isDeclarativeLoadCurrent(sessionId: number) {
+    return this._declarativeSessionId === sessionId
+      && this._isVisible
+      && !this._isDisposed
+      && this._usesDeclarativeSettings;
+  }
+  private async loadDeclarativeBackups(sessionId: number) {
+    let shouldRefresh = false;
+    try {
+      const backups = await this.plugin.cache.getAvailableBackups();
+      if (!this.isDeclarativeLoadCurrent(sessionId)) {
+        return;
+      }
+      this._declarativeBackups = backups;
+      shouldRefresh = true;
+    } catch (error) {
+      if (!this.isDeclarativeLoadCurrent(sessionId)) {
+        return;
+      }
+      console.error(getLogTag(this), "Declarative cache-backup list load failed:", error);
+      this._declarativeBackups = [];
+      shouldRefresh = true;
+    }
+    if (shouldRefresh && this._declarativeBackupSetting) {
+      this._declarativeBackupSetting.setDisabled(false);
+      this.configureCacheRestoreSetting(this._declarativeBackupSetting);
+    }
+  }
+  override getControlValue(key: string): unknown {
+    const controlKey = key as DeclarativeControlKey;
+    switch (controlKey) {
+      case "outputFolder":
+        return this.plugin.getOutputFolder();
+      case "jpegQuality":
+      case "autoCompressNewFiles":
+      case "autoBackgroundCompression":
+      case "autoBackgroundThreshold":
+      case "inactivityThresholdMinutes":
+      case "autoBackupsRetentionEnabled":
+      case "autoBackupsRetentionDays":
+      case "autoMoveCompressedEnabled":
+      case "autoMoveCompressedThreshold":
+        return this.plugin.settings[controlKey];
+      default:
+        return undefined;
+    }
+  }
+  override async setControlValue(key: string, value: unknown): Promise<void> {
+    const controlKey = key as DeclarativeControlKey;
+    switch (controlKey) {
+      case "outputFolder":
+        if (typeof value !== "string") {
+          throw new TypeError("Output folder must be a string");
+        }
+        this.plugin.settings.outputFolder = normalizeOutputFolder(value.trim() || "Compressed");
+        break;
+      case "autoCompressNewFiles":
+      case "autoBackgroundCompression":
+      case "autoBackupsRetentionEnabled":
+      case "autoMoveCompressedEnabled":
+        if (typeof value !== "boolean") {
+          throw new TypeError(`${key} must be a boolean`);
+        }
+        this.plugin.settings[controlKey] = value;
+        break;
+      case "jpegQuality":
+      case "autoBackgroundThreshold":
+      case "inactivityThresholdMinutes":
+      case "autoBackupsRetentionDays":
+      case "autoMoveCompressedThreshold":
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          throw new TypeError(`${key} must be a finite number`);
+        }
+        this.plugin.settings[controlKey] = value;
+        break;
+      default:
+        throw new Error(`Unsupported declarative setting key: ${key}`);
+    }
+    await this.plugin.saveSettings();
+    if (
+      requireApiVersion("1.13.0")
+      && (key === "autoBackgroundCompression" || key === "autoBackupsRetentionEnabled" || key === "autoMoveCompressedEnabled")
+    ) {
+      this.refreshDomState();
+    }
+  }
+  override getSettingDefinitions(): obsidian.SettingDefinitionItem<DeclarativeControlKey>[] {
+    const renderContext = { generation: 0 };
+    let definitions: obsidian.SettingDefinitionItem<DeclarativeControlKey>[];
+    const render = (callback: (setting: obsidian.Setting, generation: number) => void | (() => void)) =>
+      (setting: obsidian.Setting) => {
+        const isCurrentDefinitionSet = requireApiVersion("1.13.0") && this.settingItems === definitions;
+        const generation = this.prepareDeclarativeRender(renderContext, isCurrentDefinitionSet);
+        if (generation === null) {
+          return;
+        }
+        return callback(setting, generation);
+      };
+    definitions = [
+      {
+        name: "Support links",
+        searchable: false,
+        render: render((setting) => {
+          setting.settingEl.empty();
+          setting.settingEl.addClass("tiny-local-support-setting");
+          this.renderSupportLinks(setting.settingEl);
+        })
+      },
+      {
+        name: t(this.plugin.app, "settings.title"),
+        searchable: false,
+        render: render((setting) => this.renderDeclarativeHeader(setting))
+      },
+      {
+        type: "group",
+        heading: t(this.plugin.app, "section.quality"),
+        items: [
+          {
+            name: t(this.plugin.app, "quality.png.name"),
+            desc: t(this.plugin.app, "quality.png.desc"),
+            render: render((setting) => this.configurePngQualitySetting(setting))
+          },
+          {
+            name: t(this.plugin.app, "quality.jpeg.name"),
+            desc: t(this.plugin.app, "quality.jpeg.desc"),
+            control: { type: "slider", key: "jpegQuality", min: 1, max: 95, step: 1, defaultValue: 85 }
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: t(this.plugin.app, "section.paths"),
+        items: [
+          {
+            name: t(this.plugin.app, "paths.allowedRoots.name"),
+            desc: t(this.plugin.app, "paths.allowedRoots.desc"),
+            render: render((setting, generation) => this.configureAllowedRootsSetting(setting, generation))
+          },
+          {
+            name: t(this.plugin.app, "paths.output.name"),
+            desc: t(this.plugin.app, "paths.output.desc"),
+            control: {
+              type: "text",
+              key: "outputFolder",
+              placeholder: "Compressed",
+              defaultValue: "Compressed",
+              validate: (value) => {
+                const rawValue = value.trim();
+                return rawValue && !isValidOutputFolder(rawValue)
+                  ? t(this.plugin.app, "validation.pathNotAllowed")
+                  : undefined;
+              }
+            }
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: t(this.plugin.app, "section.automation"),
+        items: [
+          {
+            name: t(this.plugin.app, "auto.newFiles.name"),
+            desc: t(this.plugin.app, "auto.newFiles.desc"),
+            control: { type: "toggle", key: "autoCompressNewFiles", defaultValue: false }
+          },
+          {
+            name: t(this.plugin.app, "auto.bg.name"),
+            desc: t(this.plugin.app, "auto.bg.desc"),
+            control: { type: "toggle", key: "autoBackgroundCompression", defaultValue: true }
+          },
+          {
+            name: t(this.plugin.app, "auto.bg.threshold.name"),
+            desc: t(this.plugin.app, "auto.bg.threshold.desc"),
+            visible: () => this.plugin.settings.autoBackgroundCompression,
+            control: { type: "slider", key: "autoBackgroundThreshold", min: 10, max: 1000, step: 5, defaultValue: 50 }
+          },
+          {
+            name: t(this.plugin.app, "auto.bg.inactivity.name"),
+            desc: t(this.plugin.app, "auto.bg.inactivity.desc"),
+            visible: () => this.plugin.settings.autoBackgroundCompression,
+            control: { type: "slider", key: "inactivityThresholdMinutes", min: 1, max: 60, step: 1, defaultValue: 2 }
+          },
+          {
+            name: t(this.plugin.app, "auto.retention.toggle.name"),
+            desc: t(this.plugin.app, "auto.retention.toggle.desc"),
+            control: { type: "toggle", key: "autoBackupsRetentionEnabled", defaultValue: false }
+          },
+          {
+            name: t(this.plugin.app, "auto.retention.days.name"),
+            desc: t(this.plugin.app, "auto.retention.days.desc"),
+            visible: () => this.plugin.settings.autoBackupsRetentionEnabled,
+            control: { type: "slider", key: "autoBackupsRetentionDays", min: 1, max: 365, step: 1, defaultValue: 30 }
+          },
+          {
+            name: t(this.plugin.app, "auto.move.toggle.name"),
+            desc: t(this.plugin.app, "auto.move.toggle.desc"),
+            control: { type: "toggle", key: "autoMoveCompressedEnabled", defaultValue: false }
+          },
+          {
+            name: t(this.plugin.app, "auto.move.threshold.name"),
+            desc: t(this.plugin.app, "auto.move.threshold.desc"),
+            visible: () => this.plugin.settings.autoMoveCompressedEnabled,
+            control: { type: "slider", key: "autoMoveCompressedThreshold", min: 1, max: 1000, step: 1, defaultValue: 50 }
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: t(this.plugin.app, "section.stats"),
+        items: [
+          {
+            name: t(this.plugin.app, "stats.uncompressed.name"),
+            render: render((setting) => this.configureUncompressedStatsSetting(setting))
+          },
+          {
+            name: t(this.plugin.app, "stats.cache.name"),
+            render: render((setting) => this.configureCacheStatsSetting(setting))
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: t(this.plugin.app, "section.move"),
+        items: [
+          {
+            name: t(this.plugin.app, "move.title"),
+            render: render((setting) => this.configureMoveSetting(setting))
+          },
+          {
+            name: t(this.plugin.app, "backups.imagesFolder.clearName"),
+            desc: t(this.plugin.app, "backups.imagesFolder.clearDesc"),
+            render: render((setting) => this.configureClearImageBackupsSetting(setting))
+          },
+          {
+            name: t(this.plugin.app, "backups.imagesFolder.name"),
+            desc: t(this.plugin.app, "backups.imagesFolder.desc"),
+            visible: () => Boolean(this.plugin.getPlatformPorts().runtime.revealPath),
+            render: render((setting) => this.configureOpenImageBackupsSetting(setting))
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: t(this.plugin.app, "backups.cache.title"),
+        items: [
+          {
+            name: t(this.plugin.app, "backups.cache.restore"),
+            visible: () => {
+              const fsPort = this.plugin.getPlatformPorts().fs;
+              return Boolean(fsPort.restoreProbe || fsPort.processTextAtomically);
+            },
+            render: render((setting) => this.configureCacheRestoreSetting(setting))
+          },
+          {
+            name: t(this.plugin.app, "backups.cache.folder.name"),
+            desc: t(this.plugin.app, "backups.cache.folder.desc"),
+            render: render((setting) => this.configureOpenCacheBackupsSetting(setting))
+          }
+        ]
+      },
+      {
+        type: "group",
+        heading: t(this.plugin.app, "section.instructions"),
+        items: [
+          {
+            name: t(this.plugin.app, "instructions.usageTitle"),
+            render: render((setting) => this.renderDeclarativeInstructions(setting))
+          }
+        ]
+      }
+    ];
+    return definitions;
+  }
   // Obsidian invokes this legacy hook synchronously; async work is exposed separately.
   override display(): void {
+    this._usesDeclarativeSettings = false;
     this._isDisposed = false;
     this._isVisible = true;
     this.renderSettings().catch((error) => {
@@ -527,7 +936,8 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       await this.applyStatsSnapshot(stats);
     };
     
-    await this.renderHeaderIndicators(containerEl, statsSnapshot);
+    this.renderSupportLinks(containerEl);
+    this.renderHeaderIndicators(containerEl, statsSnapshot);
     if (!this.isRenderCurrent(renderGeneration, containerEl)) {
       return;
     }
@@ -545,7 +955,7 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       this.finishRender();
     }
   }
-  async renderHeaderIndicators(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
+  renderHeaderIndicators(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
     // Global warning if WASM modules are not available
     const wasmInitError = this.plugin.compressor.getWasmInitError?.();
     if (wasmInitError) {
@@ -554,13 +964,33 @@ export class SettingsTab extends obsidian.PluginSettingTab {
 
     // Add space savings indicator
     this.savingsHostElement = containerEl.createDiv({ cls: "tiny-local-savings-host" });
-    await this.renderSavingsIndicator(this.savingsHostElement, statsSnapshot.savings);
+    this.renderSavingsSnapshot(this.savingsHostElement, statsSnapshot.savings);
   }
-  renderQualitySection(containerEl: HTMLElement) {
-    this.renderSection(containerEl, "section.quality");
-    new obsidian.Setting(containerEl).setName(t(this.plugin.app, "quality.png.name")).setDesc(t(this.plugin.app, "quality.png.desc")).addText((text) => text.setPlaceholder("65-80").setValue(`${this.plugin.settings.pngQuality.min}-${this.plugin.settings.pngQuality.max}`).onChange((value) => {
-      const parts = value.split("-");
-      if (parts.length === 2) {
+  private renderDeclarativeHeader(setting: obsidian.Setting) {
+    setting.settingEl.empty();
+    setting.settingEl.addClass("tiny-local-savings-setting");
+    if (this.currentStatsSnapshot) {
+      this.renderHeaderIndicators(setting.settingEl, this.currentStatsSnapshot);
+    } else {
+      const wasmInitError = this.plugin.compressor.getWasmInitError?.();
+      if (wasmInitError) {
+        setting.settingEl.createDiv({ text: t(this.plugin.app, "warning.wasmInitFailed"), cls: "tiny-local-notice tiny-local-warning-block" });
+      }
+      this.savingsHostElement = setting.settingEl.createDiv({ cls: "tiny-local-savings-host" });
+      this.savingsHostElement.createDiv({ cls: "tiny-local-savings-indicator", text: t(this.plugin.app, "common.refreshing"), attr: { role: "status" } });
+    }
+    this.requestDeclarativeStats();
+    return () => this.cleanupSavingsTooltips();
+  }
+  private configurePngQualitySetting(setting: obsidian.Setting) {
+    setting.addText((text) => text
+      .setPlaceholder("65-80")
+      .setValue(`${this.plugin.settings.pngQuality.min}-${this.plugin.settings.pngQuality.max}`)
+      .onChange((value) => {
+        const parts = value.split("-");
+        if (parts.length !== 2) {
+          return;
+        }
         const minPart = parts[0];
         const maxPart = parts[1];
         if (minPart === undefined || maxPart === undefined) {
@@ -573,8 +1003,15 @@ export class SettingsTab extends obsidian.PluginSettingTab {
           this.plugin.settings.pngQuality.max = max;
           this.debouncedSaveSettings();
         }
-      }
-    }));
+      }));
+  }
+  renderQualitySection(containerEl: HTMLElement) {
+    this.renderSection(containerEl, "section.quality");
+    this.configurePngQualitySetting(
+      new obsidian.Setting(containerEl)
+        .setName(t(this.plugin.app, "quality.png.name"))
+        .setDesc(t(this.plugin.app, "quality.png.desc"))
+    );
     new obsidian.Setting(containerEl).setName(t(this.plugin.app, "quality.jpeg.name")).setDesc(t(this.plugin.app, "quality.jpeg.desc")).addSlider((slider) => slider.setLimits(1, 95, 1).setValue(this.plugin.settings.jpegQuality).setDynamicTooltip().onChange((value) => {
       this.plugin.settings.jpegQuality = value;
       this.debouncedSaveSettings();
@@ -583,16 +1020,10 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     // Button: open image backups folder
     // Removed from "Cache backups" section — moved to "Move compressed files"
   }
-  renderPathsSection(containerEl: HTMLElement, renderGeneration = this._renderGeneration) {
-    const isCurrent = () => this.isRenderCurrent(renderGeneration, containerEl);
-    this.renderSection(containerEl, "section.paths");
-    // Allowed roots: choose from folder list with autocomplete (modal)
-    const rootsSetting = new obsidian.Setting(containerEl)
-      .setName(t(this.plugin.app, "paths.allowedRoots.name"))
-      .setDesc(t(this.plugin.app, "paths.allowedRoots.desc"));
-
+  private configureAllowedRootsSetting(rootsSetting: obsidian.Setting, renderGeneration: number) {
+    const renderContainer = this.containerEl;
+    const isCurrent = () => this.isRenderCurrent(renderGeneration, renderContainer);
     const rootsListEl = rootsSetting.controlEl.createDiv({ cls: "tiny-local-roots-list" });
-
     const renderRoots = () => {
       if (!isCurrent()) {
         return;
@@ -611,7 +1042,6 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         pill.title = removeLabel;
         pill.setAttribute("aria-label", `${removeLabel}: ${root}`);
         const removeRoot = () => {
-          // Look up by value at click time: a render-captured index goes stale when two pills are removed before the re-render.
           const rootIndex = this.plugin.settings.allowedRoots.indexOf(root);
           if (rootIndex === -1) {
             return;
@@ -627,7 +1057,6 @@ export class SettingsTab extends obsidian.PluginSettingTab {
               console.error(getLogTag(this), "Allowed root removal failed:", error);
             });
         };
-        // transient: re-rendered per render, removed via _renderRootsCleanups (registerDomEvent would leak across renders)
         pill.addEventListener("click", removeRoot);
         this._renderRootsCleanups.push(() => pill.removeEventListener("click", removeRoot));
       });
@@ -663,8 +1092,6 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         }
       })
     );
-
-    // Mark the trash icon with a class for styling (red hover)
     try {
       const icons = rootsSetting.controlEl.querySelectorAll('.clickable-icon');
       const lastIcon = icons[icons.length - 1];
@@ -672,8 +1099,15 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     } catch (error) {
       console.debug(getLogTag(this), "allowed roots clear icon styling failed (non-critical)", error);
     }
-
     renderRoots();
+    return () => this.cleanupRenderRoots();
+  }
+  renderPathsSection(containerEl: HTMLElement, renderGeneration = this._renderGeneration) {
+    this.renderSection(containerEl, "section.paths");
+    const rootsSetting = new obsidian.Setting(containerEl)
+      .setName(t(this.plugin.app, "paths.allowedRoots.name"))
+      .setDesc(t(this.plugin.app, "paths.allowedRoots.desc"));
+    this.configureAllowedRootsSetting(rootsSetting, renderGeneration);
     new obsidian.Setting(containerEl).setName(t(this.plugin.app, "paths.output.name")).setDesc(t(this.plugin.app, "paths.output.desc")).addText((text) => text.setPlaceholder("Compressed").setValue(this.plugin.getOutputFolder()).onChange((value) => {
       const rawValue = value.trim();
       if (rawValue && !isValidOutputFolder(rawValue)) {
@@ -684,7 +1118,6 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       this.plugin.settings.outputFolder = normalizeOutputFolder(rawValue || "Compressed");
       this.debouncedSaveSettings();
     }));
-    
   }
   renderAutomationSection(containerEl: HTMLElement, renderGeneration = this._renderGeneration) {
     const isCurrent = () => this.isRenderCurrent(renderGeneration, containerEl);
@@ -769,9 +1202,15 @@ export class SettingsTab extends obsidian.PluginSettingTab {
     );
     this.applySubsettingVisibility(this.plugin.settings.autoMoveCompressedEnabled, autoMoveRow);
   }
-  renderStatsSection(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
-    this.renderSection(containerEl, "section.stats");
-    const uncompressedSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.uncompressed.name")).setDesc(`${t(this.plugin.app, "stats.uncompressed.ready")}: ${statsSnapshot.uncompressedImages}`);
+  private configureUncompressedStatsSetting(setting: obsidian.Setting) {
+    const statsSnapshot = this.currentStatsSnapshot;
+    setting.setDesc(statsSnapshot
+      ? `${t(this.plugin.app, "stats.uncompressed.ready")}: ${statsSnapshot.uncompressedImages}`
+      : t(this.plugin.app, "common.refreshing"));
+    if (!statsSnapshot && this._usesDeclarativeSettings) {
+      this.requestDeclarativeStats();
+    }
+    const uncompressedSetting = setting;
     this.uncompressedStatsElement = uncompressedSetting.descEl;
     uncompressedSetting.addButton((button) => button.setButtonText(t(this.plugin.app, "common.refresh")).onClick(async () => {
       await this.runButtonTask(button, "common.refresh", "common.refreshing", async () => {
@@ -780,8 +1219,19 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
       });
     }));
-    const cacheStats = statsSnapshot.cacheStats;
-    const cacheSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.cache.name")).setDesc(`${t(this.plugin.app, "stats.cache.entries")}: ${cacheStats.total}, ${t(this.plugin.app, "stats.cache.size")}: ${Math.round(cacheStats.size / 1024)} ${t(this.plugin.app, "units.kb")}`);
+  }
+  private configureCacheStatsSetting(setting: obsidian.Setting) {
+    const statsSnapshot = this.currentStatsSnapshot;
+    if (!statsSnapshot) {
+      setting.setDesc(t(this.plugin.app, "common.refreshing"));
+      if (this._usesDeclarativeSettings) {
+        this.requestDeclarativeStats();
+      }
+    } else {
+      const cacheStats = statsSnapshot.cacheStats;
+      setting.setDesc(`${t(this.plugin.app, "stats.cache.entries")}: ${cacheStats.total}, ${t(this.plugin.app, "stats.cache.size")}: ${Math.round(cacheStats.size / 1024)} ${t(this.plugin.app, "units.kb")}`);
+    }
+    const cacheSetting = setting;
     this.cacheStatsElement = cacheSetting.descEl;
     cacheSetting.addButton((button) => this.setDestructiveButton(button).setButtonText(t(this.plugin.app, "common.clearCache")).onClick(async () => {
       await this.runButtonTask(button, "common.clearCache", "common.clearing", async () => {
@@ -801,11 +1251,25 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       });
     }));
   }
-  renderMoveSection(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
-    this.renderSection(containerEl, "section.move");
-    
-    // Button: move compressed files
-    const moveSetting = new obsidian.Setting(containerEl).setName(t(this.plugin.app, "move.title")).setDesc(`${t(this.plugin.app, "move.ready")}: ${statsSnapshot.compressedFilesCount}`);
+  renderStatsSection(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
+    this.currentStatsSnapshot = statsSnapshot;
+    this.renderSection(containerEl, "section.stats");
+    this.configureUncompressedStatsSetting(
+      new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.uncompressed.name"))
+    );
+    this.configureCacheStatsSetting(
+      new obsidian.Setting(containerEl).setName(t(this.plugin.app, "stats.cache.name"))
+    );
+  }
+  private configureMoveSetting(setting: obsidian.Setting) {
+    const statsSnapshot = this.currentStatsSnapshot;
+    setting.setDesc(statsSnapshot
+      ? `${t(this.plugin.app, "move.ready")}: ${statsSnapshot.compressedFilesCount}`
+      : t(this.plugin.app, "common.refreshing"));
+    if (!statsSnapshot && this._usesDeclarativeSettings) {
+      this.requestDeclarativeStats();
+    }
+    const moveSetting = setting;
     this.compressedFilesCountElement = moveSetting.descEl;
     moveSetting.addButton((button) => this.setDestructiveButton(button).setButtonText(t(this.plugin.app, "move.button")).onClick(async () => {
       await this.runButtonTask(button, "move.button", "common.processing", async () => {
@@ -814,39 +1278,100 @@ export class SettingsTab extends obsidian.PluginSettingTab {
         await this.updateStats();
       }, "Move compressed files action failed:");
     }));
-    
-    // Button: clear backups of moved files
-    new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.imagesFolder.clearName")).setDesc(t(this.plugin.app, "backups.imagesFolder.clearDesc")).addButton((button) => this.setDestructiveButton(button).setButtonText(t(this.plugin.app, "backups.imagesFolder.clearButton")).onClick(async () => {
+  }
+  private configureClearImageBackupsSetting(setting: obsidian.Setting) {
+    setting.addButton((button) => this.setDestructiveButton(button).setButtonText(t(this.plugin.app, "backups.imagesFolder.clearButton")).onClick(async () => {
       await this.runButtonTask(button, "backups.imagesFolder.clearButton", "common.clearing", async () => {
         await this.plugin.clearOriginalFilesBackups();
       }, "Clear image backups action failed:", "backups.imagesFolder.clearError");
     }));
-
-    // Button: open image backups folder (desktop only — mobile has no OS file manager)
+  }
+  private configureOpenImageBackupsSetting(setting: obsidian.Setting) {
     const revealPath = this.plugin.getPlatformPorts().runtime.revealPath;
-    if (revealPath) {
-      new obsidian.Setting(containerEl)
-        .setName(t(this.plugin.app, "backups.imagesFolder.name"))
-        .setDesc(t(this.plugin.app, "backups.imagesFolder.desc"))
-        .addButton((button) => button
-          .setButtonText(t(this.plugin.app, "backups.imagesFolder.openButton"))
-          .onClick(async () => {
-            try {
-              const dir = this.plugin.getBackupStoragePaths().originalFilesBackups;
-              await this.plugin.getPlatformPorts().fs.mkdir(dir);
-              const err = await revealPath(dir);
-              if (err) {
-                console.error(getLogTag(this), 'Error opening image backups folder:', err);
-                new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "backups.imagesFolder.openError")}`);
-              }
-            } catch (e) {
-              console.error(getLogTag(this), 'Error opening image backups folder:', e);
-              new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "backups.imagesFolder.openError")}`);
-            }
-          })
-        );
+    if (!revealPath) {
+      return;
     }
-
+    setting.addButton((button) => button
+      .setButtonText(t(this.plugin.app, "backups.imagesFolder.openButton"))
+      .onClick(async () => {
+        try {
+          const dir = this.plugin.getBackupStoragePaths().originalFilesBackups;
+          await this.plugin.getPlatformPorts().fs.mkdir(dir);
+          const err = await revealPath(dir);
+          if (err) {
+            console.error(getLogTag(this), 'Error opening image backups folder:', err);
+            new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "backups.imagesFolder.openError")}`);
+          }
+        } catch (error) {
+          console.error(getLogTag(this), 'Error opening image backups folder:', error);
+          new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "backups.imagesFolder.openError")}`);
+        }
+      }));
+  }
+  renderMoveSection(containerEl: HTMLElement, statsSnapshot: StatsSnapshot) {
+    this.currentStatsSnapshot = statsSnapshot;
+    this.renderSection(containerEl, "section.move");
+    this.configureMoveSetting(
+      new obsidian.Setting(containerEl).setName(t(this.plugin.app, "move.title"))
+    );
+    this.configureClearImageBackupsSetting(
+      new obsidian.Setting(containerEl)
+        .setName(t(this.plugin.app, "backups.imagesFolder.clearName"))
+        .setDesc(t(this.plugin.app, "backups.imagesFolder.clearDesc"))
+    );
+    if (this.plugin.getPlatformPorts().runtime.revealPath) {
+      this.configureOpenImageBackupsSetting(
+        new obsidian.Setting(containerEl)
+          .setName(t(this.plugin.app, "backups.imagesFolder.name"))
+          .setDesc(t(this.plugin.app, "backups.imagesFolder.desc"))
+      );
+    }
+  }
+  private configureCacheRestoreSetting(setting: obsidian.Setting) {
+    if (this._usesDeclarativeSettings) {
+      this._declarativeBackupSetting = setting;
+    }
+    const backups = this._declarativeBackups;
+    if (backups === null) {
+      setting.setDesc(t(this.plugin.app, "common.refreshing")).setDisabled(true);
+      this.requestDeclarativeBackups();
+      return;
+    }
+    if (backups.length === 0) {
+      setting.setDesc(t(this.plugin.app, "backups.cache.none")).setDisabled(true);
+      return;
+    }
+    setting.setDesc(`${t(this.plugin.app, "backups.cache.available")} ${backups.length}`).addDropdown((dropdown) => {
+      dropdown.addOption("", t(this.plugin.app, "backups.cache.selectPlaceholder"));
+      for (const backup of backups) {
+        const date = backup.replace("tinyLocal-cache-backup-", "").replace(".json", "").replace(/-/g, ":").replace(/T/, " ");
+        dropdown.addOption(backup, date);
+      }
+      dropdown.onChange(async (value) => {
+        if (!value) {
+          return;
+        }
+        try {
+          const success = await this.plugin.cache.restoreFromBackup(value);
+          if (!success) {
+            throw new Error("Cache restore returned false");
+          }
+          await this.plugin.rebuildImageIndex("cache-restore");
+          await this.plugin.statusBarController.update();
+          await this.updateStats();
+          new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
+        } catch (error) {
+          this.showSettingsOperationError(error, "Cache restore action failed:");
+        }
+      });
+    });
+  }
+  private configureOpenCacheBackupsSetting(setting: obsidian.Setting) {
+    setting.addButton((button) => button
+      .setButtonText(t(this.plugin.app, "backups.cache.folder.openButton"))
+      .onClick(async () => {
+        await this.plugin.showCacheBackupsList();
+      }));
   }
   async renderCacheBackupsSection(containerEl: HTMLElement, renderGeneration: number | null = null) {
     const isCurrent = () => renderGeneration === null || this.isRenderCurrent(renderGeneration, containerEl);
@@ -860,39 +1385,16 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       if (!isCurrent()) {
         return;
       }
-      if (backups.length === 0) {
-        new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.restore")).setDesc(t(this.plugin.app, "backups.cache.none")).setDisabled(true);
-      } else {
-        new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.restore")).setDesc(`${t(this.plugin.app, "backups.cache.available")} ${backups.length}`).addDropdown((dropdown) => {
-          dropdown.addOption("", t(this.plugin.app, "backups.cache.selectPlaceholder"));
-          backups.forEach((backup) => {
-            const date = backup.replace("tinyLocal-cache-backup-", "").replace(".json", "").replace(/-/g, ":").replace(/T/, " ");
-            dropdown.addOption(backup, date);
-          });
-          dropdown.onChange(async (value) => {
-            if (value) {
-              try {
-                const success = await this.plugin.cache.restoreFromBackup(value);
-                if (!success) {
-                  throw new Error("Cache restore returned false");
-                }
-                await this.plugin.rebuildImageIndex("cache-restore");
-                await this.plugin.statusBarController.update();
-                await this.updateStats();
-                new obsidian.Notice(`${getPluginName(this.plugin)}: ${t(this.plugin.app, "notice.cacheUpdated")}`);
-              } catch (error) {
-                this.showSettingsOperationError(error, "Cache restore action failed:");
-              }
-            }
-          });
-        });
-      }
+      this._declarativeBackups = backups;
+      this.configureCacheRestoreSetting(
+        new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.restore"))
+      );
     }
-    new obsidian.Setting(containerEl).setName(t(this.plugin.app, "backups.cache.folder.name")).setDesc(t(this.plugin.app, "backups.cache.folder.desc")).addButton((button) => button.setButtonText(t(this.plugin.app, "backups.cache.folder.openButton")).onClick(async () => {
-      await this.plugin.showCacheBackupsList();
-    }));
-
-    // (Moved to "Move compressed files" section)
+    this.configureOpenCacheBackupsSetting(
+      new obsidian.Setting(containerEl)
+        .setName(t(this.plugin.app, "backups.cache.folder.name"))
+        .setDesc(t(this.plugin.app, "backups.cache.folder.desc"))
+    );
   }
   
   async renderSavingsIndicator(containerEl: HTMLElement, savings: SavingsSnapshot | null = null) {
@@ -904,74 +1406,37 @@ export class SettingsTab extends obsidian.PluginSettingTab {
       if (!this.isRenderCurrent(renderGeneration, renderContainer)) {
         return;
       }
-
-      if (!this.plugin.savingsCalculator.validateSavingsData(savings)) {
-        return; // Do not render if data is not valid
-      }
-      
-      // Create container for indicator
-      const indicatorContainer = containerEl.createDiv({
-        cls: "tiny-local-savings-indicator"
-      });
-      
-      // Create textual summary
-      const textInfo = indicatorContainer.createDiv({
-        cls: "tiny-local-savings-text"
-      });
-      
-      const { originalFormatted, currentFormatted, savedFormatted, estimatedIndicator } = this.plugin.savingsCalculator.formatTooltipData(savings);
-      
-      textInfo.createEl("strong", { text: `${t(this.plugin.app, "savings.original")}:` });
-      textInfo.createSpan({ text: ` ${originalFormatted}${estimatedIndicator} \u2192 ` });
-      textInfo.createEl("strong", { text: `${t(this.plugin.app, "savings.current")}:` });
-      textInfo.createSpan({ text: ` ${currentFormatted} \u2192 ` });
-      textInfo.createEl("strong", { text: `${t(this.plugin.app, "savings.saved")}:` });
-      textInfo.createSpan({ text: ` ${savedFormatted} (${savings.savedPercentage}%)${estimatedIndicator}` });
-      
-      // Create progress bar
-      const barContainer = indicatorContainer.createDiv({
-        cls: "tiny-local-savings-bar"
-      });
-      barContainer.setAttribute("aria-hidden", "true");
-      
-      // Compute bar proportions with divide-by-zero/NaN protection
-      const { savedWidth, currentWidth } = this.getSavingsBarWidths(savings);
-      
-
-      
-      // Create saved space segment
-      if (savedWidth > 0) {
-        const savedBlock = barContainer.createDiv({
-          cls: "tiny-local-savings-saved"
-        });
-        // dynamic: required at runtime
-        savedBlock.setCssProps({
-          "--local-image-compress-savings-width": `${savedWidth}%`
-        });
-      }
-      
-      // Create current size segment (always create, even if 0%)
-      const currentBlock = barContainer.createDiv({
-        cls: "tiny-local-savings-current"
-      });
-      // dynamic: required at runtime
-      currentBlock.setCssProps({
-        "--local-image-compress-savings-width": `${currentWidth}%`
-      });
-      
-      // Fallback: if both are 0, render empty block for visibility
-      if (savedWidth === 0 && currentWidth === 0) {
-        barContainer.createDiv({
-          cls: "tiny-local-savings-current tiny-local-savings-fallback"
-        });
-      }
-      
-      // Attach tooltip
-      this.createSavingsTooltip(indicatorContainer, savings);
-      
+      this.renderSavingsSnapshot(containerEl, savings);
     } catch (error) {
       console.error(getLogTag(this), "Savings indicator render error:", error);
     }
+  }
+  private renderSavingsSnapshot(containerEl: HTMLElement, savings: SavingsSnapshot) {
+    if (!this.plugin.savingsCalculator.validateSavingsData(savings)) {
+      return;
+    }
+    const indicatorContainer = containerEl.createDiv({ cls: "tiny-local-savings-indicator" });
+    const textInfo = indicatorContainer.createDiv({ cls: "tiny-local-savings-text" });
+    const { originalFormatted, currentFormatted, savedFormatted, estimatedIndicator } = this.plugin.savingsCalculator.formatTooltipData(savings);
+    textInfo.createEl("strong", { text: `${t(this.plugin.app, "savings.original")}:` });
+    textInfo.createSpan({ text: ` ${originalFormatted}${estimatedIndicator} \u2192 ` });
+    textInfo.createEl("strong", { text: `${t(this.plugin.app, "savings.current")}:` });
+    textInfo.createSpan({ text: ` ${currentFormatted} \u2192 ` });
+    textInfo.createEl("strong", { text: `${t(this.plugin.app, "savings.saved")}:` });
+    textInfo.createSpan({ text: ` ${savedFormatted} (${savings.savedPercentage}%)${estimatedIndicator}` });
+    const barContainer = indicatorContainer.createDiv({ cls: "tiny-local-savings-bar" });
+    barContainer.setAttribute("aria-hidden", "true");
+    const { savedWidth, currentWidth } = this.getSavingsBarWidths(savings);
+    if (savedWidth > 0) {
+      const savedBlock = barContainer.createDiv({ cls: "tiny-local-savings-saved" });
+      savedBlock.setCssProps({ "--local-image-compress-savings-width": `${savedWidth}%` });
+    }
+    const currentBlock = barContainer.createDiv({ cls: "tiny-local-savings-current" });
+    currentBlock.setCssProps({ "--local-image-compress-savings-width": `${currentWidth}%` });
+    if (savedWidth === 0 && currentWidth === 0) {
+      barContainer.createDiv({ cls: "tiny-local-savings-current tiny-local-savings-fallback" });
+    }
+    this.createSavingsTooltip(indicatorContainer, savings);
   }
   
   createSavingsTooltip(container: HTMLElement, savings: SavingsSnapshot) {
