@@ -111,7 +111,7 @@ How this is handled safely:
 
 - **Network**: the plugin makes no runtime network requests. PNG/JPEG codecs are bundled in `main.js`; images are not uploaded.
 - **Telemetry and ads**: no analytics, telemetry, crash reporting, tracking, dynamic ads, or self-update mechanism is included.
-- **Accounts and payments**: no account, subscription, license key, or payment is required. The optional funding link in the manifest is never accessed by the plugin.
+- **Accounts and payments**: no account, subscription, license key, or payment is required. The optional Buy Me a Coffee and Telegram support links in settings open external pages only when clicked.
 - **Vault files**: the plugin reads supported images selected by commands, automation, or allowed roots. It writes compressed output to the configured vault-relative folder and replaces originals only through the documented move or auto-move workflow after creating backups.
 - **Local state**: cache data is stored in the plugin folder. Cache and move backups are stored under `Vault/.local-image-compress/backups/`.
 - **External files**: plugin-managed data stays inside the current vault. The “Open folder” actions only ask the operating system to reveal documented backup folders; they do not transmit data.

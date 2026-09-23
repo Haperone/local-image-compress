@@ -66,6 +66,7 @@ const platformDesktopSource = fs.readFileSync(path.join(tsRoot, "platform", "des
 const platformMobileSource = fs.readFileSync(path.join(tsRoot, "platform", "mobile.ts"), "utf8");
 const mobileQaSessionSource = fs.readFileSync(path.join(tsRoot, "qa", "session.ts"), "utf8");
 const pluginSource = fs.readFileSync(path.join(tsRoot, "plugin.ts"), "utf8");
+const settingsTabSource = fs.readFileSync(path.join(tsRoot, "settings-tab.ts"), "utf8");
 const compressionWorkerSource = fs.readFileSync(path.join(tsRoot, "compression-worker.ts"), "utf8");
 const workerSlotSource = fs.readFileSync(path.join(tsRoot, "worker-slot.ts"), "utf8");
 
@@ -117,7 +118,8 @@ for (const [name, version] of Object.entries({
 // desktop-only. validate-manifest.js enforces that confinement.
 assert(manifest.isDesktopOnly === false, "isDesktopOnly must stay false now that the platform port migration shipped");
 assert(/^https:\/\/buymeacoffee\.com\//.test(manifest.fundingUrl || ""), "fundingUrl must remain an optional support link");
-assert(!combinedSource.includes(manifest.fundingUrl), "Runtime source must not contact or gate on fundingUrl");
+assert(!combinedSource.includes("fundingUrl"), "Runtime source must not read fundingUrl");
+assert(settingsTabSource.includes(`"${manifest.fundingUrl}"`), "Settings donation link must match fundingUrl");
 
 for (const token of [
   "Network",

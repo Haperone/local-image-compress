@@ -317,6 +317,16 @@ Module._load = function patchedLoad(request, parent, isMain) {
           this.app = app;
           this.plugin = plugin;
           this.containerEl = createMockElement();
+          this.settingItems = [];
+          this.updateCalls = 0;
+          this.refreshDomStateCalls = 0;
+        }
+        update() {
+          this.updateCalls++;
+          this.settingItems = this.getSettingDefinitions?.() || [];
+        }
+        refreshDomState() {
+          this.refreshDomStateCalls++;
         }
         hide() {
           this.hidden = true;
@@ -360,13 +370,14 @@ Module._load = function patchedLoad(request, parent, isMain) {
         addToggle() { return this; }
         addButton() { return this; }
         addExtraButton() { return this; }
-        addDropdown() { return this; }
+        addDropdown() { this.dropdownCalls = (this.dropdownCalls || 0) + 1; return this; }
       },
       Notice: class {},
       TFile: class {},
       TFolder: class {},
       FuzzySuggestModal: class {},
       getLanguage: () => mockObsidianLanguage,
+      setIcon: (element, icon) => { element.icon = icon; },
       requireApiVersion: () => true,
       // Mirrors the real desktop Platform surface so shared code can read it
       // instead of Node process.platform.
@@ -1873,6 +1884,269 @@ try {
     `Unexpected command ids after onload: ${commandIds.join(", ")}`
   );
   assert(plugin.settingTabs.length === 1, "Plugin did not register exactly one settings tab");
+  const declarativeSettingsTab = plugin.settingTabs[0];
+  assert(declarativeSettingsTab === plugin.settingsTab, "Plugin did not retain its registered settings tab");
+  const originalGetStatsSnapshotForDefinitions = plugin.getStatsSnapshot;
+  const originalGetAvailableBackupsForDefinitions = plugin.cache.getAvailableBackups;
+  let declarativeDefinitionIoCalls = 0;
+  try {
+    plugin.getStatsSnapshot = async () => {
+      declarativeDefinitionIoCalls++;
+      return await originalGetStatsSnapshotForDefinitions.call(plugin);
+    };
+    plugin.cache.getAvailableBackups = async () => {
+      declarativeDefinitionIoCalls++;
+      return await originalGetAvailableBackupsForDefinitions.call(plugin.cache);
+    };
+    const renderGenerationBeforeDefinitions = declarativeSettingsTab._renderGeneration;
+    const definitions = declarativeSettingsTab.getSettingDefinitions();
+    assert(Array.isArray(definitions) && definitions.length > 0, "Declarative settings definitions are empty");
+    assert(typeof definitions.then !== "function", "getSettingDefinitions() returned a promise");
+    assert(declarativeDefinitionIoCalls === 0, "getSettingDefinitions() performed async I/O");
+    assert(
+      declarativeSettingsTab._renderGeneration === renderGenerationBeforeDefinitions,
+      "getSettingDefinitions() mutated render lifecycle state during search indexing"
+    );
+    const flattenDefinitions = (items) => items.flatMap((item) => item.items
+      ? [item, ...flattenDefinitions(item.items)]
+      : [item]);
+    const flatDefinitions = flattenDefinitions(definitions);
+    declarativeSettingsTab.settingItems = definitions;
+    const controlKeys = flatDefinitions.map((item) => item.control?.key).filter(Boolean).sort();
+    const expectedControlKeys = [
+      "autoBackgroundCompression",
+      "autoBackgroundThreshold",
+      "autoBackupsRetentionDays",
+      "autoBackupsRetentionEnabled",
+      "autoCompressNewFiles",
+      "autoMoveCompressedEnabled",
+      "autoMoveCompressedThreshold",
+      "inactivityThresholdMinutes",
+      "jpegQuality",
+      "outputFolder"
+    ].sort();
+    assert(JSON.stringify(controlKeys) === JSON.stringify(expectedControlKeys), `Declarative control keys are incomplete: ${controlKeys.join(", ")}`);
+    const definitionNames = new Set(flatDefinitions.map((item) => item.name).filter(Boolean));
+    for (const requiredName of [
+      "PNG quality (min-max)",
+      "Allowed root folders",
+      "Uncompressed images",
+      "Cache entries",
+      "Move compressed files",
+      "Restore cache from backup",
+      "Usage:"
+    ]) {
+      assert(definitionNames.has(requiredName), `Declarative settings are missing ${requiredName}`);
+    }
+    assert(typeof declarativeSettingsTab.display === "function", "Legacy display() fallback is missing");
+    const originalLegacyRenderSettings = declarativeSettingsTab.renderSettings;
+    let legacyDisplayCalls = 0;
+    try {
+      declarativeSettingsTab.renderSettings = async () => {
+        legacyDisplayCalls++;
+      };
+      declarativeSettingsTab.display();
+      assert(legacyDisplayCalls === 1, "Legacy display() fallback did not start imperative rendering");
+    } finally {
+      declarativeSettingsTab.renderSettings = originalLegacyRenderSettings;
+    }
+
+    const createDeferred = () => {
+      let resolve;
+      let reject;
+      const promise = new Promise((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      return { promise, reject, resolve };
+    };
+    const flushAsyncSettingsWork = async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    const renderDefinition = (definition) => {
+      assert(typeof definition?.render === "function", `Declarative render callback is missing for ${definition?.name || "unknown item"}`);
+      const setting = new cachedObsidianMock.Setting(declarativeSettingsTab.containerEl);
+      definition.render(setting);
+      return setting;
+    };
+    const makeStatsSnapshot = (marker) => ({
+      totalImages: marker,
+      uncompressedImages: marker,
+      savings: {
+        originalSize: marker,
+        currentSize: marker,
+        savedSize: 0,
+        savedPercentage: 0,
+        processedFiles: marker,
+        totalFiles: marker,
+        estimatedFiles: 0
+      },
+      cacheStats: { total: marker, size: marker },
+      compressedFilesCount: marker
+    });
+
+    const staleStatsLoad = createDeferred();
+    const freshStatsLoad = createDeferred();
+    let declarativeStatsLoadCalls = 0;
+    plugin.getStatsSnapshot = () => {
+      declarativeStatsLoadCalls++;
+      return declarativeStatsLoadCalls === 1 ? staleStatsLoad.promise : freshStatsLoad.promise;
+    };
+    renderDefinition(definitions[1]);
+    assert(declarativeStatsLoadCalls === 1, "Declarative header did not start its initial stats load");
+    assert(declarativeSettingsTab.savingsHostElement?.children.length === 1, "Savings card was not shown while statistics load");
+    declarativeSettingsTab.hide();
+    const reopenedStatsDefinitions = declarativeSettingsTab.getSettingDefinitions();
+    declarativeSettingsTab.settingItems = reopenedStatsDefinitions;
+    renderDefinition(reopenedStatsDefinitions[1]);
+    assert(declarativeStatsLoadCalls === 2, "Reopened declarative settings reused a stale stats load");
+    const freshStatsSnapshot = makeStatsSnapshot(22);
+    freshStatsLoad.resolve(freshStatsSnapshot);
+    await flushAsyncSettingsWork();
+    assert(declarativeSettingsTab.currentStatsSnapshot === freshStatsSnapshot, "Fresh declarative stats were not applied after reopen");
+    staleStatsLoad.resolve(makeStatsSnapshot(11));
+    await flushAsyncSettingsWork();
+    assert(declarativeSettingsTab.currentStatsSnapshot === freshStatsSnapshot, "Stale declarative stats overwrote the reopened session");
+
+    declarativeSettingsTab.hide();
+    const cachedStatsLoad = createDeferred();
+    let cachedStatsLoadCalls = 0;
+    plugin.getStatsSnapshot = () => {
+      cachedStatsLoadCalls++;
+      return cachedStatsLoad.promise;
+    };
+    const cachedStatsDefinitions = declarativeSettingsTab.getSettingDefinitions();
+    declarativeSettingsTab.settingItems = cachedStatsDefinitions;
+    renderDefinition(cachedStatsDefinitions[1]);
+    assert(declarativeSettingsTab.savingsHostElement?.children[0]?.children.length >= 2, "Reopened settings did not show cached savings immediately");
+    assert(cachedStatsLoadCalls === 1, "Reopened settings did not refresh cached statistics");
+    cachedStatsLoad.resolve(makeStatsSnapshot(23));
+    await flushAsyncSettingsWork();
+    assert(declarativeSettingsTab.currentStatsSnapshot?.totalImages === 23, "Background statistics did not replace cached savings");
+    declarativeSettingsTab.hide();
+    const staleBackupsLoad = createDeferred();
+    const freshBackupsLoad = createDeferred();
+    let declarativeBackupsLoadCalls = 0;
+    plugin.cache.getAvailableBackups = () => {
+      declarativeBackupsLoadCalls++;
+      return declarativeBackupsLoadCalls === 1 ? staleBackupsLoad.promise : freshBackupsLoad.promise;
+    };
+    const backupDefinitionItems = declarativeSettingsTab.getSettingDefinitions();
+    declarativeSettingsTab.settingItems = backupDefinitionItems;
+    const backupDefinitions = flattenDefinitions(backupDefinitionItems);
+    renderDefinition(backupDefinitions.find((item) => item.name === "Restore cache from backup"));
+    assert(declarativeBackupsLoadCalls === 1, "Declarative backup row did not start its initial load");
+    declarativeSettingsTab.hide();
+    const reopenedBackupDefinitionItems = declarativeSettingsTab.getSettingDefinitions();
+    declarativeSettingsTab.settingItems = reopenedBackupDefinitionItems;
+    const reopenedBackupDefinitions = flattenDefinitions(reopenedBackupDefinitionItems);
+    const freshBackupSetting = renderDefinition(reopenedBackupDefinitions.find((item) => item.name === "Restore cache from backup"));
+    assert(declarativeBackupsLoadCalls === 2, "Reopened declarative settings reused a stale backup load");
+    const updateCallsBeforeBackups = declarativeSettingsTab.updateCalls;
+    staleBackupsLoad.reject(new Error("stale backup load"));
+    await flushAsyncSettingsWork();
+    assert(declarativeSettingsTab._declarativeBackups === null, "Stale backup rejection poisoned the reopened session");
+    assert(declarativeSettingsTab.updateCalls === updateCallsBeforeBackups, "Stale backup rejection refreshed the reopened settings DOM");
+    freshBackupsLoad.resolve(["tinyLocal-cache-backup-fresh.json"]);
+    await flushAsyncSettingsWork();
+    assert(
+      JSON.stringify(declarativeSettingsTab._declarativeBackups) === JSON.stringify(["tinyLocal-cache-backup-fresh.json"]),
+      "Fresh declarative backup list was not applied after reopen"
+    );
+    assert(declarativeSettingsTab.updateCalls === updateCallsBeforeBackups, "Fresh backup load re-rendered the whole settings tab");
+    assert(freshBackupSetting.dropdownCalls === 1, "Fresh backup load did not populate its declarative row in place");
+
+    declarativeSettingsTab.hide();
+    const statsAfterBackupRefresh = createDeferred();
+    const backupsBeforeStats = createDeferred();
+    let statsAfterBackupLoadCalls = 0;
+    plugin.getStatsSnapshot = () => {
+      statsAfterBackupLoadCalls++;
+      return statsAfterBackupRefresh.promise;
+    };
+    plugin.cache.getAvailableBackups = () => backupsBeforeStats.promise;
+    const concurrentDefinitions = declarativeSettingsTab.getSettingDefinitions();
+    declarativeSettingsTab.settingItems = concurrentDefinitions;
+    const concurrentFlatDefinitions = flattenDefinitions(concurrentDefinitions);
+    renderDefinition(concurrentDefinitions[1]);
+    const concurrentBackupSetting = renderDefinition(concurrentFlatDefinitions.find((item) => item.name === "Restore cache from backup"));
+    const renderGenerationBeforeBackupRefresh = declarativeSettingsTab._renderGeneration;
+    backupsBeforeStats.resolve(["tinyLocal-cache-backup-before-stats.json"]);
+    await flushAsyncSettingsWork();
+    assert(declarativeSettingsTab.updateCalls === updateCallsBeforeBackups, "Backup-first load started a declarative update loop");
+    assert(declarativeSettingsTab._renderGeneration === renderGenerationBeforeBackupRefresh, "Backup row refresh replaced the declarative render generation");
+    assert(concurrentBackupSetting.dropdownCalls === 1, "Backup-first load did not populate the current row in place");
+    assert(statsAfterBackupLoadCalls === 1, "Backup row refresh duplicated the in-flight stats request");
+    const statsSnapshotAfterBackupRefresh = makeStatsSnapshot(33);
+    statsAfterBackupRefresh.resolve(statsSnapshotAfterBackupRefresh);
+    await flushAsyncSettingsWork();
+    assert(
+      declarativeSettingsTab.currentStatsSnapshot === statsSnapshotAfterBackupRefresh,
+      "Backup row refresh invalidated the in-flight stats result"
+    );
+
+    const reusableDefinitions = declarativeSettingsTab.getSettingDefinitions();
+    declarativeSettingsTab.settingItems = reusableDefinitions;
+    renderDefinition(reusableDefinitions[1]);
+    declarativeSettingsTab.hide();
+    const hiddenRenderGeneration = declarativeSettingsTab._renderGeneration;
+    renderDefinition(reusableDefinitions[1]);
+    assert(declarativeSettingsTab._isDisposed === false, "Current declarative definitions did not reopen after hide");
+    assert(declarativeSettingsTab._isVisible === true, "Current declarative definitions did not restore visible state after hide");
+    assert(
+      declarativeSettingsTab._renderGeneration === hiddenRenderGeneration + 1
+      && declarativeSettingsTab._preparedDeclarativeGeneration === declarativeSettingsTab._renderGeneration,
+      "Current declarative definitions did not start a fresh render generation after hide"
+    );
+
+    const supersededDefinitions = declarativeSettingsTab.getSettingDefinitions();
+    declarativeSettingsTab.settingItems = supersededDefinitions;
+    renderDefinition(supersededDefinitions[1]);
+    const currentDefinitions = declarativeSettingsTab.getSettingDefinitions();
+    declarativeSettingsTab.settingItems = currentDefinitions;
+    renderDefinition(currentDefinitions[1]);
+    const currentPreparedGeneration = declarativeSettingsTab._preparedDeclarativeGeneration;
+    const currentSavingsHost = declarativeSettingsTab.savingsHostElement;
+    renderDefinition(supersededDefinitions[1]);
+    assert(
+      declarativeSettingsTab._preparedDeclarativeGeneration === currentPreparedGeneration
+      && declarativeSettingsTab.savingsHostElement === currentSavingsHost,
+      "Superseded declarative callback replaced the active render state"
+    );
+
+    const originalSettingsForDeclarativeControls = JSON.parse(JSON.stringify(plugin.settings));
+    const originalSaveSettingsForDeclarativeControls = plugin.saveSettings;
+    let declarativeSaveCalls = 0;
+    try {
+      plugin.saveSettings = async () => {
+        declarativeSaveCalls++;
+      };
+      const refreshCallsBefore = declarativeSettingsTab.refreshDomStateCalls;
+      await declarativeSettingsTab.setControlValue("autoBackgroundCompression", false);
+      await declarativeSettingsTab.setControlValue("autoBackgroundThreshold", 75);
+      await declarativeSettingsTab.setControlValue("outputFolder", "  Declarative Output  ");
+      assert(plugin.settings.autoBackgroundCompression === false, "Declarative toggle did not update settings");
+      assert(plugin.settings.autoBackgroundThreshold === 75, "Declarative slider did not update settings");
+      assert(plugin.settings.outputFolder === "Declarative Output", "Declarative output folder was not normalized");
+      assert(declarativeSettingsTab.getControlValue("autoBackgroundThreshold") === 75, "Declarative control getter returned stale data");
+      assert(declarativeSaveCalls === 3, "Declarative controls bypassed plugin.saveSettings()");
+      assert(declarativeSettingsTab.refreshDomStateCalls === refreshCallsBefore + 1, "Parent declarative toggle did not refresh conditional visibility");
+      const backgroundThreshold = flatDefinitions.find((item) => item.control?.key === "autoBackgroundThreshold");
+      assert(backgroundThreshold.visible() === false, "Declarative background threshold ignored disabled parent toggle");
+      plugin.settings.autoBackgroundCompression = true;
+      assert(backgroundThreshold.visible() === true, "Declarative background threshold ignored enabled parent toggle");
+      const outputFolder = flatDefinitions.find((item) => item.control?.key === "outputFolder");
+      assert(!!outputFolder.control.validate("../outside"), "Declarative output-folder validation accepted an unsafe path");
+      assert(outputFolder.control.validate("Images/Compressed") === undefined, "Declarative output-folder validation rejected a safe path");
+    } finally {
+      plugin.settings = originalSettingsForDeclarativeControls;
+      plugin.saveSettings = originalSaveSettingsForDeclarativeControls;
+    }
+  } finally {
+    plugin.getStatsSnapshot = originalGetStatsSnapshotForDefinitions;
+    plugin.cache.getAvailableBackups = originalGetAvailableBackupsForDefinitions;
+  }
   assert(plugin.statusBarItem, "Plugin did not create a status bar item");
   assert(plugin.statusBarItem.attributes.role === "button", "Status bar item is missing role=button");
   assert(plugin.statusBarItem.attributes.tabindex === "0", "Status bar item is missing tabindex=0");
